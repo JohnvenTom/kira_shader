@@ -1,0 +1,337 @@
+/* === 全局重置与基础样式 === */
+/* 引入优雅细体衬线字体（用于副标题），离线时 fallback 到 STIX/Times */
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&display=swap');
+
+:root {
+  /* 设计令牌（参考 shader.se 风格） */
+  --background: #0a0a0a;
+  --foreground: #fcf9f3;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --font-stix: "STIX Two Text", "Times New Roman", serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Courier New", monospace;
+  /* 副标题专用：优雅细体衬线，fallback 到 STIX/Times */
+  --font-display: "Cormorant Garamond", "STIX Two Text", "Times New Roman", serif;
+  /* 虚拟页面高度倍数（越大滚动越长） */
+  --page-height: 6;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+/* === 滚动容器：z-50，固定全屏，纵向滚动 === */
+.scroll-container {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 50;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* === 滚动占位：撑出虚拟滚动高度 === */
+.scroll-placeholder {
+  width: 100%;
+  /* 高度 = 页面高度倍数 × 视口高度 */
+  height: calc(var(--page-height) * 100vh);
+  pointer-events: none;
+}
+
+/* === WebGL Canvas 容器：z-40，固定全屏，不接收交互 === */
+.canvas-wrapper {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.canvas-wrapper canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* === 相机调试模式：让 OrbitControls 能接收鼠标事件 ===
+ * 调试时：
+ *   - .canvas-wrapper 启用 pointer-events，让 Canvas 可接收鼠标
+ *   - .scroll-container 关闭 pointer-events，避免拦截鼠标事件
+ *   - .content-overlay 子元素保持 auto，标题等仍可点击
+ * 注意：调试模式下页面无法滚动，仅用于调试相机视角
+ */
+body.camera-debug-mode .canvas-wrapper {
+  pointer-events: auto;
+}
+
+body.camera-debug-mode .scroll-container {
+  pointer-events: none;
+}
+
+/* === 内容覆盖层（文字/UI） === */
+.content-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 48px 64px;
+}
+
+.content-overlay > * {
+  pointer-events: auto;
+}
+
+/* === 顶部标题区 === */
+/* 整个文字块往下移：顶部留出更多空间 */
+.hero-block {
+  margin-top: 18vh;
+  /* 视差偏移量由 JS 写入 CSS 变量 --px/--py（单位 px） */
+  --px: 0px;
+  --py: 0px;
+  /* 用 transform 应用视差位移，配合较长 transition 营造惯性追随感 */
+  transform: translate3d(var(--px), var(--py), 0);
+  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+.hero-title {
+  font-family: var(--font-stix);
+  /* 字号大一号：上限从 4.5rem → 5.5rem，下限从 2rem → 2.4rem */
+  font-size: clamp(2.4rem, 6vw, 5.5rem);
+  font-weight: 700;
+  /* 行间距加大：1.1 → 1.35，让每行更松弛 */
+  line-height: 1.35;
+  max-width: 1000px;
+  /* 容器本身不参与动画，由内部 .hero-char 各自动画 */
+}
+
+/* 每行容器：仅作为块级换行，不参与动画 */
+.hero-line {
+  display: block;
+}
+
+/* 每个字符 span：默认隐藏 + 下移，父级 .visible 时逐个浮现 */
+.hero-char {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(40px) scale(0.85);
+  /* 辉光：用 text-shadow 多层叠加，模拟柔和发光 */
+  text-shadow:
+    0 0 8px rgba(255, 244, 224, 0.85),
+    0 0 22px rgba(255, 200, 120, 0.7),
+    0 0 44px rgba(255, 160, 90, 0.5),
+    0 0 80px rgba(255, 130, 70, 0.35);
+  /* 色散：用 drop-shadow 在字符层做 RGB 偏移，营造镜头色差感 */
+  filter:
+    drop-shadow(2.4px 0 0 rgba(255, 60, 60, 0.85))
+    drop-shadow(-2.4px 0 0 rgba(60, 160, 255, 0.85));
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              filter 0.6s ease,
+              text-shadow 0.6s ease;
+}
+
+.hero-title.visible .hero-char {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  /* 出现后辉光与色散保持明显（仅略微收敛，避免过曝） */
+  text-shadow:
+    0 0 6px rgba(255, 244, 224, 0.75),
+    0 0 18px rgba(255, 200, 120, 0.6),
+    0 0 36px rgba(255, 160, 90, 0.42),
+    0 0 64px rgba(255, 130, 70, 0.28);
+  filter:
+    drop-shadow(2px 0 0 rgba(255, 60, 60, 0.75))
+    drop-shadow(-2px 0 0 rgba(60, 160, 255, 0.75));
+}
+
+.hero-subtitle {
+  /* 换成优雅细体衬线（Cormorant Garamond），fallback 到 STIX/Times */
+  font-family: var(--font-display);
+  /* 细字重：300，视觉上更精致轻盈 */
+  font-weight: 300;
+  /* 副标题字号略大一点，配合细体更有呼吸感 */
+  font-size: clamp(1.15rem, 1.7vw, 1.6rem);
+  color: var(--foreground);
+  opacity: 0;
+  /* 字间距加大：字母之间更松弛 */
+  letter-spacing: 0.08em;
+  /* 词间距加大：单词之间间隔更明显 */
+  word-spacing: 0.18em;
+  /* 与标题的间距加大：16px → 40px */
+  margin-top: 40px;
+  max-width: 600px;
+  transform: translateY(20px);
+  transition: opacity 0.9s ease,
+              transform 0.9s ease;
+}
+
+.hero-subtitle.visible {
+  opacity: 0.7;
+  transform: translateY(0);
+}
+
+/* === 底部提示 === */
+.scroll-hint {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--foreground);
+  opacity: 0.4;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  align-self: center;
+}
+
+.scroll-hint::after {
+  content: "↓";
+  font-size: 16px;
+  animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(6px); }
+}
+
+/* === 顶部导航 === */
+.nav-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 48px;
+  pointer-events: none;
+}
+
+.nav-bar .logo {
+  font-family: var(--font-stix);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--foreground);
+  pointer-events: auto;
+}
+
+.nav-bar .nav-links {
+  display: flex;
+  gap: 24px;
+  pointer-events: auto;
+}
+
+.nav-bar .nav-links a {
+  color: var(--foreground);
+  text-decoration: none;
+  font-size: 13px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  font-family: var(--font-mono);
+}
+
+.nav-bar .nav-links a:hover {
+  opacity: 1;
+}
+
+/* === 加载状态 === */
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--background);
+  z-index: 100;
+  overflow: hidden;
+  transition: opacity 0.6s ease;
+}
+
+.loading-screen.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 全屏背景图：cover 适配，铺满整个视口 */
+.loading-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  /* 略微压暗背景，让前景进度条更突出 */
+  filter: brightness(0.7);
+}
+
+/* 背景遮罩：底部渐变加深，让进度条区域更聚焦 */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 55%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+}
+
+/* 10 格进度条容器：水平居中，垂直位于画面下 1/3 */
+.loading-cells {
+  position: absolute;
+  left: 50%;
+  /* 顶部偏移 66.67vh ≈ 下 1/3 位置 */
+  top: 66.67vh;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  /* 格子整体宽度 */
+  width: min(420px, 70vw);
+  /* 固定高度：竖向长条 */
+  height: 60px;
+  /* 外边框：粗白框包围整个进度条 */
+  border: 4px solid #ffffff;
+  /* 内边距：让格子与外框留出间隙 */
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+/* 单个格子：默认完全透明（不预画方框），激活后纯白竖向长条 */
+.loading-cell {
+  flex: 1;
+  height: 100%;
+  background: transparent;
+  border: none;
+  /* 无圆角：模拟老电脑像素方块 */
+  border-radius: 0;
+  transition: background 0.15s steps(1);
+}
+
+/* 激活格子：纯白实心长条，无辉光，无边框 */
+.loading-cell.active {
+  background: #ffffff;
+}
