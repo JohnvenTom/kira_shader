@@ -92,6 +92,8 @@ const DEBUG = false;
  *  - lookAtY  相机看向的目标 Y 位置（世界坐标）。基于模型缩放后尺寸的倍数，用于控制视线垂直落点
  *  - lookAtZ  相机看向的目标 Z 位置（世界坐标）。基于模型缩放后尺寸的倍数，用于控制视线水平落点
  *  - fov      相机视野（°）。值越大视野越广（鱼眼），值越小视野越窄（长焦）
+ *  - parallaxYawDeg   鼠标视差水平旋转幅度（°）。鼠标移到屏幕左右边缘时相机绕 target 旋转的角度
+ *  - parallaxPitchDeg 鼠标视差俯仰旋转幅度（°）。鼠标移到屏幕上下边缘时相机绕 target 旋转的角度
  */
 const CAMERA_CONFIG = {
   yawDeg: 165.45,      // 水平角（°）
@@ -102,6 +104,8 @@ const CAMERA_CONFIG = {
   lookAtY: -0.411,     // 看向点 Y 倍数（scaledSize.y 倍数）
   lookAtZ: 0.000,      // 看向点 Z 倍数（scaledSize.z 倍数）
   fov: 41,             // 相机视野（°）
+  parallaxYawDeg: 3.0,   // 鼠标视差水平幅度（°），鼠标到边缘时绕 target 旋转 ±3°
+  parallaxPitchDeg: 2.0, // 鼠标视差俯仰幅度（°），鼠标到边缘时绕 target 旋转 ±2°
 };
 
 /**
@@ -226,6 +230,8 @@ interface ComputerSceneProps {
   scrollProgress: number;
   /** 模型加载完成回调 */
   onLoaded: () => void;
+  /** 鼠标归一化坐标 ref（-1~1），驱动相机绕 target 做小角度视差旋转 */
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
 }
 
 /**
@@ -240,6 +246,8 @@ interface ComputerSceneProps {
  *  - scaledSize   {THREE.Vector3} 模型缩放后的尺寸
  *  - targetX      {number} 看向点 X 世界坐标
  *  - targetZ      {number} 看向点 Z 世界坐标
+ *  - yawDeg       {number} 可选，覆盖 CAMERA_CONFIG.yawDeg（用于鼠标视差偏移）
+ *  - pitchDeg     {number} 可选，覆盖 CAMERA_CONFIG.pitchDeg（用于鼠标视差偏移）
  *
  * 返回值：{ x, y, z } 相机的世界坐标
  *
@@ -250,15 +258,18 @@ interface ComputerSceneProps {
  *  - height 字段以 scaledSize.y 的倍数计算，便于按模型尺寸调整
  *  - pitch 正值俯视、负值仰视，单位为度（°）
  *  - 相机位置相对 target 偏移，这样 PAN 后还原视角才正确
+ *  - yawDeg/pitchDeg 不传时用 CAMERA_CONFIG 默认值，传入时用于叠加鼠标视差
  */
 function computeCameraPosition(
   baseDistance: number,
   scaledSize: THREE.Vector3,
   targetX: number,
-  targetZ: number
+  targetZ: number,
+  yawDeg?: number,
+  pitchDeg?: number
 ): { x: number; y: number; z: number } {
-  const yawRad = (CAMERA_CONFIG.yawDeg * Math.PI) / 180;
-  const pitchRad = (CAMERA_CONFIG.pitchDeg * Math.PI) / 180;
+  const yawRad = ((yawDeg ?? CAMERA_CONFIG.yawDeg) * Math.PI) / 180;
+  const pitchRad = ((pitchDeg ?? CAMERA_CONFIG.pitchDeg) * Math.PI) / 180;
   const dist = baseDistance * CAMERA_CONFIG.distance;
   const yOffset = scaledSize.y * CAMERA_CONFIG.height;
 
@@ -729,10 +740,14 @@ function analyzeScreenGeometry(
  *  - 相机距离基于 FOV 与模型包围盒动态计算，避免过大/过小模型显示异常
  *  - 滚动进度通过 useFrame 中读取最新 props 实现，避免重渲染
  */
-export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) {
+export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSceneProps) {
   // 使用 ref 保存最新的滚动进度，避免每帧触发 React 重渲染
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
+
+  // 鼠标视差平滑值：每帧 lerp 向 mouseRef 靠近，避免相机紧贴鼠标产生生硬感
+  // 初始为 {0,0}（屏幕中心），后续会逐渐追随真实鼠标位置
+  const mouseSmoothedRef = useRef({ x: 0, y: 0 });
 
   const { camera, gl, scene } = useThree();
 
@@ -851,7 +866,8 @@ export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) 
     }
   }, []);
 
-  // 每帧更新：非 DEBUG 模式下按 CAMERA_CONFIG 固定相机；DEBUG 模式下让 OrbitControls 接管
+  // 每帧更新：非 DEBUG 模式下按 CAMERA_CONFIG 固定相机 + 鼠标视差微旋转
+  // DEBUG 模式下让 OrbitControls 接管
   useFrame(() => {
     if (!setup) return;
     // DEBUG 模式：跳过固定相机控制，让 OrbitControls 自由操作
@@ -864,8 +880,19 @@ export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) 
     const targetYWorld = scaledSize.y * CAMERA_CONFIG.lookAtY;
     const targetZ = scaledSize.z * CAMERA_CONFIG.lookAtZ;
 
+    // 鼠标视差：读取归一化坐标（-1~1），叠加到 yaw/pitch 上做小角度旋转
+    // 鼠标在屏幕中心时偏移为 0，移到边缘时达到 ±parallaxYawDeg/parallaxPitchDeg
+    // 用 lerp 平滑追随，让相机有惯性缓动而非瞬时跳变（类似 shader.se 的效果）
+    // mouse.x 取反：鼠标向左 → 视角向左转（相机绕 target 向左移动）
+    const target = mouseRef.current;
+    const smoothed = mouseSmoothedRef.current;
+    smoothed.x += (target.x - smoothed.x) * 0.08;
+    smoothed.y += (target.y - smoothed.y) * 0.08;
+    const yawDeg = CAMERA_CONFIG.yawDeg - smoothed.x * CAMERA_CONFIG.parallaxYawDeg;
+    const pitchDeg = CAMERA_CONFIG.pitchDeg + smoothed.y * CAMERA_CONFIG.parallaxPitchDeg;
+
     // 计算 3D 空间位置：水平 yaw + 俯仰 pitch → 球坐标转笛卡尔
-    const camPos = computeCameraPosition(distance, scaledSize, targetX, targetZ);
+    const camPos = computeCameraPosition(distance, scaledSize, targetX, targetZ, yawDeg, pitchDeg);
     camera.position.set(camPos.x, camPos.y, camPos.z);
     // 看向 target（支持 PAN 后的非原点视角）
     camera.lookAt(targetX, targetYWorld, targetZ);
