@@ -352,3 +352,143 @@ body.camera-debug-mode .scroll-container {
 .loading-cell.active {
   background: #ffffff;
 }
+
+/* ====================================================================
+ * KiraFilmDemo 样式（#film hash 下的多 section 滚动版）
+ * ==================================================================== */
+
+/* 滚动占位：4 个 section × 视口高度，撑出足够滚动距离
+   每段 0.25 进度对应一个 section，段内有完整的推入→闪光→切换过渡 */
+.film-scroll-placeholder {
+  height: 400vh;
+}
+
+/* 内容覆盖层：水平左对齐，给左侧文字块更多呼吸空间 */
+.film-content-overlay {
+  justify-content: center;
+  align-items: flex-start;
+  padding: 48px 80px;
+}
+
+/* 文字块容器：整体淡入淡出 + 上移过渡
+   --px/--py/--rx/--ry 由 JS 鼠标视差写入 */
+.film-hero-block {
+  --px: 0px;
+  --py: 0px;
+  --rx: 0deg;
+  --ry: 0deg;
+  transform-style: preserve-3d;
+  transform: translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
+  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  opacity: 0;
+  will-change: transform, opacity;
+  /* 加宽到 900px：之前 720px 时 "CREATIVE STUDIO" 14 字符 × ~50px ≈ 700px
+     刚好挤到边界，最后一个 "O" 溜到第二行 */
+  max-width: 900px;
+}
+
+.film-hero-block.visible {
+  opacity: 1;
+}
+
+/* Section 编号：01 / 04 风格，等宽字体，accent 色调淡 */
+.film-section-index {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 4px;
+  color: rgba(252, 249, 243, 0.5);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.film-index-current {
+  font-size: 18px;
+  color: var(--foreground);
+  opacity: 0.9;
+}
+
+.film-index-separator {
+  opacity: 0.4;
+}
+
+.film-index-total {
+  opacity: 0.4;
+}
+
+/* 大标题：复用 .hero-title 基础样式，覆盖字号与字间距 */
+.film-hero-title {
+  font-family: var(--font-stix);
+  font-size: clamp(2.4rem, 5.5vw, 5rem);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0;
+  /* 默认隐藏，.visible 时由 .hero-char 逐字浮现 */
+}
+
+/* 副标题：accent 色，细体衬线 */
+.film-hero-subtitle {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(1.1rem, 1.6vw, 1.5rem);
+  letter-spacing: 0.08em;
+  word-spacing: 0.18em;
+  margin-top: 28px;
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.6s ease 0.15s, transform 0.6s ease 0.15s;
+}
+
+.film-hero-subtitle.visible {
+  opacity: 0.85;
+  transform: translateY(0);
+}
+
+/* 描述文字：等宽小字 */
+.film-description {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(252, 249, 243, 0.55);
+  margin-top: 20px;
+  max-width: 480px;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.6s ease 0.3s, transform 0.6s ease 0.3s;
+}
+
+.film-description.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 底部进度指示器：4 个小点水平排列 */
+.film-progress-dots {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  z-index: 46;
+  pointer-events: auto;
+}
+
+.film-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.2);
+  transition: background-color 0.4s ease, transform 0.4s ease, box-shadow 0.4s ease;
+}
+
+.film-dot.active {
+  transform: scale(1.4);
+  box-shadow: 0 0 12px currentColor;
+}
+
+/* 顶部导航增加 demo 切换链接的视觉提示（可选，NavBar 组件不变） */
+

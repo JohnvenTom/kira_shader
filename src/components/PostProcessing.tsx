@@ -61,10 +61,10 @@ const PostFXShader = {
     uAspect: { value: 1.0 },
     // 圆角半径（0~0.5，UV 单位）。0=直角；0.5=完全圆形。
     // 默认 0.06 让四角有适度圆角，配合鱼眼显得像镜头边缘
-    uCornerRadius: { value: 0.06 },
+    uCornerRadius: { value: 0.07 },
     // 边缘模糊宽度（0~0.2，UV 单位）。在圆角内侧该宽度内做羽化模糊。
     // 默认 0.025 让圆角边缘柔化过渡
-    uEdgeBlur: { value: 0.025 },
+    uEdgeBlur: { value: 0.1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;

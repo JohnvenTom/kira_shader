@@ -267,6 +267,148 @@ function SmokeLayer({
   );
 }
 
+/**
+ * 创建柔光圆点纹理（程序化生成）
+ *
+ * 功能：在内存中用 canvas 画一个径向渐变白点，作为自发光粒子的贴图
+ *       中心全白 → 边缘透明，配合 AdditiveBlending 与 toneMapped=false 可呈现真实"发光"感
+ *
+ * 参数：无
+ *
+ * 返回值：THREE.CanvasTexture，可直接用作 spriteMaterial.map
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - 仅生成一次（useMemo 缓存），所有粒子共用同一张纹理
+ *  - 使用 SRGBColorSpace 保证颜色不偏
+ */
+function createGlowTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const gradient = ctx.createRadialGradient(
+    size / 2, size / 2, 0,
+    size / 2, size / 2, size / 2
+  );
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.2, 'rgba(255,255,255,0.85)');
+  gradient.addColorStop(0.5, 'rgba(255,255,255,0.3)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+interface GlowParticlesProps {
+  /** 粒子数量 */
+  count?: number;
+  /** 粒子在 XYZ 上的扩散范围（世界单位） */
+  areaSize?: number;
+  /** 单个粒子基础尺寸（世界单位） */
+  particleSize?: number;
+  /** 粒子颜色（建议暖色，配合场景暖光更出彩） */
+  color?: string;
+  /** 基础不透明度（0~1），实际还会随时间呼吸闪烁 */
+  opacity?: number;
+}
+
+/**
+ * 自发光粒子层
+ *
+ * 功能：在自身 group 原点处生成一组始终朝向相机的小光点 sprite，
+ *      通过 toneMapped=false + AdditiveBlending 让粒子在暗场景中呈现真实发光感，
+ *      每个粒子以低频正弦做小范围、慢速随机飘动，并伴随轻微闪烁。
+ *
+ * 参数：见 GlowParticlesProps
+ *
+ * 返回值：React.ReactElement（一个包含若干 <sprite> 的 <group>）
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - toneMapped=false 是"发光感"的关键：颜色不会被 ACES tone mapping 压暗
+ *  - 漂移速度与幅度都压得很小，营造"悬浮尘埃/萤火"的静态氛围
+ *  - depthWrite=false 避免小粒子互相遮挡写入深度缓冲
+ *  - group 位置由父组件（ComputerScene）在 useFrame 中动态跟随电脑
+ */
+function GlowParticles({
+  count = 40,
+  areaSize = 1.6,
+  particleSize = 0.14,
+  color = '#ffd9a0',
+  opacity = 0.95,
+}: GlowParticlesProps) {
+  // 所有粒子共用一张柔光纹理
+  const texture = useMemo(createGlowTexture, []);
+
+  // 缓存每个粒子的初始参数，避免每帧重新随机
+  const particles = useMemo(() => {
+    return Array.from({ length: count }, () => ({
+      offsetX: (Math.random() - 0.5) * areaSize,
+      offsetY: (Math.random() - 0.5) * areaSize * 0.8,
+      offsetZ: (Math.random() - 0.5) * areaSize,
+      // 漂移速度：压低，让粒子慢速漂浮
+      driftSpeed: 0.06 + Math.random() * 0.1,
+      // 漂移幅度：压小，限制在小范围内涌动
+      driftAmp: 0.06 + Math.random() * 0.14,
+      // 闪烁相位与频率
+      flickerPhase: Math.random() * Math.PI * 2,
+      flickerSpeed: 1.2 + Math.random() * 1.5,
+      // 个体缩放
+      scale: 0.5 + Math.random() * 0.9,
+    }));
+  }, [count, areaSize]);
+
+  const spritesRef = useRef<THREE.Sprite[]>([]);
+
+  useFrame((state) => {
+    const time = state.clock.elapsedTime;
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const sprite = spritesRef.current[i];
+      if (!sprite) continue;
+      const t = time * p.driftSpeed;
+      // 三轴低频正弦，频率错开避免循环感；幅度小，呈"悬浮"而非"飘移"
+      sprite.position.x = p.offsetX + Math.sin(t + p.flickerPhase) * p.driftAmp;
+      sprite.position.y = p.offsetY + Math.sin(t * 0.7 + p.flickerPhase * 1.3) * p.driftAmp;
+      sprite.position.z = p.offsetZ + Math.cos(t * 0.9 + p.flickerPhase) * p.driftAmp;
+      // 轻微闪烁：0.5~1.0 之间呼吸，模拟尘埃/萤火忽明忽暗
+      const flicker = 0.5 + 0.5 * Math.sin(time * p.flickerSpeed + p.flickerPhase);
+      const mat = sprite.material as THREE.SpriteMaterial;
+      mat.opacity = opacity * flicker;
+    }
+  });
+
+  return (
+    <group>
+      {particles.map((p, i) => (
+        <sprite
+          key={i}
+          ref={(el) => {
+            if (el) spritesRef.current[i] = el;
+          }}
+          scale={[particleSize * p.scale, particleSize * p.scale, 1]}
+        >
+          <spriteMaterial
+            map={texture}
+            color={color}
+            transparent
+            opacity={opacity}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </sprite>
+      ))}
+    </group>
+  );
+}
+
 interface ComputerSceneProps {
   /** 滚动进度 0~1，驱动相机与模型动画 */
   scrollProgress: number;
@@ -818,6 +960,8 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
   // 前层 = 镜头与电脑之间（靠近相机）；后层 = 电脑背向相机一侧
   const frontSmokeRef = useRef<THREE.Group>(null);
   const backSmokeRef = useRef<THREE.Group>(null);
+  // 自发光粒子 group 引用：位置由 useFrame 跟随电脑中心
+  const glowParticlesRef = useRef<THREE.Group>(null);
 
   // 电脑正上方的聚光灯引用：位置由 useFrame 微微随机晃动
   const spotLightRef = useRef<THREE.SpotLight>(null);
@@ -1063,6 +1207,12 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       );
     }
 
+    // 自发光粒子：直接放在电脑中心（target 位置），粒子自身在小范围内涌动
+    // 让发光尘埃环绕在电脑周围，营造氛围
+    if (glowParticlesRef.current) {
+      glowParticlesRef.current.position.set(targetX, targetY, targetZ);
+    }
+
     // 聚光灯：位于电脑正上方，微微随机晃动（位置 + 目标点双频正弦扰动）
     // 晃动幅度小（0.25），频率低，模拟吊灯轻微摆动
     const time = state.clock.elapsedTime;
@@ -1154,6 +1304,17 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
           opacity={0.38}
           color="#6a7088"
           brightness={1.2}
+        />
+      </group>
+
+      {/* 自发光粒子：环绕电脑的发光尘埃，慢速小范围悬浮 + 轻微闪烁 */}
+      <group ref={glowParticlesRef}>
+        <GlowParticles
+          count={45}
+          areaSize={2.2}
+          particleSize={0.14}
+          color="#ffd9a0"
+          opacity={0.95}
         />
       </group>
 
