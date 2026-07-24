@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useFrame, useThree, useLoader } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 import { CameraDebugger } from './CameraDebugger';
@@ -20,27 +20,33 @@ import GIF_4 from '../assets/screen/E60E266E36DD9050508BBBF29CE9527D.gif';
 const SCREEN_GIF_URLS = [GIF_1, GIF_2, GIF_3, GIF_4];
 
 /**
- * 屏幕显示配置
+ * 屏幕显示配置（世界坐标系）
  *
- * 功能：定义屏幕 plane 在 computer 节点局部坐标系（= GLB 原始坐标，因 computer 节点无 transform）中的位置、尺寸、朝向
+ * 功能：定义屏幕 plane 在场景世界坐标系中的位置、尺寸、朝向
  *
  * 字段说明：
- *  - posX / posY / posZ：屏幕中心在 computer 节点局部坐标系的位置
- *    参考值来自 computer mesh 包围盒 X[-34.7,-8.3] Y[0.06,15.46] Z[-11.36,15.32]
- *  - width / height：屏幕 plane 的宽高（GLB 单位）
- *  - rotX / rotY / rotZ：屏幕朝向（弧度），默认朝 +Z（前面板方向）
+ *  - posX / posY / posZ：屏幕中心在世界坐标系的位置
+ *    （用户用 OrbitControls 把相机探到屏幕表面，从调试面板读出的世界坐标）
+ *  - width / height：屏幕 plane 的宽高（世界单位）
+ *  - rotY：屏幕朝向（弧度），朝向相机方向；DoubleSide 双面渲染时可忽略
  *  - switchIntervalSec：GIF 切换间隔（秒）
  *  - emissiveIntensity：自发光强度，越大越亮
  */
 const SCREEN_CONFIG = {
-  posX: -21.5,         // X 中点
-  posY: 10,            // 上半部分（CRT 区域）
-  posZ: 15.0,          // 紧贴前面板（Z 最大 ~15.32）
-  width: 14,           // 屏幕宽
-  height: 8,           // 屏幕高
-  rotX: 0,             // 朝 +Z 无需旋转
-  rotY: 0,
-  rotZ: 0,
+  // 屏幕中心：来自 computer mesh [2]号平面的世界坐标中心
+  // （法线(-0.6,0,0.8) 的斜面，顶点数 104 最多=屏幕区域）
+  // 沿法线方向往前推 0.15，让 plane 略离开模型表面，避免 z-fighting
+  posX: -0.271 + -0.6 * 0.15,   // 
+  posY: -1.39,                  // 世界坐标 Y
+  posZ: 0.507 + 0.8 * 0.15,      // 
+  // 屏幕尺寸：小于面板尺寸(W0.609 H0.512)，留出边框
+  width: 0.38,         // 屏幕宽（世界单位）
+  height: 0.29,        // 屏幕高（世界单位）
+  // 旋转：让 plane 法线对齐面板法线(-0.6,0,0.8)
+  // plane 默认法线(0,0,1) 绕 Y 轴旋转到(-0.6,0,0.8)：rotY = atan2(-0.6, 0.8)
+  rotX: 0.10,          // ≈ +4.6°，屏幕上沿微微后仰
+  rotY: -0.715,       //
+  rotZ: 0.05,          // ≈ +2.9°，修正向左歪，上沿往右倾斜
   switchIntervalSec: 6,    // 每 6 秒切换一个 GIF
   emissiveIntensity: 2.5,  // 自发光强度
 };
@@ -250,67 +256,109 @@ function computeCameraPosition(
   return { x, y, z };
 }
 
-interface ScreenDisplayProps {
-  /** 屏幕 mesh 要挂载到的父节点（通常为 computer 节点） */
-  computerNode: THREE.Object3D | null;
-}
-
 /**
  * 屏幕显示组件
  *
  * 功能：
- *  - 加载 4 个 GIF 资源作为屏幕贴图
- *  - 创建一个 plane mesh，通过 reparent 挂到 computer 节点下，跟随电脑变换
- *  - 用 MeshStandardMaterial 的 emissiveMap 让屏幕"自发光"（不受场景光照压暗）
- *  - 每帧设置 texture.needsUpdate=true，让浏览器解码 GIF 当前帧并上传 GPU，实现动画播放
+ *  - 加载 4 个 GIF 到 HTMLImageElement（挂隐藏 DOM 容器，浏览器才解码后续帧）
+ *  - 用 canvas 中转：每帧 ctx.drawImage(img) 把 GIF 当前帧画到 canvas
+ *    （直接用 img 做 texImage2D 在 Chromium 上只上传第一帧，canvas 中转才可靠）
+ *  - 用 CanvasTexture 作为 emissiveMap，让屏幕"自发光"（不受场景光照压暗）
  *  - 定时循环切换 4 个 GIF
  *
- * 参数：见 ScreenDisplayProps
+ * 参数：无（位置用世界坐标，直接在 SCREEN_CONFIG 里配置）
  *
- * 返回值：React.ReactElement（一个 <mesh>，会被 reparent 到 computer 节点）
+ * 返回值：React.ReactElement | null（GIF 未加载完时返回 null）
  *
- * 异常：useLoader 内部 suspense，加载失败会向上抛到 ErrorBoundary
+ * 异常：img.onerror 时打印日志，跳过该 GIF
  *
  * 注意事项：
- *  - GIF 在浏览器里加载到 HTMLImageElement 后会自动播放动画帧
- *  - three.js 默认只在 needsUpdate=true 时上传 GPU，所以每帧都要设
- *  - mesh 一开始在 R3F root scene 下，useEffect 里 reparent 到 computer node
- *  - 位置坐标用 GLB 原始坐标（computer 节点无 transform）
+ *  - 隐藏容器用 position:fixed + opacity:0，不能用 display:none（display:none 浏览器不解码）
+ *  - canvas 每帧 drawImage 触发浏览器解码 GIF 当前帧，再上传 GPU，动画才能动
+ *  - mesh 直接放场景根节点，用世界坐标（模型静止，无需 reparent 跟随）
  */
-function ScreenDisplay({ computerNode }: ScreenDisplayProps) {
-  // 加载所有 GIF 作为 THREE.Texture（image 是 HTMLImageElement，浏览器自动播放 GIF）
-  const textures = useLoader(THREE.TextureLoader, SCREEN_GIF_URLS);
+function ScreenDisplay() {
+  // GIF 加载完成标志：所有 img 的 onload 都触发后才渲染 mesh
+  const [ready, setReady] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshStandardMaterial>(null);
   // 当前 GIF 索引（用 ref 避免每帧 setState）
   const idxRef = useRef(0);
   const lastSwitchRef = useRef(0);
 
-  // 设置所有 texture 的颜色空间为 sRGB（GIF 颜色才不会发灰）
+  // 持久化 img 列表 + canvas 列表 + CanvasTexture 列表（useRef 避免重渲染）
+  const imgsRef = useRef<HTMLImageElement[]>([]);
+  const canvasesRef = useRef<HTMLCanvasElement[]>([]);
+  const texturesRef = useRef<THREE.CanvasTexture[]>([]);
+
+  // 手动加载所有 GIF：创建 img 挂到隐藏 DOM 容器 + 配套 canvas/CanvasTexture
   useEffect(() => {
-    textures.forEach((tex) => {
+    // 隐藏容器：position:fixed 移出视口 + opacity:0 保持渲染
+    // 不能用 display:none，否则浏览器不会解码 GIF 后续帧
+    const container = document.createElement('div');
+    container.style.cssText =
+      'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;';
+    document.body.appendChild(container);
+
+    const imgs: HTMLImageElement[] = [];
+    const canvases: HTMLCanvasElement[] = [];
+    const textures: THREE.CanvasTexture[] = [];
+    let done = 0;
+
+    SCREEN_GIF_URLS.forEach((url, i) => {
+      const img = new Image();
+      img.src = url;
+      // 关键：必须挂到 DOM，浏览器才播放 GIF 动画
+      container.appendChild(img);
+      imgs[i] = img;
+
+      // 配套 canvas：每帧 drawImage 把 GIF 当前帧画到 canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 512;
+      canvases[i] = canvas;
+
+      // CanvasTexture 用 canvas 作为 image，每帧 needsUpdate=true 上传 canvas 到 GPU
+      const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      // 关闭 mipmaps，GIF 动画上传频繁，mipmap 生成开销大
       tex.generateMipmaps = false;
+      textures[i] = tex;
+
+      img.onload = () => {
+        // 首次画一帧到 canvas
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        tex.needsUpdate = true;
+        done++;
+        if (done === SCREEN_GIF_URLS.length) {
+          setReady(true);
+        }
+      };
+      img.onerror = () => {
+        // eslint-disable-next-line no-console
+        console.error('[ScreenDisplay] GIF 加载失败:', url);
+      };
     });
-  }, [textures]);
 
-  // 把 plane mesh reparent 到 computer 节点下，让它跟随电脑的变换
-  useEffect(() => {
-    if (!computerNode || !meshRef.current) return;
-    computerNode.add(meshRef.current);
+    imgsRef.current = imgs;
+    canvasesRef.current = canvases;
+    texturesRef.current = textures;
+
     return () => {
-      // 卸载时从 computer 节点移除（R3F 也会处理 dispose）
-      if (meshRef.current?.parent === computerNode) {
-        computerNode.remove(meshRef.current);
-      }
+      document.body.removeChild(container);
+      textures.forEach((t) => t.dispose());
     };
-  }, [computerNode]);
+  }, []);
 
-  // 每帧：让所有 GIF texture 上传当前帧 + 定时切换 GIF
+  // 每帧：把当前 GIF 的最新帧画到 canvas + 上传 GPU + 定时切换 GIF
   useFrame((state) => {
+    const textures = texturesRef.current;
+    const imgs = imgsRef.current;
+    const canvases = canvasesRef.current;
+    if (textures.length === 0) return;
+
     const t = state.clock.elapsedTime;
     // 定时切换 GIF
     if (t - lastSwitchRef.current > SCREEN_CONFIG.switchIntervalSec) {
@@ -323,10 +371,17 @@ function ScreenDisplay({ computerNode }: ScreenDisplayProps) {
         matRef.current.needsUpdate = true;
       }
     }
-    // 每帧让所有 texture 上传当前 GIF 帧到 GPU（实现动画播放）
-    // 只更新当前在用的那个，减少上传开销
-    textures[idxRef.current].needsUpdate = true;
+
+    // 关键：每帧 drawImage 把 GIF 当前帧画到 canvas，再标记 needsUpdate 上传 GPU
+    // 这是让 GIF 在 WebGL 里动起来的唯一可靠方式
+    const idx = idxRef.current;
+    const ctx = canvases[idx].getContext('2d')!;
+    ctx.drawImage(imgs[idx], 0, 0, canvases[idx].width, canvases[idx].height);
+    textures[idx].needsUpdate = true;
   });
+
+  // GIF 未加载完时不渲染 mesh
+  if (!ready || texturesRef.current.length === 0) return null;
 
   return (
     <mesh
@@ -337,15 +392,116 @@ function ScreenDisplay({ computerNode }: ScreenDisplayProps) {
       <planeGeometry args={[SCREEN_CONFIG.width, SCREEN_CONFIG.height]} />
       <meshStandardMaterial
         ref={matRef}
-        map={textures[0]}
+        map={texturesRef.current[0]}
         emissive="#ffffff"
-        emissiveMap={textures[0]}
+        emissiveMap={texturesRef.current[0]}
         emissiveIntensity={SCREEN_CONFIG.emissiveIntensity}
         toneMapped={false}
         transparent
+        side={THREE.DoubleSide}
       />
     </mesh>
   );
+}
+
+/**
+ * 分析模型几何，自动找出屏幕区域
+ *
+ * 功能：
+ *  - 遍历 modelScene 下所有 mesh 的几何，读取顶点位置和法线
+ *  - 按法线方向聚类（四舍五入到 0.2 精度），找出每个平面簇
+ *  - 对每个平面簇计算包围盒、面积、中心点
+ *  - 输出 Top N 候选平面，供人工判断哪个是屏幕
+ *  - 同时输出局部→世界坐标的换算公式
+ *
+ * 参数：
+ *  - modelScene: THREE.Group，加载的模型根节点
+ *  - scale: number，模型缩放倍数
+ *  - center: THREE.Vector3，模型中心点（缩放前局部坐标）
+ *
+ * 返回值：无（结果打印到 console）
+ *
+ * 注意事项：
+ *  - Draco 解码后的几何在 BufferGeometry.attributes 里，可直接读取
+ *  - 屏幕通常是面积较大、法线朝某一方向的矩形平面
+ */
+function analyzeScreenGeometry(
+  modelScene: THREE.Group,
+  scale: number,
+  center: THREE.Vector3
+) {
+  // eslint-disable-next-line no-console
+  console.log('%c=== 屏幕位置自动分析（按 mesh 分组）===', 'color:#0f;font-weight:bold');
+
+  // 按 mesh 分别分析，避免 background 的大平面淹没 computer 的屏幕
+  const meshes: { name: string; mesh: THREE.Mesh }[] = [];
+  modelScene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.isMesh && mesh.geometry?.attributes?.position && mesh.geometry.attributes.normal) {
+      meshes.push({ name: mesh.name || '(unnamed)', mesh });
+    }
+  });
+
+  meshes.forEach(({ name, mesh }) => {
+    const geo = mesh.geometry;
+    const posAttr = geo.attributes.position;
+    const normAttr = geo.attributes.normal;
+
+    // 按法线聚类
+    const planes: Record<string, { normal: [number, number, number]; verts: { x: number; y: number; z: number }[] }> = {};
+    for (let i = 0; i < posAttr.count; i++) {
+      const px = posAttr.getX(i);
+      const py = posAttr.getY(i);
+      const pz = posAttr.getZ(i);
+      const nx = Math.round(normAttr.getX(i) * 5) / 5;
+      const ny = Math.round(normAttr.getY(i) * 5) / 5;
+      const nz = Math.round(normAttr.getZ(i) * 5) / 5;
+      const key = `${nx},${ny},${nz}`;
+      if (!planes[key]) planes[key] = { normal: [nx, ny, nz], verts: [] };
+      planes[key].verts.push({ x: px, y: py, z: pz });
+    }
+
+    const planesInfo = Object.values(planes)
+      .map((p) => {
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        p.verts.forEach((v) => {
+          minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+          minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+          minZ = Math.min(minZ, v.z); maxZ = Math.max(maxZ, v.z);
+        });
+        const w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
+        const area = Math.max(w * h, w * d, h * d);
+        return {
+          normal: p.normal,
+          count: p.verts.length,
+          w, h, d, area,
+          centerX: (minX + maxX) / 2,
+          centerY: (minY + maxY) / 2,
+          centerZ: (minZ + maxZ) / 2,
+        };
+      })
+      .sort((a, b) => b.area - a.area);
+
+    // eslint-disable-next-line no-console
+    console.log(`%c--- mesh: ${name} （顶点 ${posAttr.count}，平面 ${planesInfo.length}）---`, 'color:#ff0');
+    planesInfo.slice(0, 5).forEach((p, i) => {
+      const worldX = (p.centerX - center.x) * scale;
+      const worldY = (p.centerY - center.y) * scale;
+      const worldZ = (p.centerZ - center.z) * scale;
+      // eslint-disable-next-line no-console
+      console.log(
+        `  [${i}] 法线(${p.normal[0]},${p.normal[1]},${p.normal[2]}) 顶点:${p.count} 面积:${p.area.toFixed(1)}\n` +
+        `      局部 中心(${p.centerX.toFixed(1)},${p.centerY.toFixed(1)},${p.centerZ.toFixed(1)}) W${p.w.toFixed(1)} H${p.h.toFixed(1)} D${p.d.toFixed(1)}\n` +
+        `      世界 中心(${worldX.toFixed(3)},${worldY.toFixed(3)},${worldZ.toFixed(3)}) W${(p.w*scale).toFixed(3)} H${(p.h*scale).toFixed(3)}`
+      );
+    });
+  });
+
+  // eslint-disable-next-line no-console
+  console.log('%c换算公式: 世界 = (局部 - center) * scale', 'color:#0ff');
+  // eslint-disable-next-line no-console
+  console.log(`center=(${center.x.toFixed(2)},${center.y.toFixed(2)},${center.z.toFixed(2)}) scale=${scale.toFixed(4)}`);
 }
 
 /**
@@ -395,10 +551,6 @@ export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) 
   const frontSmokeRef = useRef<THREE.Group>(null);
   const backSmokeRef = useRef<THREE.Group>(null);
 
-  // computer 节点引用：ScreenDisplay 会把屏幕 plane reparent 到这个节点下
-  // 初始为 null，模型加载后在 setup 中查找赋值，触发 useState 让 ScreenDisplay 重渲染
-  const [computerNode, setComputerNode] = useState<THREE.Object3D | null>(null);
-
   // 电脑正上方的聚光灯引用：位置由 useFrame 微微随机晃动
   const spotLightRef = useRef<THREE.SpotLight>(null);
   const spotTargetRef = useRef<THREE.Object3D>(null);
@@ -440,13 +592,9 @@ export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) 
     // 同步到 ref（供 CameraDebugger 使用）
     setupRef.current = { scaledSize, distance };
 
-    // 查找 computer 节点：ScreenDisplay 会把屏幕 plane 挂到该节点下，跟随电脑变换
-    // 模型节点名见 GLB：computer / keyboard / logo / background
-    const compNode = modelScene.children.find((c) => c.name === 'computer');
-    if (compNode) {
-      // setTimeout 确保 setState 不在 useMemo 渲染周期内同步触发
-      setTimeout(() => setComputerNode(compNode), 0);
-    }
+    // === 屏幕位置自动分析（调试用）===
+    // 遍历 computer 节点的几何，按法线聚类找平面，输出候选屏幕区域
+    analyzeScreenGeometry(modelScene, scale, center);
 
     return { scaledSize, distance };
   }, [modelScene, camera]);
@@ -619,8 +767,8 @@ export function ComputerScene({ scrollProgress, onLoaded }: ComputerSceneProps) 
       {/* 模型本体 */}
       <primitive object={modelScene} />
 
-      {/* 电脑屏幕：显示 GIF 动画，自发光效果；reparent 到 computer 节点跟随变换 */}
-      <ScreenDisplay computerNode={computerNode} />
+      {/* 电脑屏幕：显示 GIF 动画，自发光效果；世界坐标定位 */}
+      <ScreenDisplay />
 
       {/* 飘动烟雾：前层（镜头与电脑之间，靠近相机）*/}
       <group ref={frontSmokeRef}>
