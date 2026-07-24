@@ -209,9 +209,9 @@ function SmokeLayer({
       offsetY: 0.2 + Math.random() * 0.6,
       offsetZ: (Math.random() - 0.5) * areaSize,
       // 飘动频率（越大飘得越快）
-      driftSpeed: 0.15 + Math.random() * 0.25,
-      // 飘动幅度
-      driftAmp: 0.3 + Math.random() * 0.5,
+      driftSpeed: 0.12 + Math.random() * 0.2,
+      // 飘动幅度（压小，让烟雾"原地氤氲"而不是大范围漂移）
+      driftAmp: 0.12 + Math.random() * 0.22,
       // 透明度呼吸相位
       opacityPhase: Math.random() * Math.PI * 2,
       opacitySpeed: 0.4 + Math.random() * 0.5,
@@ -1043,8 +1043,8 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
     const uy = dirY / dirLen;
     const uz = dirZ / dirLen;
 
-    // 前层：相机前方一点（镜头与电脑之间，靠近相机，不进入电脑内部）
-    const frontDist = Math.min(dirLen * 0.35, 1.2);
+    // 前层：相机前方一点（镜头与电脑之间，靠近电脑一侧，让烟雾明显挡在电脑前）
+    const frontDist = Math.min(dirLen * 0.55, 1.6);
     if (frontSmokeRef.current) {
       frontSmokeRef.current.position.set(
         camera.position.x + ux * frontDist,
@@ -1135,12 +1135,12 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       <group ref={frontSmokeRef}>
         <SmokeLayer
           texture={smokeTexture}
-          count={16}
-          areaSize={2.8}
-          spriteSize={1.8}
-          opacity={0.32}
-          color="#8a92a8"
-          brightness={1.2}
+          count={32}
+          areaSize={2.0}
+          spriteSize={2.4}
+          opacity={0.68}
+          color="#9aa4ba"
+          brightness={1.8}
         />
       </group>
 
@@ -1148,12 +1148,12 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       <group ref={backSmokeRef}>
         <SmokeLayer
           texture={smokeTexture}
-          count={18}
-          areaSize={4.2}
-          spriteSize={2.2}
-          opacity={0.26}
+          count={24}
+          areaSize={4.0}
+          spriteSize={2.3}
+          opacity={0.38}
           color="#6a7088"
-          brightness={1.0}
+          brightness={1.2}
         />
       </group>
 

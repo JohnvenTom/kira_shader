@@ -34,7 +34,7 @@ export interface PostFXParams {
 }
 
 /**
- * 色散 + 鱼眼 + 暗角 自定义 Shader
+ * 色散 + 鱼眼 + 暗角 + 圆角遮罩 + 边缘模糊 自定义 Shader
  *
  * 实现：
  *  1. 桶形畸变：scale = 1 + r² × distortion，r³ 形式让中心不变形、边缘强烈外凸
@@ -42,6 +42,10 @@ export interface PostFXParams {
  *  2. 色散：RGB 在 Y 轴方向分离，偏移量随到画面中心距离增大
  *     （参考 shader.se 的 ChromaticAberrationNode2，垂直方向而非径向）
  *  3. 暗角：径向衰减，让画面四周变暗
+ *  4. 圆角遮罩：用 SDF 计算到圆角矩形的最短距离，超出范围 → 透明
+ *     配合鱼眼效果，让画面四角变圆，不再有锐利的直角
+ *  5. 边缘模糊：在圆角边缘内侧一段范围内，多次采样并按距边缘距离加权混合，
+ *     让边缘呈现羽化模糊，避免圆角边界过于生硬
  *
  * 注意：色散偏移用的是畸变后的 UV，让色散跟随畸变一起变形，视觉更自然
  */
@@ -55,6 +59,12 @@ const PostFXShader = {
     uVignetteIntensity: { value: 0.0 },
     uVignetteRadius: { value: 0.5 },
     uAspect: { value: 1.0 },
+    // 圆角半径（0~0.5，UV 单位）。0=直角；0.5=完全圆形。
+    // 默认 0.06 让四角有适度圆角，配合鱼眼显得像镜头边缘
+    uCornerRadius: { value: 0.06 },
+    // 边缘模糊宽度（0~0.2，UV 单位）。在圆角内侧该宽度内做羽化模糊。
+    // 默认 0.025 让圆角边缘柔化过渡
+    uEdgeBlur: { value: 0.025 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -72,6 +82,8 @@ const PostFXShader = {
     uniform float uVignetteIntensity;
     uniform float uVignetteRadius;
     uniform float uAspect;
+    uniform float uCornerRadius;
+    uniform float uEdgeBlur;
     varying vec2 vUv;
 
     /**
@@ -97,6 +109,29 @@ const PostFXShader = {
       return a * (vec2(i.x * scale, i.y * scale) + 0.5) + s;
     }
 
+    /**
+     * 圆角矩形 SDF（Signed Distance Field）
+     *
+     * 功能：计算点到圆角矩形边界的带符号距离
+     *  - 返回值 < 0：点在矩形内部
+     *  - 返回值 = 0：点在边界上
+     *  - 返回值 > 0：点在矩形外部
+     *
+     * 参数：
+     *  - p          {vec2} 采样点位置（已归一化到 -0.5~0.5 范围）
+     *  - aspect     {float} 宽高比，用于校正 X 方向使圆角不变形
+     *  - corner     {float} 圆角半径（已按 aspect 校正）
+     *
+     * 算法：SDF of Rounded Box（Inigo Quilez 经典实现）
+     *  - 计算点到矩形边的距离，再减去圆角半径
+     *  - length(max(q, 0.0)) 处理外部角落，min(max(qx,qy),0.0) 处理内部边
+     */
+    float roundedBoxSDF(vec2 p, float aspect, float corner) {
+      // X 方向按 aspect 缩放，使圆角在视觉上呈圆形而非椭圆
+      vec2 q = abs(p * vec2(aspect, 1.0)) - vec2(0.5 * aspect - corner, 0.5 - corner);
+      return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner;
+    }
+
     void main() {
       vec2 uv = vUv;
 
@@ -106,7 +141,7 @@ const PostFXShader = {
       // UV 越界 → 黑色（避免采样到画面外的杂讯）
       if (distortedUV.x < 0.0 || distortedUV.x > 1.0 ||
           distortedUV.y < 0.0 || distortedUV.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
       }
 
@@ -136,6 +171,38 @@ const PostFXShader = {
       float vDist = length(uv - 0.5);
       float vignette = smoothstep(vRadius, vRadius + 0.3, vDist);
       color.rgb *= 1.0 - vignette * uVignetteIntensity;
+
+      // 4. 圆角遮罩 + 边缘模糊
+      //    计算当前像素到圆角矩形边界的带符号距离
+      //    d < 0 在内部；d > 0 在外部（应被裁掉）
+      float corner = uCornerRadius;
+      float d = roundedBoxSDF(uv - 0.5, uAspect, corner);
+
+      // 4a. 圆角裁切：d > 0 的像素完全透明
+      //     smoothstep 让 d=0 附近有 1px 抗锯齿过渡，避免锯齿
+      float mask = 1.0 - smoothstep(0.0, 0.002, d);
+      color.a *= mask;
+      color.rgb *= mask;
+
+      // 4b. 边缘模糊：在圆角内侧 uEdgeBlur 宽度内做多次采样混合
+      //     d 范围 [-uEdgeBlur, 0] 是模糊过渡区，按距离权重混合周围像素
+      //     距边界越近（d→0）权重越高，让边缘呈现羽化感
+      float blurRange = uEdgeBlur;
+      if (d < 0.0 && d > -blurRange) {
+        // 模糊权重：d=0 时权重 1（最大模糊），d=-blurRange 时权重 0
+        float blurWeight = 1.0 - abs(d) / blurRange;
+        // 4 方向采样并按距中心距离缩放，模拟高斯模糊
+        // 采样方向沿 UV 主轴，半径按 blurWeight 增长
+        vec2 blurDir = vec2(blurWeight * 0.01);
+        vec4 blurColor = vec4(0.0);
+        blurColor += texture2D(tDiffuse, distortedUV + vec2(blurDir.x, 0.0));
+        blurColor += texture2D(tDiffuse, distortedUV - vec2(blurDir.x, 0.0));
+        blurColor += texture2D(tDiffuse, distortedUV + vec2(0.0, blurDir.y));
+        blurColor += texture2D(tDiffuse, distortedUV - vec2(0.0, blurDir.y));
+        blurColor *= 0.25;
+        // 按权重混合原始色与模糊色
+        color.rgb = mix(color.rgb, blurColor.rgb, blurWeight);
+      }
 
       gl_FragColor = color;
     }
