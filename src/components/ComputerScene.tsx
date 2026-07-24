@@ -30,7 +30,6 @@ const SCREEN_GIF_URLS = [GIF_1, GIF_2, GIF_3, GIF_4];
  *    （用户用 OrbitControls 把相机探到屏幕表面，从调试面板读出的世界坐标）
  *  - width / height：屏幕 plane 的宽高（世界单位）
  *  - rotY：屏幕朝向（弧度），朝向相机方向；DoubleSide 双面渲染时可忽略
- *  - switchIntervalSec：GIF 切换间隔（秒）
  *  - emissiveIntensity：自发光强度，越大越亮
  */
 const SCREEN_CONFIG = {
@@ -48,7 +47,6 @@ const SCREEN_CONFIG = {
   rotX: 0.10,          // ≈ +4.6°，屏幕上沿微微后仰
   rotY: -0.715,       //
   rotZ: 0.05,          // ≈ +2.9°，修正向左歪，上沿往右倾斜
-  switchIntervalSec: 6,    // 每 6 秒切换一个 GIF
   emissiveIntensity: 2.5,  // 自发光强度
 };
 
@@ -366,7 +364,7 @@ async function loadGif(url: string): Promise<GifAsset> {
  *  - 用 gifuct-js 解析 4 个 GIF 文件，预合成每一帧的 ImageData
  *  - 用 canvas 中转：每帧按 elapsed time 计算当前帧索引，putImageData 到 canvas
  *  - 用 CanvasTexture 作为 emissiveMap，让屏幕"自发光"（不受场景光照压暗）
- *  - 定时循环切换 4 个 GIF
+ *  - 当前 GIF 播完一轮后自动切换到下一个，循环播放全部 4 个 GIF
  *
  * 参数：无（位置用世界坐标，直接在 SCREEN_CONFIG 里配置）
  *
@@ -469,9 +467,10 @@ function ScreenDisplay() {
     if (assets.length === 0 || !patchCanvas) return;
 
     const t = state.clock.elapsedTime;
+    const currentAsset = assets[idxRef.current];
 
-    // 定时切换 GIF
-    if (t - gifStartRef.current > SCREEN_CONFIG.switchIntervalSec) {
+    // 播完一轮后自动切换到下一个 GIF（不依赖固定秒数）
+    if (currentAsset && (t - gifStartRef.current) * 1000 >= currentAsset.totalDurationMs) {
       gifStartRef.current = t;
       idxRef.current = (idxRef.current + 1) % assets.length;
       const tex = textures[idxRef.current];
