@@ -230,18 +230,18 @@ function ScreenDisplay({
     ctx.font = '300 36px "Cormorant Garamond", serif';
     ctx.fillText(section.subtitle, w / 2, h / 2 + 30);
 
-    // 7. 描述（淡灰）
+    // 7. 描述（淡灰）— 用老式 CRT 字体
     ctx.fillStyle = 'rgba(252,249,243,0.6)';
-    ctx.font = '20px ui-monospace, monospace';
+    ctx.font = '32px "VT323", "Share Tech Mono", "Courier New", monospace';
     ctx.fillText(section.description, w / 2, h / 2 + 100);
 
-    // 8. 角标：section 编号
+    // 8. 角标：section 编号 — 老式 CRT 字体，放大显示
     ctx.fillStyle = 'rgba(252,249,243,0.5)';
-    ctx.font = '20px ui-monospace, monospace';
+    ctx.font = '40px "VT323", "Share Tech Mono", "Courier New", monospace';
     ctx.textAlign = 'left';
     ctx.fillText(`0${idx + 1} / 04`, 40, h - 40);
 
-    // 9. 角标：右上角时间戳
+    // 9. 角标：右上角时间戳 — 同款老式字体
     ctx.textAlign = 'right';
     ctx.fillText(new Date().toISOString().slice(0, 10), w - 40, h - 40);
 
@@ -261,6 +261,23 @@ function ScreenDisplay({
   useEffect(() => {
     drawSection(SECTIONS[sectionIndex], sectionIndex);
   }, [sectionIndex]);
+
+  // 首次挂载：等老式字体（VT323）加载完成后再绘制，避免 canvas 用 fallback 字体
+  useEffect(() => {
+    let cancelled = false;
+    const draw = () => {
+      if (!cancelled) drawSection(SECTIONS[sectionIndex], sectionIndex);
+    };
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(draw);
+    } else {
+      // 不支持 document.fonts 时延迟 500ms 重绘
+      setTimeout(draw, 500);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 缓存当前 section 的 accentColor（避免每帧创建新 Color）
   const accentColorObj = useMemo(

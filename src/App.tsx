@@ -154,6 +154,31 @@ export default function App() {
     setScrollProgress(progress);
   }, []);
 
+  // === 跨 demo 切换：滚动到末尾相机穿过屏幕时，白色闪光掩盖切换到 #film ===
+  // flashVisible 控制全屏白色 overlay 渐显
+  const [flashVisible, setFlashVisible] = useState(false);
+  // 防止重复触发切换
+  const switchingRef = useRef(false);
+
+  useEffect(() => {
+    // progress >= 0.88（相机已穿过屏幕到背面，画面是黑色背板）→ 白色闪光渐强
+    if (scrollProgress >= 0.88 && !flashVisible) {
+      setFlashVisible(true);
+    }
+    // progress < 0.82（用户回滚）→ 取消闪光
+    if (scrollProgress < 0.82 && flashVisible) {
+      setFlashVisible(false);
+    }
+    // progress >= 0.97 且闪光已接近峰值（给 0.4s transition 时间达到峰值）→ 切换 hash
+    if (scrollProgress >= 0.97 && !switchingRef.current) {
+      switchingRef.current = true;
+      // 延迟 450ms 让 flash transition（0.5s）达到接近峰值再切换
+      setTimeout(() => {
+        window.location.hash = '#film';
+      }, 450);
+    }
+  }, [scrollProgress, flashVisible]);
+
   // 绑定滚动监听（passive 提升性能）
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -217,6 +242,9 @@ export default function App() {
     <>
       {/* 加载屏 */}
       <LoadingScreen hidden={loaded} />
+
+      {/* 跨 demo 切换闪光层：滚动到末尾时白色渐强，掩盖相机穿过屏幕的切换 */}
+      <div className={`demo-flash ${flashVisible ? 'visible' : ''}`} />
 
       {/* 顶部导航 */}
       <NavBar />

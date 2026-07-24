@@ -81,6 +81,17 @@ export default function KiraFilmDemo() {
   const [sectionIndex, setSectionIndex] = useState(0);
   // 文字 UI 是否可见（section 切换时短暂隐藏再淡入）
   const [textVisible, setTextVisible] = useState(true);
+  // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
+  // mount 时 entering=true（白屏），下一帧加 fade-out class 触发淡出过渡
+  const [enteringFadeOut, setEnteringFadeOut] = useState(false);
+
+  // mount 后立即触发淡出（用 rAF 确保浏览器先把 entering 状态渲染成白屏）
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setEnteringFadeOut(true));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
@@ -113,6 +124,9 @@ export default function KiraFilmDemo() {
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    // 从 App 切换过来时，浏览器可能记忆了滚动位置，强制滚到顶
+    el.scrollTop = 0;
+    setScrollProgress(0);
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
@@ -189,6 +203,9 @@ export default function KiraFilmDemo() {
 
   return (
     <>
+      {/* 进入闪光层：从 App 切换过来时全屏白色，mount 后淡出露出新场景 */}
+      <div className={`demo-flash entering ${enteringFadeOut ? 'fade-out' : ''}`} />
+
       {/* 顶部导航 */}
       <NavBar />
 
@@ -234,9 +251,12 @@ export default function KiraFilmDemo() {
             <span className="film-index-total">0{SECTIONS.length}</span>
           </div>
           <h1 className={`hero-title film-hero-title ${textVisible ? 'visible' : ''}`}>
-            <span className="hero-line">
-              {splitTextToChars(currentSection.title, 0, 30, textVisible)}
-            </span>
+            {currentSection.title.split(' ').map((word, wi, arr) => (
+              <span className="hero-line" key={wi}>
+                {splitTextToChars(word, wi * 200, 30, textVisible)}
+                {wi < arr.length - 1 && <span className="hero-char" style={{ display: 'inline-block' }}>{'\u00A0'}</span>}
+              </span>
+            ))}
           </h1>
           <p className={`hero-subtitle film-hero-subtitle ${textVisible ? 'visible' : ''}`}
              style={{ color: currentSection.accentColor }}>

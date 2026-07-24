@@ -1,6 +1,10 @@
 /* === 全局重置与基础样式 === */
 /* 引入优雅细体衬线字体（用于副标题），离线时 fallback 到 STIX/Times */
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&display=swap');
+/* 引入老式复古字体（用于胶片屏幕上的数字/角标）：
+   - VT323：老式 CRT 终端像素字体，最贴合复古胶片感
+   - Share Tech Mono：等宽科技感字体，fallback 用 */
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
 
 :root {
   /* 设计令牌（参考 shader.se 风格） */
@@ -11,6 +15,8 @@
   --font-stix: "STIX Two Text", "Times New Roman", serif;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Courier New", monospace;
+  /* 胶片屏幕数字专用：老式 CRT 终端字体，fallback 到 Share Tech Mono / Courier */
+  --font-retro: "VT323", "Share Tech Mono", "Courier New", monospace;
   /* 副标题专用：优雅细体衬线，fallback 到 STIX/Times */
   --font-display: "Cormorant Garamond", "STIX Two Text", "Times New Roman", serif;
   /* 虚拟页面高度倍数（越大滚动越长）
@@ -488,6 +494,36 @@ body.camera-debug-mode .scroll-container {
 .film-dot.active {
   transform: scale(1.4);
   box-shadow: 0 0 12px currentColor;
+}
+
+/* === 跨 demo 切换的全屏闪光层 ===
+ * 用于 App → film demo 的无缝过渡：
+ *  - App 滚动到末尾时白色渐强（掩盖相机穿过屏幕的画面跳变）
+ *  - flash 峰值时切换 hash 到 #film
+ *  - film demo mount 时从白色淡出，露出新场景
+ * z-index 200 高于所有层（loading 100 / nav 60 / scroll 50 / canvas 40 / overlay 45） */
+.demo-flash {
+  position: fixed;
+  inset: 0;
+  background: #ffffff;
+  z-index: 200;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease-out;
+}
+
+.demo-flash.visible {
+  opacity: 1;
+}
+
+/* film demo 进入时的白色淡出层（mount 时 opacity=1，淡出到 0） */
+.demo-flash.entering {
+  opacity: 1;
+  transition: opacity 0.8s ease-out 0.2s;
+}
+
+.demo-flash.entering.fade-out {
+  opacity: 0;
 }
 
 /* 顶部导航增加 demo 切换链接的视觉提示（可选，NavBar 组件不变） */
