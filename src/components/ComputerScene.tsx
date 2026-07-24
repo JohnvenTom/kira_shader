@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
+import { parseGIF, decompressFrames, type GifFrame } from 'gifuct-js';
 import { CameraDebugger } from './CameraDebugger';
 
 // 模型与 Draco 解码器路径（通过 Vite 中间件映射到父级 asset 目录）
@@ -256,13 +257,114 @@ function computeCameraPosition(
   return { x, y, z };
 }
 
+/** 主 canvas 尺寸（CanvasTexture 的固定尺寸，避免切换 GIF 时重建纹理） */
+const SCREEN_CANVAS_SIZE = 512;
+
+/**
+ * 单个 GIF 解析后的可播放资源
+ *
+ * 字段说明：
+ *  - width / height   GIF 逻辑画布尺寸（所有帧的最大右下角）
+ *  - frames           预合成好的整帧 RGBA 列表（已处理 disposal 合成）
+ *  - totalDurationMs  所有帧 delay 之和（毫秒），用于循环播放
+ */
+interface GifAsset {
+  width: number;
+  height: number;
+  frames: { imageData: ImageData; delayMs: number }[];
+  totalDurationMs: number;
+}
+
+/**
+ * 加载并解析 GIF 文件，预合成每一帧
+ *
+ * 功能：
+ *  - fetch 拿到 GIF 二进制 → parseGIF 解析结构 → decompressFrames 解压每帧 patch
+ *  - 按 disposalType 在临时 canvas 上逐帧合成，得到每一帧的完整 ImageData
+ *  - 返回可直接用于 putImageData 的帧列表 + 总时长
+ *
+ * 参数：
+ *  - url {string} GIF 文件 URL（经 Vite hash 处理后的路径）
+ *
+ * 返回值：Promise<GifAsset>，包含预合成帧列表
+ *
+ * 异常：fetch 失败 / parseGIF 抛错 / frames 为空时 reject
+ *
+ * 注意事项：
+ *  - 浏览器对 <img> 加载的 GIF 有惰性解码，移出视口或 opacity:0 时不会推进帧，
+ *    所以必须自己解析 GIF 二进制，不能用 img + drawImage 的方式
+ *  - disposalType=2 时下一帧绘制前需 clearRect 恢复背景
+ *  - disposalType=3 时下一帧绘制前需恢复为前一帧状态（这里用上一帧 ImageData 回填）
+ *  - delay=0 的帧按 100ms 处理（浏览器默认行为）
+ */
+async function loadGif(url: string): Promise<GifAsset> {
+  const buffer = await fetch(url).then((r) => r.arrayBuffer());
+  const parsed = parseGIF(buffer);
+  const rawFrames = decompressFrames(parsed, true);
+  if (rawFrames.length === 0) throw new Error(`GIF 无帧数据: ${url}`);
+
+  // GIF 逻辑画布尺寸 = 所有帧 (left+width, top+height) 的最大值
+  let gifW = 0;
+  let gifH = 0;
+  for (const f of rawFrames) {
+    gifW = Math.max(gifW, f.dims.left + f.dims.width);
+    gifH = Math.max(gifH, f.dims.top + f.dims.height);
+  }
+
+  // 临时合成 canvas（GIF 逻辑尺寸）+ 单帧 patch canvas
+  const composeCanvas = document.createElement('canvas');
+  composeCanvas.width = gifW;
+  composeCanvas.height = gifH;
+  const composeCtx = composeCanvas.getContext('2d')!;
+
+  const patchCanvas = document.createElement('canvas');
+  patchCanvas.width = gifW;
+  patchCanvas.height = gifH;
+  const patchCtx = patchCanvas.getContext('2d')!;
+
+  const frames: { imageData: ImageData; delayMs: number }[] = [];
+  let totalDurationMs = 0;
+
+  for (let i = 0; i < rawFrames.length; i++) {
+    const f: GifFrame = rawFrames[i];
+
+    // 把当前帧 patch 写到 patchCanvas 的对应位置
+    // patch 是 RGBA Uint8ClampedArray，尺寸 = dims.width × dims.height
+    patchCtx.clearRect(0, 0, gifW, gifH);
+    const patchImg = patchCtx.createImageData(f.dims.width, f.dims.height);
+    patchImg.data.set(f.patch);
+    patchCtx.putImageData(patchImg, f.dims.left, f.dims.top);
+
+    // 把 patch 叠加到合成 canvas（drawImage 会做 alpha 混合）
+    composeCtx.drawImage(patchCanvas, 0, 0);
+
+    // 保存当前合成结果（注意：getImageData 返回的是副本）
+    frames.push({
+      imageData: composeCtx.getImageData(0, 0, gifW, gifH),
+      delayMs: f.delay > 0 ? f.delay : 100,
+    });
+    totalDurationMs += f.delay > 0 ? f.delay : 100;
+
+    // 处理 disposal：决定绘制下一帧前如何处理本帧
+    if (f.disposalType === 2) {
+      // 恢复为背景色（透明）
+      composeCtx.clearRect(0, 0, gifW, gifH);
+    } else if (f.disposalType === 3 && i > 0) {
+      // 恢复为前一帧状态
+      composeCtx.putImageData(frames[i - 1].imageData, 0, 0);
+    }
+    // disposalType 0/1：保留当前帧，下一帧在其上叠加
+  }
+
+  return { width: gifW, height: gifH, frames, totalDurationMs };
+}
+
 /**
  * 屏幕显示组件
  *
  * 功能：
- *  - 加载 4 个 GIF 到 HTMLImageElement（挂隐藏 DOM 容器，浏览器才解码后续帧）
- *  - 用 canvas 中转：每帧 ctx.drawImage(img) 把 GIF 当前帧画到 canvas
- *    （直接用 img 做 texImage2D 在 Chromium 上只上传第一帧，canvas 中转才可靠）
+ *  - 用 gifuct-js 解析 4 个 GIF 文件，预合成每一帧的 ImageData
+ *  - 用 canvas 中转：每帧按 elapsed time 计算当前帧索引，putImageData 到 canvas
  *  - 用 CanvasTexture 作为 emissiveMap，让屏幕"自发光"（不受场景光照压暗）
  *  - 定时循环切换 4 个 GIF
  *
@@ -270,114 +372,150 @@ function computeCameraPosition(
  *
  * 返回值：React.ReactElement | null（GIF 未加载完时返回 null）
  *
- * 异常：img.onerror 时打印日志，跳过该 GIF
+ * 异常：GIF 加载失败时打印 console.error，组件返回 null
  *
  * 注意事项：
- *  - 隐藏容器用 position:fixed + opacity:0，不能用 display:none（display:none 浏览器不解码）
- *  - canvas 每帧 drawImage 触发浏览器解码 GIF 当前帧，再上传 GPU，动画才能动
+ *  - 必须自己解析 GIF 二进制，浏览器对 <img> 的 GIF 惰性解码导致 drawImage 永远是首帧
+ *  - 预合成阶段已处理 disposal，播放时只需按帧索引 putImageData
+ *  - 主 canvas 固定 512×512，GIF 尺寸不同时用 drawImage 缩放
  *  - mesh 直接放场景根节点，用世界坐标（模型静止，无需 reparent 跟随）
  */
 function ScreenDisplay() {
-  // GIF 加载完成标志：所有 img 的 onload 都触发后才渲染 mesh
+  // GIF 加载完成标志：所有 GIF 解析完才渲染 mesh
   const [ready, setReady] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshStandardMaterial>(null);
   // 当前 GIF 索引（用 ref 避免每帧 setState）
   const idxRef = useRef(0);
-  const lastSwitchRef = useRef(0);
+  // 当前 GIF 播放起点（秒，用于计算播放进度）
+  const gifStartRef = useRef(0);
 
-  // 持久化 img 列表 + canvas 列表 + CanvasTexture 列表（useRef 避免重渲染）
-  const imgsRef = useRef<HTMLImageElement[]>([]);
+  // 持久化 GIF 资源列表 + 主 canvas 列表 + CanvasTexture 列表
+  const assetsRef = useRef<GifAsset[]>([]);
   const canvasesRef = useRef<HTMLCanvasElement[]>([]);
   const texturesRef = useRef<THREE.CanvasTexture[]>([]);
+  // 单帧 patch canvas（GIF 逻辑尺寸），用于 putImageData 后再 drawImage 缩放到主 canvas
+  const patchCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // 手动加载所有 GIF：创建 img 挂到隐藏 DOM 容器 + 配套 canvas/CanvasTexture
+  // 异步加载并解析所有 GIF
   useEffect(() => {
-    // 隐藏容器：position:fixed 移出视口 + opacity:0 保持渲染
-    // 不能用 display:none，否则浏览器不会解码 GIF 后续帧
-    const container = document.createElement('div');
-    container.style.cssText =
-      'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;';
-    document.body.appendChild(container);
-
-    const imgs: HTMLImageElement[] = [];
-    const canvases: HTMLCanvasElement[] = [];
+    let cancelled = false;
     const textures: THREE.CanvasTexture[] = [];
-    let done = 0;
+    const canvases: HTMLCanvasElement[] = [];
+    const assets: GifAsset[] = [];
 
-    SCREEN_GIF_URLS.forEach((url, i) => {
-      const img = new Image();
-      img.src = url;
-      // 关键：必须挂到 DOM，浏览器才播放 GIF 动画
-      container.appendChild(img);
-      imgs[i] = img;
+    // 公用 patch canvas（尺寸会按当前 GIF 动态调整）
+    const patchCanvas = document.createElement('canvas');
+    patchCanvasRef.current = patchCanvas;
 
-      // 配套 canvas：每帧 drawImage 把 GIF 当前帧画到 canvas
-      const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 512;
-      canvases[i] = canvas;
+    Promise.all(
+      SCREEN_GIF_URLS.map(async (url, i) => {
+        const asset = await loadGif(url);
+        if (cancelled) return;
 
-      // CanvasTexture 用 canvas 作为 image，每帧 needsUpdate=true 上传 canvas 到 GPU
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.generateMipmaps = false;
-      textures[i] = tex;
-
-      img.onload = () => {
-        // 首次画一帧到 canvas
+        // 每个 GIF 配一个独立主 canvas（固定 512×512，作为 CanvasTexture 源）
+        const canvas = document.createElement('canvas');
+        canvas.width = SCREEN_CANVAS_SIZE;
+        canvas.height = SCREEN_CANVAS_SIZE;
         const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        tex.needsUpdate = true;
-        done++;
-        if (done === SCREEN_GIF_URLS.length) {
-          setReady(true);
-        }
-      };
-      img.onerror = () => {
-        // eslint-disable-next-line no-console
-        console.error('[ScreenDisplay] GIF 加载失败:', url);
-      };
-    });
+        // 首帧立即画上去，避免首屏空白
+        patchCanvas.width = asset.width;
+        patchCanvas.height = asset.height;
+        patchCanvas.getContext('2d')!.putImageData(asset.frames[0].imageData, 0, 0);
+        ctx.drawImage(patchCanvas, 0, 0, SCREEN_CANVAS_SIZE, SCREEN_CANVAS_SIZE);
 
-    imgsRef.current = imgs;
-    canvasesRef.current = canvases;
-    texturesRef.current = textures;
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+
+        assets[i] = asset;
+        canvases[i] = canvas;
+        textures[i] = tex;
+
+        // eslint-disable-next-line no-console
+        console.log(
+          `[ScreenDisplay] GIF[${i}] 解析完成: ${asset.width}x${asset.height}, ` +
+            `${asset.frames.length} 帧, 总时长 ${asset.totalDurationMs}ms`
+        );
+      })
+    )
+      .then(() => {
+        if (cancelled) return;
+        assetsRef.current = assets;
+        canvasesRef.current = canvases;
+        texturesRef.current = textures;
+        setReady(true);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[ScreenDisplay] GIF 加载失败:', err);
+      });
 
     return () => {
-      document.body.removeChild(container);
+      cancelled = true;
       textures.forEach((t) => t.dispose());
     };
   }, []);
 
-  // 每帧：把当前 GIF 的最新帧画到 canvas + 上传 GPU + 定时切换 GIF
+  // 每帧：按 elapsed time 计算当前 GIF 的当前帧，putImageData + drawImage 到主 canvas
   useFrame((state) => {
-    const textures = texturesRef.current;
-    const imgs = imgsRef.current;
+    const assets = assetsRef.current;
     const canvases = canvasesRef.current;
-    if (textures.length === 0) return;
+    const textures = texturesRef.current;
+    const patchCanvas = patchCanvasRef.current;
+    if (assets.length === 0 || !patchCanvas) return;
 
     const t = state.clock.elapsedTime;
+
     // 定时切换 GIF
-    if (t - lastSwitchRef.current > SCREEN_CONFIG.switchIntervalSec) {
-      lastSwitchRef.current = t;
-      idxRef.current = (idxRef.current + 1) % textures.length;
+    if (t - gifStartRef.current > SCREEN_CONFIG.switchIntervalSec) {
+      gifStartRef.current = t;
+      idxRef.current = (idxRef.current + 1) % assets.length;
       const tex = textures[idxRef.current];
-      if (matRef.current) {
+      if (matRef.current && tex) {
         matRef.current.map = tex;
         matRef.current.emissiveMap = tex;
         matRef.current.needsUpdate = true;
       }
     }
 
-    // 关键：每帧 drawImage 把 GIF 当前帧画到 canvas，再标记 needsUpdate 上传 GPU
-    // 这是让 GIF 在 WebGL 里动起来的唯一可靠方式
     const idx = idxRef.current;
-    const ctx = canvases[idx].getContext('2d')!;
-    ctx.drawImage(imgs[idx], 0, 0, canvases[idx].width, canvases[idx].height);
-    textures[idx].needsUpdate = true;
+    const asset = assets[idx];
+    const canvas = canvases[idx];
+    const tex = textures[idx];
+    if (!asset || !canvas || !tex) return;
+
+    // 计算当前应该播放哪一帧
+    const elapsedMs = (t - gifStartRef.current) * 1000;
+    const loopMs = asset.totalDurationMs || 1;
+    const playMs = elapsedMs % loopMs;
+
+    let acc = 0;
+    let frameIdx = 0;
+    for (let i = 0; i < asset.frames.length; i++) {
+      acc += asset.frames[i].delayMs;
+      if (acc > playMs) {
+        frameIdx = i;
+        break;
+      }
+      frameIdx = i; // 兜底：playMs 超过总时长时取最后一帧
+    }
+
+    // putImageData 不支持缩放，先写到 patchCanvas（GIF 逻辑尺寸），再 drawImage 缩放到主 canvas
+    if (patchCanvas.width !== asset.width || patchCanvas.height !== asset.height) {
+      patchCanvas.width = asset.width;
+      patchCanvas.height = asset.height;
+    }
+    const patchCtx = patchCanvas.getContext('2d')!;
+    patchCtx.putImageData(asset.frames[frameIdx].imageData, 0, 0);
+
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(patchCanvas, 0, 0, canvas.width, canvas.height);
+    tex.needsUpdate = true;
   });
 
   // GIF 未加载完时不渲染 mesh
