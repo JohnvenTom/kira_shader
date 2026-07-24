@@ -1,9 +1,10 @@
-import { useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ComputerScene } from './components/ComputerScene';
 import { LoadingScreen } from './components/LoadingScreen';
 import { NavBar } from './components/NavBar';
+import { PostProcessing, type PostFXParams } from './components/PostProcessing';
 
 /**
  * 把字符串拆成逐字 span（用于逐字浮现动画）
@@ -66,6 +67,20 @@ export default function App() {
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   // 用 ref 避免高频 setState 引起重渲染，ComputerScene 在 useFrame 里直接读取
   const mouseRef = useRef({ x: 0, y: 0 });
+
+  // 后处理参数（色散 + 鱼眼 + 暗角）
+  // useMemo 避免每次渲染都创建新对象，否则 PostProcessing 的 useEffect 会频繁触发
+  // 参数取值参考 shader.se：色散 1.0（中等），鱼眼 0.35（明显但不夸张），暗角 0.35
+  const postFXParams = useMemo<PostFXParams>(
+    () => ({
+      chromaticAberration: 2.0,
+      lensDistortion: 0.5,
+      lensDistortionBorder: 0.0,
+      vignetteIntensity: 0.35,
+      vignetteRadius: 0.5,
+    }),
+    []
+  );
 
   /**
    * 滚动事件处理
@@ -177,6 +192,7 @@ export default function App() {
             onLoaded={() => setLoaded(true)}
             mouseRef={mouseRef}
           />
+          <PostProcessing params={postFXParams} />
         </Canvas>
       </div>
 

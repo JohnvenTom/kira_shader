@@ -980,7 +980,7 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
 
   return (
     <>
-      {/* 唯一光源：电脑正上方聚光灯，位置与目标点由 useFrame 微微随机晃动 */}
+      {/* 主光源：电脑正上方聚光灯，位置与目标点由 useFrame 微微随机晃动 */}
       <spotLight
         ref={spotLightRef}
         color="#fff4e0"
@@ -993,6 +993,14 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       />
       {/* 聚光灯目标点（必须挂到场景里才会生效） */}
       <object3D ref={spotTargetRef} />
+
+      {/* 补光：电脑正上方的柔和顶光（directionalLight 平行光，均匀照亮整体）
+          低强度 + 冷白色，与主聚光灯的暖白形成色温对比，避免画面过暗 */}
+      <directionalLight
+        color="#d4e0ff"
+        intensity={3}
+        position={[0, 10, 0]}
+      />
 
       {/* 模型本体 */}
       <primitive object={modelScene} />
