@@ -70,11 +70,13 @@ export default function App() {
 
   // 后处理参数（色散 + 鱼眼 + 暗角）
   // useMemo 避免每次渲染都创建新对象，否则 PostProcessing 的 useEffect 会频繁触发
-  // 参数取值参考 shader.se：色散 1.0（中等），鱼眼 0.35（明显但不夸张），暗角 0.35
+  // 参数取值参考 shader.se：色散 1.0（中等），falloff 2.0（中心干净、边缘陡然加重）
+  // 鱼眼 0.35（明显但不夸张），暗角 0.35
   const postFXParams = useMemo<PostFXParams>(
     () => ({
-      chromaticAberration: 2.0,
-      lensDistortion: 0.5,
+      chromaticAberration: 1.0,
+      chromaticFalloff: 2,
+      lensDistortion: 0.35,
       lensDistortionBorder: 0.0,
       vignetteIntensity: 0.35,
       vignetteRadius: 0.5,

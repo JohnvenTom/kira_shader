@@ -10,6 +10,8 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
  *
  * 字段说明：
  *  - chromaticAberration    色散强度（0~5）。RGB 在垂直方向分离，越大越明显
+ *  - chromaticFalloff       色散过渡曲线（0.5~3.0）。
+ *                           1.0=线性；>1=中心更干净、边缘更陡；<1=中心也有色散
  *  - lensDistortion         鱼眼/桶形畸变强度（0~1）。中心几乎不变形，边缘强烈外凸
  *  - lensDistortionBorder   边缘缩放控制（0~1）。0=边缘强烈拉伸；1=边缘正常
  *  - vignetteIntensity      暗角强度（0~1）。让画面四周变暗，聚焦中心
@@ -17,6 +19,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
  */
 export interface PostFXParams {
   chromaticAberration: number;
+  chromaticFalloff: number;
   lensDistortion: number;
   lensDistortionBorder: number;
   vignetteIntensity: number;
@@ -39,6 +42,7 @@ const PostFXShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     uChromaticAberration: { value: 1.0 },
+    uChromaticFalloff: { value: 1.0 },
     uLensDistortion: { value: 0.0 },
     uLensDistortionBorder: { value: 0.0 },
     uVignetteIntensity: { value: 0.0 },
@@ -55,6 +59,7 @@ const PostFXShader = {
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
     uniform float uChromaticAberration;
+    uniform float uChromaticFalloff;
     uniform float uLensDistortion;
     uniform float uLensDistortionBorder;
     uniform float uVignetteIntensity;
@@ -100,9 +105,16 @@ const PostFXShader = {
 
       // 2. 色散：垂直方向 RGB 分离
       //    aspect 校正让偏移在宽屏上不会变形
+      //    dist 范围：中心=0，边缘≈0.7，角落≈1.4（线性距离）
+      //    falloff 控制过渡曲线：
+      //      falloff=1.0 → 线性，从中心到边缘均匀增长
+      //      falloff=2.0 → 平方曲线，中心色散更弱、边缘加速增长（中心更干净）
+      //      falloff=0.5 → 开方曲线，中心也有较强色散（整体色散更均匀）
+      //    offset = 0.006 × dist^falloff × strength
       vec2 aspectCorrect = vec2(uAspect, 1.0) / max(uAspect, 1.0);
       float dist = length((uv - 0.5) * aspectCorrect * 2.0);
-      float offset = 0.002 * dist * uChromaticAberration;
+      float falloffCurve = pow(dist, uChromaticFalloff);
+      float offset = 0.006 * falloffCurve * uChromaticAberration;
 
       float r = texture2D(tDiffuse, distortedUV + vec2(0.0, -offset)).r;
       float g = texture2D(tDiffuse, distortedUV).g;
@@ -188,6 +200,7 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     if (!passRef.current) return;
     const u = passRef.current.uniforms;
     u.uChromaticAberration.value = params.chromaticAberration;
+    u.uChromaticFalloff.value = params.chromaticFalloff;
     u.uLensDistortion.value = params.lensDistortion;
     u.uLensDistortionBorder.value = params.lensDistortionBorder;
     u.uVignetteIntensity.value = params.vignetteIntensity;
