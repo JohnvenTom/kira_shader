@@ -13,8 +13,9 @@
   --font-mono: ui-monospace, "Cascadia Code", "Courier New", monospace;
   /* 副标题专用：优雅细体衬线，fallback 到 STIX/Times */
   --font-display: "Cormorant Garamond", "STIX Two Text", "Times New Roman", serif;
-  /* 虚拟页面高度倍数（越大滚动越长） */
-  --page-height: 6;
+  /* 虚拟页面高度倍数（越大滚动越长）
+     1.5 = 视口高度的 1.5 倍，约 5~8 次鼠标滚轮即可滚到底，对应"推进入屏幕"完整动画 */
+  --page-height: 1.5;
 }
 
 * {
@@ -49,6 +50,12 @@ body {
   overflow-x: hidden;
   z-index: 50;
   -webkit-overflow-scrolling: touch;
+  /* 隐藏原生滚动条（Chrome/Safari/Edge） */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE10+ */
+}
+.scroll-container::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge */
 }
 
 /* === 滚动占位：撑出虚拟滚动高度 === */

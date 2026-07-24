@@ -61,7 +61,7 @@ const SCREEN_CONFIG = {
   rotX: 0.10,          // ≈ +4.6°，屏幕上沿微微后仰
   rotY: -0.715,       //
   rotZ: 0.05,          // ≈ +2.9°，修正向左歪，上沿往右倾斜
-  emissiveIntensity: 2.5,  // 自发光强度
+  emissiveIntensity: 1.3,  // 自发光强度
   // RectAreaLight 面光源：让屏幕真实照亮电脑外壳/烟雾等周围物体
   // 颜色每帧从 GIF 当前帧的 ImageData 采样平均 RGB，强度按平均亮度缩放
   rectLightIntensity: 10.0,      // 基础强度（cd），实际 = 基础强度 × (0.4 + 0.6 × 亮度)
@@ -107,6 +107,48 @@ const CAMERA_CONFIG = {
   parallaxYawDeg: 3.0,   // 鼠标视差水平幅度（°），鼠标到边缘时绕 target 旋转 ±3°
   parallaxPitchDeg: 2.0, // 鼠标视差俯仰幅度（°），鼠标到边缘时绕 target 旋转 ±2°
 };
+
+/**
+ * 入场动画配置
+ *
+ * 功能：加载完成后相机从"屏幕特写位置"动画过渡到"默认相机位置"
+ *      模拟 shader.se 首屏那种"从屏幕特写缓缓拉远到全景"的入场感
+ *
+ * 字段说明：
+ *  - START_CAMERA_DISTANCE  起始相机距屏幕中心的距离（世界单位）
+ *  - START_FOV              起始相机视野（°），小于默认 fov 让屏幕显得更大
+ *  - DURATION               动画持续时间（秒）
+ */
+const INTRO_CONFIG = {
+  START_CAMERA_DISTANCE: 0.6,  // 起始相机距屏幕的距离（沿屏幕法线往前推）
+  START_FOV: 25,               // 起始 FOV（比默认 41° 小，让屏幕特写显得更大）
+  DURATION: 3.0,               // 入场动画持续时间（秒）
+};
+
+/**
+ * 滚动驱动相机推入配置
+ *
+ * 功能：用户向下滚动时，相机从"默认全景位置"沿屏幕法线方向推进，
+ *      最终穿过屏幕到达屏幕背面（"推进到屏幕里面"），呈现潜入屏幕内部的电影感
+ *
+ * 字段说明：
+ *  - END_CAMERA_OFFSET   滚动到底时相机相对屏幕中心的偏移（沿法线方向，单位世界单位）
+ *                        负值 = 沿法线反方向 = 穿过屏幕到背面
+ *                        -0.25 表示相机停在屏幕后方 0.25 单位，屏幕 GIF 充满视野
+ *  - END_FOV             滚动到底时的 FOV（°），比默认大，营造广角潜入的拉伸感
+ *  - EASE_POWER          缓动指数：>1 = 前期慢后期快（推入加速），<1 = 前期快后期慢
+ */
+const SCROLL_PUSH_CONFIG = {
+  END_CAMERA_OFFSET: -0.25,  // 终点相机 = 屏幕中心 + 法线 × (-0.25) = 屏幕背面 0.25 单位处
+  END_FOV: 55,               // 终点 FOV 55°（默认 41°），广角拉伸增强潜入感
+  EASE_POWER: 1.6,           // 缓动指数：1.6 让推入前期稍慢、后期加速，像"扎进去"
+};
+
+/**
+ * 屏幕法线方向（已归一化）
+ * 来源：SCREEN_CONFIG 注释 "法线(-0.6,0,0.8)"，length = sqrt(0.36+0.64) = 1.0
+ */
+const SCREEN_NORMAL = { x: -0.6, y: 0, z: 0.8 };
 
 /**
  * 预配置 Draco 解码器路径
@@ -749,6 +791,14 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
   // 初始为 {0,0}（屏幕中心），后续会逐渐追随真实鼠标位置
   const mouseSmoothedRef = useRef({ x: 0, y: 0 });
 
+  // 入场动画进度（0=刚加载完，1=已到达默认相机位置）
+  // 模型加载完成后会重置为 0，useFrame 每帧递增到 1
+  const introProgressRef = useRef(0);
+
+  // 滚动进度平滑值：每帧 lerp 向 props 的 scrollProgress 靠近，
+  // 避免滚轮离散跳动让相机产生顿挫感（lerp 系数 0.1 → 轻微惯性）
+  const scrollSmoothedRef = useRef(0);
+
   const { camera, gl, scene } = useThree();
 
   // 把 setup 暴露到 ref，供 CameraDebugger 读取模型尺寸与基础距离
@@ -817,7 +867,15 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
     return { scaledSize, distance };
   }, [modelScene, camera]);
 
+  // 用 ref 保存最新的 onLoaded 引用，避免 useEffect 依赖 onLoaded 导致重跑
+  // （onLoaded 若是 inline 箭头函数，每次父组件重渲染都会变 → useEffect 重新执行
+  //   → 重置 introProgressRef → 入场动画被重播。用 ref 解耦后此问题彻底消除）
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
+
   // 模型加载完成后触发回调并设置环境贴图
+  // 依赖数组只放真正的"模型相关"依赖：modelScene/setup/gl/scene/camera
+  // onLoaded 用 ref 读取，不进依赖，防止回调引用变化导致 useEffect 重跑
   useEffect(() => {
     if (!modelScene || !setup) return;
 
@@ -839,24 +897,29 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
 
     pmrem.dispose();
 
-    // 设置初始相机位置（基于 CAMERA_CONFIG 参数计算）
-    // target 的世界坐标（用于相机偏移基准点）
-    const targetX = setup.scaledSize.x * CAMERA_CONFIG.lookAtX;
-    const targetZ = setup.scaledSize.z * CAMERA_CONFIG.lookAtZ;
-    const targetYWorld = setup.scaledSize.y * CAMERA_CONFIG.lookAtY;
+    // 设置初始相机位置 = 屏幕特写位置（入场动画的起点）
+    // 相机贴近屏幕中心，沿屏幕法线往前推 INTRO_CONFIG.START_CAMERA_DISTANCE
+    // 这样 LoadingScreen 淡出时，用户先看到屏幕上的 GIF 特写，
+    // 然后 useFrame 里的入场动画把相机拉远到默认位置
+    const startPosX = SCREEN_CONFIG.posX + SCREEN_NORMAL.x * INTRO_CONFIG.START_CAMERA_DISTANCE;
+    const startPosY = SCREEN_CONFIG.posY;
+    const startPosZ = SCREEN_CONFIG.posZ + SCREEN_NORMAL.z * INTRO_CONFIG.START_CAMERA_DISTANCE;
+    camera.position.set(startPosX, startPosY, startPosZ);
+    // 起始 lookAt = 屏幕中心，让相机正对屏幕
+    camera.lookAt(SCREEN_CONFIG.posX, SCREEN_CONFIG.posY, SCREEN_CONFIG.posZ);
 
-    const camPos = computeCameraPosition(setup.distance, setup.scaledSize, targetX, targetZ);
-    camera.position.set(camPos.x, camPos.y, camPos.z);
-    camera.lookAt(targetX, targetYWorld, targetZ);
-
-    // 应用 FOV 配置（覆盖 Canvas 默认的 fov）
+    // 应用起始 FOV（比默认小，让屏幕特写显得更大）
     const cam = camera as THREE.PerspectiveCamera;
-    cam.fov = CAMERA_CONFIG.fov;
+    cam.fov = INTRO_CONFIG.START_FOV;
     cam.updateProjectionMatrix();
 
-    // 通知外部已加载
-    onLoaded();
-  }, [modelScene, setup, gl, scene, camera, onLoaded]);
+    // 重置入场动画进度 → 启动动画（useFrame 每帧递增到 1）
+    introProgressRef.current = 0;
+
+    // 通知外部已加载（触发 LoadingScreen 淡出，与入场动画同步开始）
+    // 通过 ref 调用，避免 onLoaded 进 useEffect 依赖导致重跑
+    onLoadedRef.current();
+  }, [modelScene, setup, gl, scene, camera]);
 
   // 关联聚光灯与其目标点：spotLight.target 默认指向场景原点的新 Object3D，
   // 必须手动替换为 spotTargetRef 指向的 object3D，光锥才会朝向 useFrame 里设置的目标
@@ -868,34 +931,94 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
 
   // 每帧更新：非 DEBUG 模式下按 CAMERA_CONFIG 固定相机 + 鼠标视差微旋转
   // DEBUG 模式下让 OrbitControls 接管
-  useFrame(() => {
+  //
+  // 两阶段完全独立，互不干扰：
+  //   阶段 1（入场，只播一次）：加载完成后 introT 从 0→1，相机从屏幕特写 → 默认位置
+  //                            introT 到 1 后永远停在那里，不再重播
+  //   阶段 2（滚动推入）：introT=1 后才激活，相机从默认位置 → 屏幕背面
+  //                      由 scrollProgress 驱动，可来回滚动
+  useFrame((_state, delta) => {
     if (!setup) return;
     // DEBUG 模式：跳过固定相机控制，让 OrbitControls 自由操作
     if (DEBUG) return;
 
     const { distance, scaledSize } = setup;
 
-    // 计算 target 世界坐标（相机看向的点）
+    // 计算 target 世界坐标（默认相机看向的点）
     const targetX = scaledSize.x * CAMERA_CONFIG.lookAtX;
     const targetYWorld = scaledSize.y * CAMERA_CONFIG.lookAtY;
     const targetZ = scaledSize.z * CAMERA_CONFIG.lookAtZ;
 
+    // === 入场动画进度（只播一次）===
+    // introT 从 0（屏幕特写）线性增长到 1（默认相机位置），到 1 后永不再动
+    // introEase = ease-out cubic：1 - (1-t)^3，前期快、后期慢，营造"缓缓到位"感
+    const introT = introProgressRef.current;
+    const introEase = 1 - Math.pow(1 - introT, 3);
+    if (introT < 1) {
+      // delta 是上一帧到本帧的时间间隔（秒），保证动画速度与帧率无关
+      introProgressRef.current = Math.min(1, introT + delta / INTRO_CONFIG.DURATION);
+    }
+
+    // === 滚动推入进度（仅入场完成后激活）===
+    // 入场期间 scrollSmoothed 强制为 0，相机只走入场路径
+    // 入场完成后 scrollSmoothed lerp 追赶真实 scrollProgress，相机走推入路径
+    // 这样滚动推入完全独立于入场，滚回顶部也只退到默认位置，不会重播入场动画
+    if (introT >= 1) {
+      scrollSmoothedRef.current += (scrollProgress - scrollSmoothedRef.current) * 0.1;
+    } else {
+      scrollSmoothedRef.current = 0;
+    }
+    const scrollT = scrollSmoothedRef.current;
+    // 缓动：pow(scrollT, EASE_POWER) 让推入前期稍慢、后期加速，"扎进屏幕"的加速感
+    const scrollEase = Math.pow(Math.max(0, Math.min(1, scrollT)), SCROLL_PUSH_CONFIG.EASE_POWER);
+
     // 鼠标视差：读取归一化坐标（-1~1），叠加到 yaw/pitch 上做小角度旋转
-    // 鼠标在屏幕中心时偏移为 0，移到边缘时达到 ±parallaxYawDeg/parallaxPitchDeg
-    // 用 lerp 平滑追随，让相机有惯性缓动而非瞬时跳变（类似 shader.se 的效果）
-    // mouse.x 取反：鼠标向左 → 视角向左转（相机绕 target 向左移动）
+    // 入场期间视差强度 = introEase；推入期间视差被 (1 - scrollEase) 衰减，
+    //                    深入屏幕后视差归零（屏幕充满视野，视差无意义且会穿模）
     const target = mouseRef.current;
     const smoothed = mouseSmoothedRef.current;
     smoothed.x += (target.x - smoothed.x) * 0.08;
     smoothed.y += (target.y - smoothed.y) * 0.08;
-    const yawDeg = CAMERA_CONFIG.yawDeg - smoothed.x * CAMERA_CONFIG.parallaxYawDeg;
-    const pitchDeg = CAMERA_CONFIG.pitchDeg + smoothed.y * CAMERA_CONFIG.parallaxPitchDeg;
+    const parallaxStrength = introEase * (1 - scrollEase);
+    const yawDeg = CAMERA_CONFIG.yawDeg - smoothed.x * CAMERA_CONFIG.parallaxYawDeg * parallaxStrength;
+    const pitchDeg = CAMERA_CONFIG.pitchDeg + smoothed.y * CAMERA_CONFIG.parallaxPitchDeg * parallaxStrength;
 
-    // 计算 3D 空间位置：水平 yaw + 俯仰 pitch → 球坐标转笛卡尔
-    const camPos = computeCameraPosition(distance, scaledSize, targetX, targetZ, yawDeg, pitchDeg);
-    camera.position.set(camPos.x, camPos.y, camPos.z);
-    // 看向 target（支持 PAN 后的非原点视角）
-    camera.lookAt(targetX, targetYWorld, targetZ);
+    // === 入场阶段：从屏幕特写 lerp 到默认相机位置（introEase 0→1）===
+    // 默认相机位置（含当前视差偏移）= 入场终点
+    const homePos = computeCameraPosition(distance, scaledSize, targetX, targetZ, yawDeg, pitchDeg);
+    // 屏幕特写起点：屏幕中心 + 沿屏幕法线往前推
+    const introStartX = SCREEN_CONFIG.posX + SCREEN_NORMAL.x * INTRO_CONFIG.START_CAMERA_DISTANCE;
+    const introStartY = SCREEN_CONFIG.posY;
+    const introStartZ = SCREEN_CONFIG.posZ + SCREEN_NORMAL.z * INTRO_CONFIG.START_CAMERA_DISTANCE;
+    // 入场插值结果：introEase=0 时在屏幕特写，=1 时在默认位置
+    const introPosX = introStartX + (homePos.x - introStartX) * introEase;
+    const introPosY = introStartY + (homePos.y - introStartY) * introEase;
+    const introPosZ = introStartZ + (homePos.z - introStartZ) * introEase;
+
+    // === 滚动推入阶段：从默认位置 lerp 到屏幕背面（scrollEase 0→1）===
+    // 推入终点：屏幕中心 + 法线 × END_CAMERA_OFFSET（负值=穿过屏幕到背面）
+    const pushEndX = SCREEN_CONFIG.posX + SCREEN_NORMAL.x * SCROLL_PUSH_CONFIG.END_CAMERA_OFFSET;
+    const pushEndY = SCREEN_CONFIG.posY;
+    const pushEndZ = SCREEN_CONFIG.posZ + SCREEN_NORMAL.z * SCROLL_PUSH_CONFIG.END_CAMERA_OFFSET;
+
+    camera.position.x = introPosX + (pushEndX - introPosX) * scrollEase;
+    camera.position.y = introPosY + (pushEndY - introPosY) * scrollEase;
+    camera.position.z = introPosZ + (pushEndZ - introPosZ) * scrollEase;
+
+    // lookAt：入场从屏幕中心 → 默认 target；推入从默认位置 → 屏幕中心
+    const lookAtIntroX = SCREEN_CONFIG.posX + (targetX - SCREEN_CONFIG.posX) * introEase;
+    const lookAtIntroY = SCREEN_CONFIG.posY + (targetYWorld - SCREEN_CONFIG.posY) * introEase;
+    const lookAtIntroZ = SCREEN_CONFIG.posZ + (targetZ - SCREEN_CONFIG.posZ) * introEase;
+    const lookAtX = lookAtIntroX + (SCREEN_CONFIG.posX - lookAtIntroX) * scrollEase;
+    const lookAtY = lookAtIntroY + (SCREEN_CONFIG.posY - lookAtIntroY) * scrollEase;
+    const lookAtZ = lookAtIntroZ + (SCREEN_CONFIG.posZ - lookAtIntroZ) * scrollEase;
+    camera.lookAt(lookAtX, lookAtY, lookAtZ);
+
+    // FOV：25°（入场起）→ 41°（默认，入场终）→ 55°（推入终，广角拉伸）
+    const fovIntro = INTRO_CONFIG.START_FOV + (CAMERA_CONFIG.fov - INTRO_CONFIG.START_FOV) * introEase;
+    const cam = camera as THREE.PerspectiveCamera;
+    cam.fov = fovIntro + (SCROLL_PUSH_CONFIG.END_FOV - fovIntro) * scrollEase;
+    cam.updateProjectionMatrix();
 
     // 模型不旋转（保持静止，让用户能看清电脑细节）
   });
@@ -984,7 +1107,7 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       <spotLight
         ref={spotLightRef}
         color="#fff4e0"
-        intensity={5}
+        intensity={0}
         distance={50}
         angle={0.55}
         penumbra={0.5}
@@ -1012,12 +1135,12 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       <group ref={frontSmokeRef}>
         <SmokeLayer
           texture={smokeTexture}
-          count={10}
+          count={16}
           areaSize={2.8}
-          spriteSize={1.6}
-          opacity={0.18}
+          spriteSize={1.8}
+          opacity={0.32}
           color="#8a92a8"
-          brightness={1}
+          brightness={1.2}
         />
       </group>
 
@@ -1025,12 +1148,12 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       <group ref={backSmokeRef}>
         <SmokeLayer
           texture={smokeTexture}
-          count={12}
+          count={18}
           areaSize={4.2}
-          spriteSize={2.0}
-          opacity={0.14}
+          spriteSize={2.2}
+          opacity={0.26}
           color="#6a7088"
-          brightness={0.75}
+          brightness={1.0}
         />
       </group>
 

@@ -7,16 +7,22 @@ import { NavBar } from './components/NavBar';
 import { PostProcessing, type PostFXParams } from './components/PostProcessing';
 
 /**
- * 把字符串拆成逐字 span（用于逐字浮现动画）
+ * 把字符串拆成逐字 span（用于逐字浮现 + 滚动飞出动画）
  *
  * 功能：将传入的字符串按字符拆分，每个字符包进一个 <span class="hero-char">，
  *      并根据字符索引递增设置 transitionDelay，实现"一个一个字蹦出来"的效果。
  *      空格会渲染为不可折叠的空白 span，避免被 HTML 合并。
+ *      同时根据当前滚动进度 scrollProgress 与该字符的飞出阈值 exitThreshold，
+ *      计算该字符是否应飞出消失，并设置对应的 transform/opacity inline style。
  *
  * 参数：
- *  - text     {string} 要拆分的字符串
- *  - baseDelay{number} 该字符串起始延迟（ms），用于跨行衔接
- *  - step     {number} 每个字符之间的延迟间隔（ms）
+ *  - text           {string}  要拆分的字符串
+ *  - baseDelay      {number}  该字符串起始延迟（ms），用于跨行衔接
+ *  - step           {number}  每个字符之间的延迟间隔（ms）
+ *  - exitThreshold  {number}  该字符的飞出阈值（0~1）：当 scrollProgress 超过此值时飞出
+ *  - exitStep       {number}  字符之间的飞出阈值步长（让字符逐个飞出而非同时）
+ *  - scrollProgress {number}  当前滚动进度（0~1）
+ *  - flyDirection   {number}  飞出方向（-1=向左，1=向右），默认 -1（向左飞出）
  *
  * 返回值：ReactNode[] 每个字符对应的 span 节点数组
  *
@@ -24,18 +30,58 @@ import { PostProcessing, type PostFXParams } from './components/PostProcessing';
  *
  * 注意事项：
  *  - 空格用 \u00A0（不间断空格）替换，防止行内空白被折叠
- *  - 每个字符 span 设置 inline style 的 transitionDelay，CSS 动画由此触发
+ *  - 飞出动画通过 inline style 直接控制 transform/opacity，不依赖 CSS 变量
+ *    transition 让飞出过程有平滑过渡感（300ms ease-out）
  */
-function splitTextToChars(text: string, baseDelay: number, step: number): ReactNode[] {
-  return Array.from(text).map((ch, i) => (
-    <span
-      key={`${text}-${i}`}
-      className="hero-char"
-      style={{ transitionDelay: `${baseDelay + i * step}ms` }}
-    >
-      {ch === ' ' ? '\u00A0' : ch}
-    </span>
-  ));
+function splitTextToChars(
+  text: string,
+  baseDelay: number,
+  step: number,
+  exitThreshold: number,
+  exitStep: number,
+  scrollProgress: number,
+  flyDirection: number = -1
+): ReactNode[] {
+  // 飞出动画的过渡区间长度：超过阈值后用 0.05 的进度完成整个飞出
+  // 让字符在 scrollProgress 越过 exitThreshold 后的 0.05 范围内完成飞出
+  const EXIT_DURATION = 0.05;
+  return Array.from(text).map((ch, i) => {
+    // 当前字符的飞出阈值：字符 i 在 exitThreshold + i * exitStep 处开始飞出
+    const threshold = exitThreshold + i * exitStep;
+    // 飞出进度：0=未飞出（静止显示），1=已完全飞出（消失）
+    // 当 scrollProgress < threshold 时 exitRaw < 0 → clamp 到 0
+    // 当 scrollProgress > threshold + EXIT_DURATION 时 exitRaw > 1 → clamp 到 1
+    const exitRaw = (scrollProgress - threshold) / EXIT_DURATION;
+    const exitProgress = Math.max(0, Math.min(1, exitRaw));
+    // 飞出 transform：向左/右平移 60px，并稍微下沉和旋转，营造"被甩出去"感
+    const flyX = flyDirection * 60 * exitProgress;
+    const flyY = 20 * exitProgress;
+    const rotate = flyDirection * 8 * exitProgress;
+    // opacity 从 1 衰减到 0
+    const opacity = 1 - exitProgress;
+    return (
+      <span
+        key={`${text}-${i}`}
+        className="hero-char"
+        style={{
+          transitionDelay: `${baseDelay + i * step}ms`,
+          // 飞出动画的 transform/opacity（仅当 exitProgress>0 时生效）
+          transform: exitProgress > 0
+            ? `translate(${flyX}px, ${flyY}px) rotate(${rotate}deg)`
+            : undefined,
+          opacity: exitProgress > 0 ? opacity : undefined,
+          // transition 让 transform/opacity 变化时平滑过渡
+          transitionProperty: 'transform, opacity',
+          transitionDuration: '300ms',
+          transitionTimingFunction: 'ease-out',
+          // display:inline-block 让 transform 生效（inline 元素 transform 不起作用）
+          display: 'inline-block',
+        }}
+      >
+        {ch === ' ' ? '\u00A0' : ch}
+      </span>
+    );
+  });
 }
 
 /**
@@ -60,6 +106,10 @@ export default function App() {
   const [scrollProgress, setScrollProgress] = useState(0);
   // 模型加载状态
   const [loaded, setLoaded] = useState(false);
+  // 加载完成回调：用 useCallback 稳定引用，避免 inline 箭头函数每次重渲染都变 →
+  // 触发 ComputerScene 的 useEffect 重新执行 → 重置 introProgressRef → 入场动画重播
+  // 空依赖数组：setLoaded 是稳定引用，函数永远不变
+  const handleLoaded = useCallback(() => setLoaded(true), []);
   // 首屏标题是否已显现
   const [titleVisible, setTitleVisible] = useState(false);
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
@@ -68,10 +118,13 @@ export default function App() {
   // 用 ref 避免高频 setState 引起重渲染，ComputerScene 在 useFrame 里直接读取
   const mouseRef = useRef({ x: 0, y: 0 });
 
-  // 后处理参数（色散 + 鱼眼 + 暗角）
+  // 后处理参数（色散 + 鱼眼 + 暗角 + Bloom 辉光）
   // useMemo 避免每次渲染都创建新对象，否则 PostProcessing 的 useEffect 会频繁触发
   // 参数取值参考 shader.se：色散 1.0（中等），falloff 2.0（中心干净、边缘陡然加重）
   // 鱼眼 0.35（明显但不夸张），暗角 0.35
+  // Bloom：threshold 0.85 只让屏幕 emissive（亮度>1）参与辉光，避免整张图都发糊；
+  //        strength 1.4 让彩色光晕明显扩散到屏幕外（呼应 shader.se 的"屏幕反射出彩色光"效果）；
+  //        radius 0.6 让光晕柔和弥散而非硬边
   const postFXParams = useMemo<PostFXParams>(
     () => ({
       chromaticAberration: 1.0,
@@ -80,6 +133,9 @@ export default function App() {
       lensDistortionBorder: 0.0,
       vignetteIntensity: 0.35,
       vignetteRadius: 0.5,
+      bloomStrength: 0.3,
+      bloomRadius: 0.2,
+      bloomThreshold: 0.7,
     }),
     []
   );
@@ -191,33 +247,30 @@ export default function App() {
         >
           <ComputerScene
             scrollProgress={scrollProgress}
-            onLoaded={() => setLoaded(true)}
+            onLoaded={handleLoaded}
             mouseRef={mouseRef}
           />
           <PostProcessing params={postFXParams} />
         </Canvas>
       </div>
 
-      {/* 第 3 层：内容覆盖层 z-45 */}
+      {/* 第 3 层：内容覆盖层 z-45
+          滚动时左侧文字逐个飞出消失：
+          每个字符按行内顺序在 scrollProgress 越过它的 exitThreshold 时飞出
+          字符之间 exitThreshold 步长 0.005，让它们一个接一个飞出而非同时 */}
       <div className="content-overlay">
         <div className="hero-block" ref={heroBlockRef}>
           <h1 className={`hero-title ${titleVisible ? 'visible' : ''}`}>
             <span className="hero-line">
-              {splitTextToChars('A Creative', 0, 30)}
+              {splitTextToChars('A Creative', 0, 30, 0.0, 0.02, scrollProgress, -1)}
             </span>
             <span className="hero-line">
-              {splitTextToChars('Developer,Plugged', 350, 30)}
+              {splitTextToChars('Developer,Plugged', 350, 30, 0.25, 0.02, scrollProgress, -1)}
             </span>
             <span className="hero-line">
-              {splitTextToChars('into the Future', 950, 30)}
+              {splitTextToChars('into the Future', 950, 30, 0.55, 0.02, scrollProgress, -1)}
             </span>
           </h1>
-          <p
-            className={`hero-subtitle ${titleVisible ? 'visible' : ''}`}
-            style={{ transitionDelay: '1500ms' }}
-          >
-            Scroll to Inspect Our Closed Deals
-          </p>
         </div>
         <div className="scroll-hint">Scroll to Explore</div>
       </div>

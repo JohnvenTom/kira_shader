@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 /**
  * 后处理参数（运行时可调）
@@ -24,6 +25,12 @@ export interface PostFXParams {
   lensDistortionBorder: number;
   vignetteIntensity: number;
   vignetteRadius: number;
+  /** Bloom 辉光强度（0~3）。值越大，屏幕等高亮区域向周围扩散的彩色光晕越强烈 */
+  bloomStrength: number;
+  /** Bloom 辉光半径（0~1）。值越大光晕越柔和弥散 */
+  bloomRadius: number;
+  /** Bloom 亮度阈值（0~1）。仅亮度超过此值的像素参与辉光，0.85 = 只让屏幕自发光部分扩散 */
+  bloomThreshold: number;
 }
 
 /**
@@ -168,12 +175,27 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const passRef = useRef<ShaderPass | null>(null);
+  const bloomRef = useRef<UnrealBloomPass | null>(null);
 
-  // 创建 EffectComposer + RenderPass + 自定义 ShaderPass
+  // 创建 EffectComposer + RenderPass + Bloom + 自定义 ShaderPass
   // useMemo 避免每次渲染都重建（只在 gl 变化时重建）
   useMemo(() => {
+    // 用默认 renderTarget（UnsignedByteType）保证兼容性：
+    // 之前尝试 HalfFloatType + samples=4 (MSAA) 在高分屏 + ANGLE/D3D11 上会触发
+    // GL_OUT_OF_MEMORY → CONTEXT_LOST。Bloom 的彩色辉光效果优先于锯齿精度。
     const c = new EffectComposer(gl);
     c.addPass(new RenderPass(scene, camera));
+
+    // Bloom 辉光：让屏幕 emissive 自发光部分向四周扩散彩色光晕
+    // 顺序：Bloom 必须在色散/鱼眼前，否则色散会把 Bloom 的光晕也拆成 RGB 分离
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
+      params.bloomStrength,
+      params.bloomRadius,
+      params.bloomThreshold
+    );
+    c.addPass(bloom);
+    bloomRef.current = bloom;
 
     const pass = new ShaderPass(PostFXShader);
     pass.renderToScreen = true;
@@ -181,6 +203,8 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
 
     passRef.current = pass;
     composerRef.current = c;
+    // 注意：params 不进依赖，避免每次参数调整都重建 composer；
+    //      params 变化通过下方 useEffect 同步到 uniforms / bloom 属性
   }, [gl, scene, camera]);
 
   // 同步 size 变化到 composer
@@ -195,7 +219,7 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     }
   }, [size, gl]);
 
-  // 同步 params 到 shader uniforms
+  // 同步 params 到 shader uniforms 和 bloom 属性
   useEffect(() => {
     if (!passRef.current) return;
     const u = passRef.current.uniforms;
@@ -205,6 +229,12 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     u.uLensDistortionBorder.value = params.lensDistortionBorder;
     u.uVignetteIntensity.value = params.vignetteIntensity;
     u.uVignetteRadius.value = params.vignetteRadius;
+    // Bloom 参数同步：strength/radius/threshold 实时调整辉光表现
+    if (bloomRef.current) {
+      bloomRef.current.strength = params.bloomStrength;
+      bloomRef.current.radius = params.bloomRadius;
+      bloomRef.current.threshold = params.bloomThreshold;
+    }
   }, [params]);
 
   // 卸载时释放资源
