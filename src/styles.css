@@ -107,14 +107,24 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* === 顶部标题区 === */
+/* 父容器提供 3D 透视环境：perspective 必须在父元素上，
+   子元素 .hero-block 的 rotateX/rotateY 才会有近大远小的立体感 */
+.content-overlay {
+  perspective: 1000px;
+}
+
 /* 整个文字块往下移：顶部留出更多空间 */
 .hero-block {
   margin-top: 18vh;
-  /* 视差偏移量由 JS 写入 CSS 变量 --px/--py（单位 px） */
+  /* 视差变量由 JS 写入：--px/--py 位移，--rx/--ry 旋转 */
   --px: 0px;
   --py: 0px;
-  /* 用 transform 应用视差位移，配合较长 transition 营造惯性追随感 */
-  transform: translate3d(var(--px), var(--py), 0);
+  --rx: 0deg;
+  --ry: 0deg;
+  /* transform: 位移 + 3D 旋转，配合较长 transition 营造惯性追随感
+     preserve-3d 让子元素也参与 3D 空间，旋转时文字不会变扁 */
+  transform-style: preserve-3d;
+  transform: translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
   transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: transform;
 }

@@ -100,13 +100,14 @@ export default function App() {
   /**
    * 鼠标视差处理
    * 功能：监听鼠标移动，同时驱动两层视差：
-   *   1. 写入 hero-block 的 CSS 变量 --px/--py，让标题文字做平面位移
-   *   2. 写入 mouseRef.current.x/y（归一化 -1~1），让 3D 相机绕 target 微旋转
+   *   1. 文字层：写入 hero-block 的 CSS 变量 --px/--py（位移 6px）+ --rx/--ry（旋转 ±6°）
+   *   2. 3D 相机层：写入 mouseRef.current.x/y（归一化 -1~1），让相机绕 target 微旋转
    * 参数：无
    * 返回值：无
    * 注意事项：
    *  - 使用 rAF 节流，避免高频 mousemove 引起重渲染
-   *  - 文字视差幅度 15px（CSS 变量），3D 相机视差幅度由 ComputerScene 控制
+   *  - 文字位移幅度 6px + 旋转 ±6°，3D 相机视差幅度由 ComputerScene 控制
+   *  - perspective 在父级 .content-overlay 上，子元素 .hero-block 的 rotate 才有立体感
    *  - mouseRef 用 ref 不触发重渲染，ComputerScene 在 useFrame 里直接读取
    */
   useEffect(() => {
@@ -117,11 +118,15 @@ export default function App() {
         // 归一化到 [-1, 1]，鼠标在屏幕中心时偏移为 0
         const nx = (e.clientX / window.innerWidth) * 2 - 1;
         const ny = (e.clientY / window.innerHeight) * 2 - 1;
-        // 1. 文字层视差：写入 CSS 变量，CSS 侧用 transform: translate() 应用
+        // 1. 文字层视差：写入 CSS 变量 --px/--py（位移）+ --rx/--ry（旋转）
+        //    位移幅度 6px，旋转幅度 ±6°（配合父级 perspective 1000px 营造立体感）
         const el = heroBlockRef.current;
         if (el) {
-          el.style.setProperty('--px', `${nx * 15}px`);
-          el.style.setProperty('--py', `${ny * 15}px`);
+          el.style.setProperty('--px', `${nx * 6}px`);
+          el.style.setProperty('--py', `${ny * 6}px`);
+          // 旋转：鼠标向右 → 文字微微右倾（rotateY），鼠标向下 → 微微低头（rotateX）
+          el.style.setProperty('--rx', `${ny * 6}deg`);
+          el.style.setProperty('--ry', `${nx * 6}deg`);
         }
         // 2. 3D 相机视差：写入共享 ref，ComputerScene 的 useFrame 读取后做 yaw/pitch 偏移
         mouseRef.current.x = nx;
