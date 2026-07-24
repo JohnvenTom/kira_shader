@@ -2,8 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import { parseGIF, decompressFrames, type GifFrame } from 'gifuct-js';
 import { CameraDebugger } from './CameraDebugger';
+
+/**
+ * 初始化 RectAreaLight 所需的着色器 uniform
+ *
+ * 功能：RectAreaLight 必须在首次渲染前调用 init()，否则光照计算会用默认 uniform，
+ *      导致屏幕面光源无法照亮周围物体（物体表面一片黑）。
+ *
+ * 注意事项：全局只需调用一次，放模块顶层确保在组件渲染前执行。
+ */
+RectAreaLightUniformsLib.init();
 
 // 模型与 Draco 解码器路径（通过 Vite 中间件映射到父级 asset 目录）
 const MODEL_URL = '/asset/models/computer.glb';
@@ -31,14 +42,17 @@ const SCREEN_GIF_URLS = [GIF_1, GIF_2, GIF_3, GIF_4];
  *  - width / height：屏幕 plane 的宽高（世界单位）
  *  - rotY：屏幕朝向（弧度），朝向相机方向；DoubleSide 双面渲染时可忽略
  *  - emissiveIntensity：自发光强度，越大越亮
+ *  - rectLight*：RectAreaLight 面光源参数，让屏幕真正照亮周围环境
+ *    颜色不是固定值，而是每帧从当前 GIF 帧的 ImageData 实时采样平均颜色，
+ *    这样红色 GIF 照红光、蓝色 GIF 照蓝光，真实反映屏幕内容
  */
 const SCREEN_CONFIG = {
   // 屏幕中心：来自 computer mesh [2]号平面的世界坐标中心
   // （法线(-0.6,0,0.8) 的斜面，顶点数 104 最多=屏幕区域）
   // 沿法线方向往前推 0.15，让 plane 略离开模型表面，避免 z-fighting
-  posX: -0.271 + -0.6 * 0.15,   // 
+  posX: -0.271 + -0.6 * 0.15,   //
   posY: -1.39,                  // 世界坐标 Y
-  posZ: 0.507 + 0.8 * 0.15,      // 
+  posZ: 0.507 + 0.8 * 0.15,      //
   // 屏幕尺寸：小于面板尺寸(W0.609 H0.512)，留出边框
   width: 0.38,         // 屏幕宽（世界单位）
   height: 0.29,        // 屏幕高（世界单位）
@@ -48,6 +62,10 @@ const SCREEN_CONFIG = {
   rotY: -0.715,       //
   rotZ: 0.05,          // ≈ +2.9°，修正向左歪，上沿往右倾斜
   emissiveIntensity: 2.5,  // 自发光强度
+  // RectAreaLight 面光源：让屏幕真实照亮电脑外壳/烟雾等周围物体
+  // 颜色每帧从 GIF 当前帧的 ImageData 采样平均 RGB，强度按平均亮度缩放
+  rectLightIntensity: 10.0,      // 基础强度（cd），实际 = 基础强度 × (0.4 + 0.6 × 亮度)
+  rectLightSampleStep: 4,       // 颜色采样步长（每 N 个像素采一个，平衡精度与性能）
 };
 
 /**
@@ -58,7 +76,7 @@ const SCREEN_CONFIG = {
  *
  * 注意事项：发布前请设为 false
  */
-const DEBUG = true;
+const DEBUG = false;
 
 /**
  * 相机空间配置
@@ -365,6 +383,10 @@ async function loadGif(url: string): Promise<GifAsset> {
  *  - 用 canvas 中转：每帧按 elapsed time 计算当前帧索引，putImageData 到 canvas
  *  - 用 CanvasTexture 作为 emissiveMap，让屏幕"自发光"（不受场景光照压暗）
  *  - 当前 GIF 播完一轮后自动切换到下一个，循环播放全部 4 个 GIF
+ *  - 附加 RectAreaLight 面光源，让屏幕真正照亮电脑外壳/烟雾等周围环境
+ *    （emissive 只让屏幕自己亮，不发光照别人；RectAreaLight 才是真实光源）
+ *    面光源颜色每帧从当前 GIF 帧的 ImageData 实时采样平均 RGB，强度按亮度缩放，
+ *    这样屏幕显示什么颜色，环境就被什么颜色照亮（红 GIF 照红光、蓝 GIF 照蓝光）
  *
  * 参数：无（位置用世界坐标，直接在 SCREEN_CONFIG 里配置）
  *
@@ -383,6 +405,8 @@ function ScreenDisplay() {
   const [ready, setReady] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  // RectAreaLight 引用：让屏幕真正照亮周围环境（emissive 只让屏幕自己亮，不发光照别人）
+  const rectLightRef = useRef<THREE.RectAreaLight>(null);
   // 当前 GIF 索引（用 ref 避免每帧 setState）
   const idxRef = useRef(0);
   // 当前 GIF 播放起点（秒，用于计算播放进度）
@@ -515,29 +539,71 @@ function ScreenDisplay() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(patchCanvas, 0, 0, canvas.width, canvas.height);
     tex.needsUpdate = true;
+
+    // 从当前 GIF 帧的 ImageData 实时采样平均颜色，让屏幕光颜色 = GIF 实际显示颜色
+    // 红色 GIF 照红光、蓝色 GIF 照蓝光，真实反映屏幕内容
+    // 强度按平均亮度缩放：暗帧光照弱（但不完全黑，保底 0.4），亮帧光照强
+    if (rectLightRef.current) {
+      const frameData = asset.frames[frameIdx].imageData.data;
+      const step = SCREEN_CONFIG.rectLightSampleStep * 4; // 步长（像素数 × 4 通道）
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let p = 0; p < frameData.length; p += step) {
+        const a = frameData[p + 3];
+        if (a < 10) continue; // 跳过透明像素
+        r += frameData[p];
+        g += frameData[p + 1];
+        b += frameData[p + 2];
+        count++;
+      }
+      if (count > 0) {
+        r /= count;
+        g /= count;
+        b /= count;
+        // 人眼亮度公式：0.299R + 0.587G + 0.114B
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        rectLightRef.current.color.setRGB(r / 255, g / 255, b / 255);
+        // 强度 = 基础强度 × (0.4 + 0.6 × 亮度)，保证暗帧也有最低光照
+        rectLightRef.current.intensity =
+          SCREEN_CONFIG.rectLightIntensity * (0.4 + 0.6 * luminance);
+      }
+    }
   });
 
   // GIF 未加载完时不渲染 mesh
   if (!ready || texturesRef.current.length === 0) return null;
 
   return (
-    <mesh
-      ref={meshRef}
-      position={[SCREEN_CONFIG.posX, SCREEN_CONFIG.posY, SCREEN_CONFIG.posZ]}
-      rotation={[SCREEN_CONFIG.rotX, SCREEN_CONFIG.rotY, SCREEN_CONFIG.rotZ]}
-    >
-      <planeGeometry args={[SCREEN_CONFIG.width, SCREEN_CONFIG.height]} />
-      <meshStandardMaterial
-        ref={matRef}
-        map={texturesRef.current[0]}
-        emissive="#ffffff"
-        emissiveMap={texturesRef.current[0]}
-        emissiveIntensity={SCREEN_CONFIG.emissiveIntensity}
-        toneMapped={false}
-        transparent
-        side={THREE.DoubleSide}
+    <>
+      {/* RectAreaLight 面光源：与屏幕同位置/同旋转/同尺寸，
+          让屏幕真正照亮电脑外壳与周围烟雾（emissive 只让屏幕自己亮，不发光照别人）。
+          颜色每帧由 useFrame 从 GIF 当前帧采样平均 RGB 写入，此处 color 仅为初始值 */}
+      <rectAreaLight
+        ref={rectLightRef}
+        position={[SCREEN_CONFIG.posX, SCREEN_CONFIG.posY, SCREEN_CONFIG.posZ]}
+        rotation={[SCREEN_CONFIG.rotX, SCREEN_CONFIG.rotY, SCREEN_CONFIG.rotZ]}
+        width={SCREEN_CONFIG.width}
+        height={SCREEN_CONFIG.height}
+        color="#ffffff"
+        intensity={SCREEN_CONFIG.rectLightIntensity}
       />
-    </mesh>
+      <mesh
+        ref={meshRef}
+        position={[SCREEN_CONFIG.posX, SCREEN_CONFIG.posY, SCREEN_CONFIG.posZ]}
+        rotation={[SCREEN_CONFIG.rotX, SCREEN_CONFIG.rotY, SCREEN_CONFIG.rotZ]}
+      >
+        <planeGeometry args={[SCREEN_CONFIG.width, SCREEN_CONFIG.height]} />
+        <meshStandardMaterial
+          ref={matRef}
+          map={texturesRef.current[0]}
+          emissive="#ffffff"
+          emissiveMap={texturesRef.current[0]}
+          emissiveIntensity={SCREEN_CONFIG.emissiveIntensity}
+          toneMapped={false}
+          transparent
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </>
   );
 }
 
