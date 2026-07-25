@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
+import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 
 /**
@@ -53,6 +54,57 @@ export const SECTIONS: SectionContent[] = [
 ];
 
 /**
+ * 项目缩略图信息（用于 SELECTED WORK section 轮播）
+ *
+ * 字段说明：
+ *  - id       项目唯一标识
+ *  - name     项目名（屏幕上显示）
+ *  - tagline  一句话描述
+ *  - thumb    缩略图 URL（gif 动图，DOM <img> 可直接播放）
+ *  - year     项目年份
+ *
+ * 注意事项：gif 在 DOM <img> 中原生播放，无需 gifuct-js 解码
+ */
+export interface ProjectItem {
+  id: string;
+  name: string;
+  tagline: string;
+  thumb: string;
+  year: string;
+}
+
+export const PROJECTS: ProjectItem[] = [
+  {
+    id: 'ehealth',
+    name: 'eHealth Arena',
+    tagline: 'Interactive medical visualization',
+    thumb: '/asset/textures/projects/project-1.gif',
+    year: '2024',
+  },
+  {
+    id: 'showroom',
+    name: '3D Showroom',
+    tagline: 'WebGL product configurator',
+    thumb: '/asset/textures/projects/project-2.gif',
+    year: '2024',
+  },
+  {
+    id: 'ar-experience',
+    name: 'AR Experience',
+    tagline: 'Augmented reality for retail',
+    thumb: '/asset/textures/projects/project-3.gif',
+    year: '2023',
+  },
+  {
+    id: 'shader-lab',
+    name: 'Shader Lab',
+    tagline: 'Real-time graphics R&D',
+    thumb: '/asset/textures/projects/project-4.gif',
+    year: '2023',
+  },
+];
+
+/**
  * hex 颜色转 RGB
  *
  * 参数：
@@ -80,6 +132,198 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 function smoothstep(edge0: number, edge1: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * 屏幕文字组件（用 R3F <Html> 投影到 3D 屏幕平面）
+ *
+ * 功能：
+ *  - 用 drei 的 <Html transform> 模式，把 DOM 文字元素变换到 3D 屏幕平面上
+ *  - 文字随相机推近而放大（保持与屏幕内容一致的透视感）
+ *  - section 切换时随 transitionFlash 淡出（被闪光掩盖）
+ *  - 文字样式由 CSS 控制（.screen-text-content 等），便于精确排版
+ *
+ * 参数：
+ *  - sectionIndex       当前 section 索引（0~3）
+ *  - transitionFlashRef 切换闪光强度 ref（每帧读取，调整透明度）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - transform 模式让 DOM 跟随 3D 变换，但仍为 DOM 元素（不受后处理 bloom/色散影响）
+ *  - 用 CSS text-shadow/drop-shadow 模拟辉光与色散，呼应屏幕的复古感
+ *  - position z=0.01 略高于屏幕平面，避免与 planeGeometry 的 z-fighting
+ *  - DOM 容器 1024×768px，scale=4/1024 让其对应 3D 空间的 4×3 单位（屏幕 plane 大小）
+ *  - pointer-events: none 避免拦截滚动
+ */
+function ScreenText({
+  sectionIndex,
+  transitionFlashRef,
+}: {
+  sectionIndex: number;
+  transitionFlashRef: React.MutableRefObject<number>;
+}) {
+  const section = SECTIONS[sectionIndex];
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 每帧：根据 transitionFlash 调整透明度（闪光时淡出掩盖切换）
+  useFrame(() => {
+    if (!containerRef.current) return;
+    const flash = transitionFlashRef.current;
+    // 闪光峰值时文字完全透明（被白色屏幕掩盖）
+    containerRef.current.style.opacity = `${1 - flash}`;
+  });
+
+  // scale：让 DOM 的 1024px 对应 3D 空间的 4 单位（屏幕 plane 宽度）
+  // drei <Html transform> 内部有归一化因子，实测 scale=4/1024 时文字仅 ~13px，
+  // 需放大到 ~0.156 才能让 DOM 与 3D 屏幕投影大小匹配（约 530px @ z=7）
+  const screenScale = 0.156;
+
+  return (
+    <Html
+      transform
+      position={[0, 0, 0.01]}
+      center
+      scale={screenScale}
+      style={{
+        width: '1024px',
+        height: '768px',
+        pointerEvents: 'none',
+      }}
+    >
+      <div className="screen-text-content" ref={containerRef}>
+        <h1 className="screen-title">{section.title}</h1>
+        <p className="screen-subtitle" style={{ color: section.accentColor }}>
+          {section.subtitle}
+        </p>
+        <p className="screen-description">{section.description}</p>
+      </div>
+    </Html>
+  );
+}
+
+/**
+ * 项目轮播组件（SELECTED WORK section 专用）
+ *
+ * 功能：
+ *  - 用 drei <Html transform> 投影到 3D 屏幕平面（与 ScreenText 同样的对齐方式）
+ *  - 显示当前项目的缩略图（gif 自动播放）+ 项目名 + tagline + 年份
+ *  - 每 2.4s 自动切换到下一个项目，cross-fade 过渡（500ms）
+ *  - 底部显示 4 个项目指示点，当前项目高亮
+ *  - section 切换时随 transitionFlash 淡出（被闪光掩盖）
+ *
+ * 参数：
+ *  - transitionFlashRef 切换闪光强度 ref（每帧读取，调整透明度）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 轮播切换通过 useState 触发 React 重渲染，DOM 自然完成 cross-fade
+ *    （旧项 opacity:1→0 + 新项 opacity:0→1，CSS transition 自动过渡）
+ *  - 用 ref 跟踪当前项目避免快速切换时状态混乱
+ *  - gif 在 <img> 中原生播放，无需额外解码
+ *  - position z=0.01 略高于屏幕平面，避免 z-fighting
+ */
+function WorkCarousel({
+  transitionFlashRef,
+}: {
+  transitionFlashRef: React.MutableRefObject<number>;
+}) {
+  // 当前显示的项目索引（0~3）
+  const [currentIdx, setCurrentIdx] = useState(0);
+  // 上一帧的项目索引（cross-fade 期间保留，用于淡出旧项）
+  const [prevIdx, setPrevIdx] = useState<number | null>(null);
+  // 容器 ref（用于每帧写入 opacity 跟随 transitionFlash）
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 自动轮播：每 2.4s 切换一次
+  // 用 ref 跟踪最新的 currentIdx，避免 setInterval 闭包陷阱（读到旧值）
+  const currentIdxRef = useRef(currentIdx);
+  currentIdxRef.current = currentIdx;
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const oldIdx = currentIdxRef.current;
+      const newIdx = (oldIdx + 1) % PROJECTS.length;
+      // 先设 prevIdx（旧项开始淡出），同时 currentIdx 切到新项（新项开始淡入）
+      setPrevIdx(oldIdx);
+      setCurrentIdx(newIdx);
+      // 500ms 后清除 prevIdx（旧项卸载）
+      setTimeout(() => setPrevIdx(null), 500);
+    }, 2400);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 每帧：根据 transitionFlash 调整透明度（闪光时淡出掩盖切换）
+  useFrame(() => {
+    if (!containerRef.current) return;
+    const flash = transitionFlashRef.current;
+    containerRef.current.style.opacity = `${1 - flash}`;
+  });
+
+  const current = PROJECTS[currentIdx];
+  const prev = prevIdx !== null ? PROJECTS[prevIdx] : null;
+
+  // scale：与 ScreenText 保持一致，让 DOM 1024px 对应 3D 屏幕的 4 单位宽
+  const screenScale = 0.156;
+
+  return (
+    <Html
+      transform
+      position={[0, 0, 0.01]}
+      center
+      scale={screenScale}
+      style={{
+        width: '1024px',
+        height: '768px',
+        pointerEvents: 'none',
+      }}
+    >
+      <div className="work-carousel" ref={containerRef}>
+        {/* 缩略图区域：prev 在下层淡出，current 在上层（始终 opacity:1）
+            cross-fade 通过 prev 层的 opacity 1→0 实现（current 始终完全可见） */}
+        <div className="work-thumb-stage">
+          {/* prev 层（淡出）：cross-fade 期间存在，500ms 后卸载 */}
+          {prev && (
+            <img
+              key={`prev-${prev.id}`}
+              src={prev.thumb}
+              alt={prev.name}
+              className="work-thumb work-thumb-out"
+              draggable={false}
+            />
+          )}
+          {/* current 层（始终完全可见） */}
+          <img
+            key={`cur-${current.id}`}
+            src={current.thumb}
+            alt={current.name}
+            className="work-thumb work-thumb-stable"
+            draggable={false}
+          />
+          {/* 缩略图边框装饰（呼应复古 CRT） */}
+          <div className="work-thumb-frame" />
+        </div>
+
+        {/* 项目信息：名称 + tagline + 年份（随 currentIdx 切换） */}
+        <div className="work-info" key={`info-${current.id}`}>
+          <h2 className="work-name">{current.name}</h2>
+          <p className="work-tagline">{current.tagline}</p>
+          <span className="work-year">{current.year}</span>
+        </div>
+
+        {/* 底部项目指示点：4 个，当前高亮 */}
+        <div className="work-dots">
+          {PROJECTS.map((p, i) => (
+            <span
+              key={p.id}
+              className={`work-dot ${i === currentIdx ? 'active' : ''}`}
+            />
+          ))}
+        </div>
+      </div>
+    </Html>
+  );
 }
 
 /**
@@ -195,57 +439,21 @@ function ScreenDisplay({
     ctx.arc(120, 120, 80, 0, Math.PI * 2);
     ctx.stroke();
 
-    // 5. 大标题（自动换行，避免长标题超出屏幕宽度）
-    // 之前固定 96px 单行，"CREATIVE STUDIO" 接近 1024 宽度上限，
-    // 相机推近后视场变窄 → 标题被截断或挤到第二行错位
-    // 改为：先测单行宽度，超 maxWidth 则按空格拆成多行居中绘制
-    ctx.fillStyle = '#fcf9f3';
-    ctx.font = 'bold 84px "STIX Two Text", serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const titleFontSize = 84;
-    const titleLineHeight = titleFontSize * 1.1;
-    const titleMaxWidth = w * 0.85;  // 最大宽度 = 屏幕 85%
-    const words = section.title.split(' ');
-    const lines = [];
-    let currentLine = words[0] || '';
-    for (let i = 1; i < words.length; i++) {
-      const testLine = currentLine + ' ' + words[i];
-      if (ctx.measureText(testLine).width > titleMaxWidth) {
-        lines.push(currentLine);
-        currentLine = words[i];
-      } else {
-        currentLine = testLine;
-      }
-    }
-    lines.push(currentLine);
-    const totalTitleHeight = lines.length * titleLineHeight;
-    const titleStartY = h / 2 - 60 - totalTitleHeight / 2 + titleLineHeight / 2;
-    lines.forEach((line, i) => {
-      ctx.fillText(line, w / 2, titleStartY + i * titleLineHeight);
-    });
+    // 5. 文字（标题/副标题/描述）已移到 <Html> 组件渲染（见 ScreenText）
+    //    原因：CanvasTexture 文字在相机推近后会模糊/锯齿，DOM 文字更清晰且可用
+    //    CSS 灵活排版。这里只保留装饰元素（光晕、网格、扫描线、角标）。
 
-    // 6. 副标题（accentColor）
-    ctx.fillStyle = section.accentColor;
-    ctx.font = '300 36px "Cormorant Garamond", serif';
-    ctx.fillText(section.subtitle, w / 2, h / 2 + 30);
-
-    // 7. 描述（淡灰）— 用老式 CRT 字体
-    ctx.fillStyle = 'rgba(252,249,243,0.6)';
-    ctx.font = '32px "VT323", "Share Tech Mono", "Courier New", monospace';
-    ctx.fillText(section.description, w / 2, h / 2 + 100);
-
-    // 8. 角标：section 编号 — 老式 CRT 字体，放大显示
+    // 6. 角标：section 编号 — 老式 CRT 字体，放大显示
     ctx.fillStyle = 'rgba(252,249,243,0.5)';
     ctx.font = '40px "VT323", "Share Tech Mono", "Courier New", monospace';
     ctx.textAlign = 'left';
     ctx.fillText(`0${idx + 1} / 04`, 40, h - 40);
 
-    // 9. 角标：右上角时间戳 — 同款老式字体
+    // 7. 角标：右上角时间戳 — 同款老式字体
     ctx.textAlign = 'right';
     ctx.fillText(new Date().toISOString().slice(0, 10), w - 40, h - 40);
 
-    // 10. 扫描线（复古 CRT 感）
+    // 8. 扫描线（复古 CRT 感）
     // 间距从 3px 加大到 8px、不透明度从 0.15 降到 0.06：
     // 之前 256 条密集暗线 + 色散垂直 RGB 偏移 → 推近时裂成彩色条纹（"裂纹"感）
     ctx.fillStyle = 'rgba(0,0,0,0.06)';
@@ -336,6 +544,14 @@ function ScreenDisplay({
           side={THREE.DoubleSide}
         />
       </mesh>
+      {/* 屏幕内容（Html 投影到屏幕平面）：
+          - SELECTED WORK section（idx=1）→ 项目轮播 WorkCarousel
+          - 其他 section → 文字 ScreenText */}
+      {sectionIndex === 1 ? (
+        <WorkCarousel transitionFlashRef={transitionFlashRef} />
+      ) : (
+        <ScreenText sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />
+      )}
     </>
   );
 }
@@ -500,7 +716,9 @@ function DustParticles({
  *  - END_FOV  推入终 FOV（°，比远景大，广角拉伸感）
  */
 const CAMERA_HOME = { x: 0, y: 0, z: 7 };
-const CAMERA_END = { x: 0, y: 0, z: -0.3 };  // 负值 = 穿过屏幕到背面
+// 相机终点：z=0.2 停在屏幕前很近（不穿过屏幕，避免屏幕在相机背后消失）
+// 屏幕平面在 z=0，相机停在 z=0.2 时屏幕充满视野，配合广角 FOV 营造"贴脸"感
+const CAMERA_END = { x: 0, y: 0, z: 0.2 };
 const HOME_FOV = 45;
 const END_FOV = 70;
 
@@ -564,64 +782,43 @@ export function FilmScene({ scrollProgress, mouseRef, onSectionChange }: FilmSce
   useFrame(() => {
     const totalProgress = progressRef.current;
 
-    // 计算当前段索引和段内进度
+    // === section 切换：直接跟随 floor(progress * 4) ===
+    // 4 段，切换边界在 progress = 0.25/0.5/0.75
     const totalSegment = totalProgress * 4;
     const segIndex = Math.min(3, Math.floor(totalSegment));
-    const segmentProgress = totalSegment - segIndex;
-
-    // === section 切换：直接跟随 segIndex ===
-    // segIndex 在 progress 越过 0.25 边界时跳变：
-    //  - 边界前（段 N 末尾）：segmentProgress≈1.0，闪光≈1（峰值，掩盖切换）
-    //  - 边界后（段 N+1 开头）：segmentProgress≈0，segIndex>0 → 闪光≈1（段开头淡出期）
-    // 两侧闪光都接近峰值，切换瞬间被完全掩盖，用户感知不到
-    // 反向滚动同理：segIndex 回退时，段末闪光掩盖切换
     if (sectionIndex !== segIndex) {
       setSectionIndex(segIndex);
     }
 
-    // === 计算闪光强度 ===
-    // 闪光只在 section 切换瞬间极短触发，精确跟随滚动位置（不用 lerp，避免延迟导致闪烁）
-    // 段末 [0.93, 0.985] 快速上升 → 切换瞬间（1.0）达峰值
-    // 段开头 [0, 0.07] 快速淡出（除了第一段开头）
+    // === 计算闪光强度（在 section 切换边界短暂触发）===
+    // 边界位置 = (segIndex + 1) / 4，即 0.25/0.5/0.75
+    // 在边界 ±0.04 范围内触发闪光，峰值在边界中心
+    // 第一段开头（progress < 0.04）不闪光（首次进入）
     let flash = 0;
-    if (segmentProgress > 0.93) {
-      flash = Math.max(flash, smoothstep(0.93, 0.985, segmentProgress));
-    }
-    if (segmentProgress < 0.07 && segIndex > 0) {
-      flash = Math.max(flash, 1 - smoothstep(0, 0.07, segmentProgress));
-    }
-    // 第一段开头不闪光（首次进入）
-    if (segIndex === 0 && segmentProgress < 0.07) {
-      flash = 0;
+    if (segIndex < 3) {
+      const boundary = (segIndex + 1) / 4;
+      const distToBoundary = Math.abs(totalProgress - boundary);
+      if (distToBoundary < 0.04) {
+        flash = 1 - smoothstep(0, 0.04, distToBoundary);
+      }
     }
     transitionFlashRef.current = flash;
 
-    // === 计算相机位置 ===
-    // 段内进度到相机 t 的映射：
-    //  [0, 0.07]    → 相机从背面回到远景（被闪光掩盖）
-    //  [0.07, 0.93] → 远景 → 推进到屏幕
-    //  [0.93, 1.0]  → 已穿过屏幕，停在背面
-    let cameraT = 0;
-    if (segmentProgress >= 0.07 && segmentProgress <= 0.93) {
-      cameraT = (segmentProgress - 0.07) / 0.86;
-      // 缓动：pow(t, 1.6) 让前期慢、后期加速，"扎进屏幕"感
-      cameraT = Math.pow(cameraT, 1.6);
-    } else if (segmentProgress > 0.93) {
-      cameraT = 1;
-    } else if (segmentProgress < 0.07 && segIndex > 0) {
-      // 段开头：从背面回到远景，t 从 1 → 0
-      cameraT = 1 - segmentProgress / 0.07;
-    }
+    // === 相机连续推进（不再每段重置）===
+    // 整个 progress 0~1 对应相机从远景 z=7 连续推进到 z=0.2（屏幕前很近）
+    // 缓动 pow(t, 1.6)：前期慢（远景欣赏），后期加速（扎进屏幕感）
+    // 相机路径不再分段重置，保持连续性
+    const cameraT = Math.pow(Math.max(0, Math.min(1, totalProgress)), 1.6);
 
-    // 鼠标视差（仅在非闪光 + 非推入终时生效）
+    // 鼠标视差（仅在非闪光 + 远景时生效，推近后视差衰减）
     // 幅度压到极小（0.12/0.08），避免相机旋转导致屏幕投影面积波动 → bloom 辉光区域波动 → 闪烁
     const target = mouseRef.current;
     const smoothed = mouseSmoothedRef.current;
     smoothed.x += (target.x - smoothed.x) * 0.05;
     smoothed.y += (target.y - smoothed.y) * 0.05;
-    const parallaxStrength = (1 - cameraT) * (1 - transitionFlashRef.current);
+    const parallaxStrength = (1 - cameraT) * (1 - flash);
 
-    // 相机位置：从远景 lerp 到推入终点
+    // 相机位置：从远景 lerp 到推入终点（连续推进，不分段）
     camera.position.x =
       CAMERA_HOME.x + (CAMERA_END.x - CAMERA_HOME.x) * cameraT + smoothed.x * 0.12 * parallaxStrength;
     camera.position.y =

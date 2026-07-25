@@ -366,7 +366,9 @@ body.camera-debug-mode .scroll-container {
 /* 滚动占位：4 个 section × 视口高度，撑出足够滚动距离
    每段 0.25 进度对应一个 section，段内有完整的推入→闪光→切换过渡 */
 .film-scroll-placeholder {
-  height: 400vh;
+  /* 800vh = 4 段 × 200vh，每段给相机连续推进留足滚动距离
+     （之前 400vh 每段只有 100vh，相机推进太快不平滑） */
+  height: 800vh;
 }
 
 /* 内容覆盖层：水平左对齐，给左侧文字块更多呼吸空间 */
@@ -524,6 +526,219 @@ body.camera-debug-mode .scroll-container {
 
 .demo-flash.entering.fade-out {
   opacity: 0;
+}
+
+/* === 屏幕文字（Html transform 投影到 3D 屏幕平面） ===
+ * 由 drei <Html transform> 渲染，DOM 容器 1024×768px，scale=4/1024 对齐到屏幕 plane。
+ * 注意：DOM 文字不受 WebGL 后处理（bloom/色散/暗角）影响，
+ *       所以用 text-shadow 模拟柔和辉光、用 drop-shadow 模拟色散，
+ *       让文字视觉上与屏幕的复古感保持一致。
+ */
+.screen-text-content {
+  width: 1024px;
+  height: 768px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+  /* 过渡：opacity 由 JS 每帧写入（随 transitionFlash 淡出），
+     transition 让淡出过程更平滑（避免逐帧 opacity 跳变） */
+  transition: opacity 0.08s linear;
+}
+
+/* 大标题：衬线字体，与 CanvasTexture 原标题字号一致（84px） */
+.screen-title {
+  font-family: var(--font-stix);
+  font-size: 84px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  color: #fcf9f3;
+  margin: 0;
+  /* 柔和辉光：模拟屏幕自发光 + bloom 辉光扩散
+     多层 text-shadow 由内到外、由实到虚 */
+  text-shadow:
+    0 0 8px rgba(255, 244, 224, 0.6),
+    0 0 20px rgba(255, 210, 140, 0.45),
+    0 0 40px rgba(255, 170, 100, 0.3);
+  /* 色散：用 drop-shadow 在文字层做 RGB 偏移，呼应镜头色差感
+     强度比前景 hero-char 略弱（屏幕文字不应抢戏） */
+  filter:
+    drop-shadow(1.6px 0 0 rgba(255, 60, 60, 0.6))
+    drop-shadow(-1.6px 0 0 rgba(60, 160, 255, 0.6));
+}
+
+/* 副标题：细体衬线，accent 色 */
+.screen-subtitle {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  word-spacing: 0.18em;
+  margin-top: 18px;
+  /* 继承 inline style 的 color（accentColor） */
+  /* 轻微辉光让副标题也"发光" */
+  text-shadow:
+    0 0 6px currentColor,
+    0 0 16px currentColor;
+}
+
+/* 描述：老式 CRT 字体，淡灰 */
+.screen-description {
+  font-family: var(--font-retro);
+  font-size: 32px;
+  color: rgba(252, 249, 243, 0.6);
+  margin-top: 28px;
+  letter-spacing: 0.04em;
+  /* 极轻微辉光，保持可读性 */
+  text-shadow: 0 0 4px rgba(252, 249, 243, 0.3);
+}
+
+/* === 项目轮播（SELECTED WORK section 屏幕内容） ===
+ * 由 drei <Html transform> 渲染，与 ScreenText 同样的对齐方式。
+ * 布局：缩略图居中显示（420×300），下方是项目名/tagline/年份，底部是 4 个指示点。
+ */
+.work-carousel {
+  width: 1024px;
+  height: 768px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  /* 过渡：opacity 由 JS 每帧写入（随 transitionFlash 淡出） */
+  transition: opacity 0.08s linear;
+}
+
+/* 缩略图舞台：relative 容器，prev/current 两层 img 绝对定位叠加做 cross-fade */
+.work-thumb-stage {
+  position: relative;
+  width: 420px;
+  height: 300px;
+  /* 边框 + 内阴影模拟老式 CRT 屏幕凹陷感 */
+  border: 4px solid #1a1a1f;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #050507;
+  box-shadow:
+    0 0 0 2px rgba(77, 196, 255, 0.25),  /* accent 色辉光边（SELECTED WORK 的 #4dc4ff） */
+    0 0 24px rgba(77, 196, 255, 0.35),
+    inset 0 0 30px rgba(0, 0, 0, 0.7);     /* 内阴影让边缘变暗，营造 CRT 弧面感 */
+}
+
+/* 缩略图 img：绝对定位填满舞台，object-fit 保持比例 */
+.work-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  /* 过渡：opacity 变化时 500ms 平滑过渡（cross-fade 核心） */
+  transition: opacity 0.5s ease;
+}
+
+/* 当前项：始终完全可见（在上层） */
+.work-thumb-stable {
+  opacity: 1;
+  z-index: 1;
+}
+
+/* 上一项（cross-fade 进行中）：mount 时从 opacity:1 动画到 0
+   用 CSS animation 而非 transition，因为 mount 时直接应用 opacity:0
+   不会有过渡效果（transition 需要属性值变化才触发） */
+.work-thumb-out {
+  z-index: 0;
+  animation: work-fade-out 0.5s ease forwards;
+}
+
+@keyframes work-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* 缩略图边框装饰：扫描线覆盖层（呼应屏幕扫描线） */
+.work-thumb-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 重复线性渐变模拟扫描线（间距 4px） */
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 3px,
+    rgba(0, 0, 0, 0.18) 4px
+  );
+  z-index: 2;
+}
+
+/* 项目信息区：缩略图下方 */
+.work-info {
+  margin-top: 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 项目名：衬线字体，与屏幕标题一致风格 */
+.work-name {
+  font-family: var(--font-stix);
+  font-size: 44px;
+  font-weight: 700;
+  color: #fcf9f3;
+  margin: 0;
+  letter-spacing: 0.02em;
+  /* 辉光：用 accent 色（#4dc4ff）呼应 SELECTED WORK */
+  text-shadow:
+    0 0 6px rgba(77, 196, 255, 0.6),
+    0 0 16px rgba(77, 196, 255, 0.4);
+}
+
+/* tagline：细体衬线 */
+.work-tagline {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 300;
+  color: rgba(252, 249, 243, 0.7);
+  margin: 0;
+  letter-spacing: 0.06em;
+}
+
+/* 年份：老式 CRT 字体 */
+.work-year {
+  font-family: var(--font-retro);
+  font-size: 28px;
+  color: rgba(77, 196, 255, 0.8);
+  margin-top: 4px;
+  letter-spacing: 0.08em;
+}
+
+/* 底部指示点：4 个圆点水平排列 */
+.work-dots {
+  position: absolute;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+}
+
+.work-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgba(252, 249, 243, 0.25);
+  transition: background-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.work-dot.active {
+  background-color: #4dc4ff;
+  transform: scale(1.4);
+  box-shadow: 0 0 10px rgba(77, 196, 255, 0.8);
 }
 
 /* 顶部导航增加 demo 切换链接的视觉提示（可选，NavBar 组件不变） */
