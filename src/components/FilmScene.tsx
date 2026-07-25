@@ -586,6 +586,58 @@ function ScreenDisplay({
 }
 
 /**
+ * 创建带轻微弯曲的 PlaneGeometry（模拟胶片自然弧度）
+ *
+ * 功能：在标准 PlaneGeometry 基础上，沿 X 轴方向给 Z 加二次曲线弯曲
+ *      （z = curvature × (groupLocalX)²），让胶片整体呈微笑形弧度
+ *      中间凸（向相机），两端凹（远离相机），模拟胶片在放映机里自然卷曲
+ *
+ * 参数：
+ *  - width      宽度（局部 plane 宽）
+ *  - height     高度（局部 plane 高）
+ *  - segX       X 方向细分段数（≥16 才平滑）
+ *  - segY       Y 方向细分段数
+ *  - curvature  弯曲强度（<0 中间凸向相机、两端远离相机；>0 反向）
+ *  - xOffset    该 mesh 在 group 局部坐标系中的 x 偏移（用于让多段 mesh
+ *               的弯曲在 world 坐标系中连续，不会在拼接处出现折线）
+ *
+ * 返回值：THREE.PlaneGeometry 弯曲后的几何体
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - 弯曲后顶点 Z 重新计算，必须调用 computeVertexNormals 重算法线
+ *  - xOffset 是关键：上下边缘/左右延伸/分隔线等不同位置的 mesh，
+ *    各自的局部 x=0 对应 group 中的不同 worldX，弯曲公式必须用 worldX
+ *    才能让所有 mesh 的弯曲在世界坐标系中连续
+ *  - 弯曲强度建议 |curvature| ≤ 0.008，过大导致 Html 文字投影错位
+ */
+function makeCurvedGeometry(
+  width: number,
+  height: number,
+  segX: number,
+  segY: number,
+  curvature: number,
+  xOffset: number = 0
+): THREE.PlaneGeometry {
+  const geo = new THREE.PlaneGeometry(width, height, segX, segY);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const localX = pos.getX(i);
+    // worldX = mesh 局部 x + mesh 在 group 中的 x 偏移
+    const worldX = localX + xOffset;
+    // 二次曲线弯曲：z = curvature × worldX²
+    // curvature < 0：worldX=0 处 z=0（中间），|worldX| 大处 z 负（远离相机）
+    // → 中间凸向相机，两端凹向远处（微笑形）
+    const z = curvature * worldX * worldX;
+    pos.setZ(i, z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
  * 胶片条组件（35mm 电影胶片风格，替代电脑外壳）
  *
  * 功能：
@@ -594,17 +646,20 @@ function ScreenDisplay({
  *  - 用 CanvasTexture 绘制胶片边缘：齿孔 + 胶片编码 + 划痕
  *  - 应用 dirt/grunge 纹理做旧化（污渍、磨损）
  *  - 胶片基底色为深褐色（胶片片基的琥珀色调）
+ *  - 所有胶片 mesh 沿 X 轴轻微弯曲（微笑形），模拟胶片自然卷曲
  *
  * 参数：无
  *
  * 返回值：React.ReactElement
  *
  * 注意事项：
- *  - 胶片总尺寸 8×4.2（宽×高），屏幕 4×3 在中间作为画面帧
- *  - 上下边缘各 0.6 高，带齿孔（黑色圆角矩形排列）
+ *  - 胶片总尺寸 20×4.2（宽×高），屏幕 16×3 在中间作为画面帧
+ *  - 上下边缘各 0.6 高，带齿孔（黑色圆角矩形 + 内阴影 + 白描边）
  *  - 左右延伸各 2 宽，纯胶片色 + 划痕
- *  - CanvasTexture 1024×512 绘制上下边缘的齿孔和编码
+ *  - CanvasTexture 2048×256 绘制上下边缘的齿孔/编码/DX 条码/时间码
  *  - dirt 作为 map 叠加污渍颜色，grunge 作为 roughnessMap 模拟磨损
+ *  - 弯曲 curvature = -0.004：中间凸 0.4 单位向相机，两端凹向远处
+ *    （足够明显看出弧度，又不会让 Html 文字严重错位）
  */
 function FilmStrip() {
   // 加载 dirt + grunge 纹理做旧化
@@ -622,10 +677,12 @@ function FilmStrip() {
   }, [dirtMap, grungeMap]);
 
   // 胶片边缘 CanvasTexture（齿孔 + 编码 + 划痕）
+  // canvas 高 320：增大高度让齿孔在 world 中更明显
+  // （之前 256 → 齿孔 55px 仅占 0.13 world 高，远景下视角 0.5° 几乎看不见）
   const edgeCanvas = useMemo(() => {
     const c = document.createElement('canvas');
     c.width = 2048;
-    c.height = 256;
+    c.height = 320;
     return c;
   }, []);
 
@@ -639,20 +696,31 @@ function FilmStrip() {
   }, [edgeCanvas]);
 
   /**
-   * 绘制胶片边缘（齿孔 + 编码 + 划痕）
+   * 绘制胶片边缘（齿孔 + DX 条码 + 时间码 + 划痕 + 污渍 + 颗粒）
    *
    * 功能：
-   *  - 深褐色背景（胶片片基色 #2a1a0e）
-   *  - 上下排列齿孔（黑色圆角矩形，模拟 35mm 胶片穿孔）
-   *  - 中间区域绘制胶片编码（如 "KODAK 5219 50D"）
-   *  - 随机划痕和污渍
+   *  - 深褐色胶片片基背景（带颗粒纹理）
+   *  - 上下两排齿孔：纯黑填充 + 径向内阴影（模拟穿孔深度）+ 浅褐描边（边缘高光）
+   *  - DX 光敏条形码（黑白条纹，35mm 胶片特征）
+   *  - 胶片型号水印（KODAK / FUJI / ILFORD / AGFA）
+   *  - 帧编号 + 时间码 + ASA/ISO 标识
+   *  - 随机划痕、污渍、磨损斑、边缘暗化
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 齿孔颜色用纯黑 #000000 + 内阴影渐变（中心黑，边缘淡褐色）
+   *    之前用 #050300 与背景 #2a1a0e 对比度太低，几乎看不见
+   *  - 加浅褐色描边 #5a3a1a 模拟穿孔边缘的反光高光，增强立体感
+   *  - 中间信息区分 4 段（对应 4 个 section），每段一组完整胶片信息
    */
   const drawFilmEdge = () => {
     const ctx = edgeCanvas.getContext('2d')!;
     const w = edgeCanvas.width;
     const h = edgeCanvas.height;
 
-    // 1. 背景：深褐色胶片片基
+    // 1. 背景：深褐色胶片片基（垂直渐变）
     const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
     bgGrad.addColorStop(0, '#1a1008');
     bgGrad.addColorStop(0.5, '#2a1a0e');
@@ -660,66 +728,190 @@ function FilmStrip() {
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, w, h);
 
-    // 2. 齿孔（perforations）：上下两排，黑色圆角矩形
-    // 35mm 胶片每帧 4 个齿孔，这里密集排列模拟
-    ctx.fillStyle = '#050300';
-    const holeW = 48;
-    const holeH = 32;
-    const holeGap = 80;  // 齿孔间距
-    const holeYTop = 16;
-    const holeYBottom = h - holeH - 16;
-    for (let x = 16; x < w - holeW; x += holeGap) {
-      // 上排齿孔
-      roundRect(ctx, x, holeYTop, holeW, holeH, 4);
-      ctx.fill();
-      // 下排齿孔
-      roundRect(ctx, x, holeYBottom, holeW, holeH, 4);
-      ctx.fill();
+    // 1b. 胶片颗粒纹理（增加质感，5000 个随机暗点）
+    for (let i = 0; i < 5000; i++) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      const alpha = Math.random() * 0.18;
+      ctx.fillStyle = `rgba(80, 50, 30, ${alpha})`;
+      ctx.fillRect(x, y, 1, 1);
     }
 
-    // 3. 胶片编码（中间区域，老式字体）
-    ctx.fillStyle = 'rgba(255, 200, 120, 0.5)';
-    ctx.font = 'bold 28px "VT323", "Share Tech Mono", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const codes = ['KODAK 5219', '50D 250T', 'DX 50A 01', '35MM 24FPS'];
-    codes.forEach((code, i) => {
-      const x = (w / codes.length) * (i + 0.5);
-      ctx.fillText(code, x, h / 2);
-    });
+    // 2. 齿孔：上下两排，纯黑 + 内阴影 + 浅褐描边
+    //    齿孔尺寸 90×90（增大尺寸让齿孔在 world 中更显眼）
+    //    间距 120，每排约 17 个，接近真实 35mm 胶片密度
+    const holeW = 90;
+    const holeH = 90;
+    const holeGap = 120;
+    const holeYTop = 30;
+    const holeYBottom = h - holeH - 30;
 
-    // 4. 帧编号（小字，分散排列）
-    ctx.fillStyle = 'rgba(255, 180, 100, 0.35)';
-    ctx.font = '20px "VT323", monospace';
-    ctx.textAlign = 'left';
-    for (let i = 0; i < 8; i++) {
-      const x = (w / 8) * i + 20;
-      ctx.fillText(`#${String(i * 12 + 1).padStart(4, '0')}`, x, h / 2 + 30);
+    /**
+     * 绘制单个齿孔（带内阴影和描边）
+     *
+     * 参数：
+     *  - x, y    齿孔左上角坐标
+     *  - w, h    齿孔尺寸
+     *
+     * 注意事项：齿孔分三层绘制
+     *  1. 浅褐色描边（穿孔边缘反光）
+     *  2. 纯黑填充（孔洞本身）
+     *  3. 径向渐变内阴影（中心更深，边缘略浅，模拟穿孔井深）
+     */
+    const drawHole = (x: number, y: number, hw: number, hh: number) => {
+      // 描边：浅褐色，模拟穿孔边缘磨损反光
+      ctx.strokeStyle = 'rgba(140, 90, 50, 0.85)';
+      ctx.lineWidth = 2.5;
+      roundRect(ctx, x - 2, y - 2, hw + 4, hh + 4, 12);
+      ctx.stroke();
+      // 黑色填充
+      ctx.fillStyle = '#000000';
+      roundRect(ctx, x, y, hw, hh, 10);
+      ctx.fill();
+      // 内阴影：径向渐变，中心纯黑，边缘略浅（模拟穿孔井的深度）
+      const cx = x + hw / 2;
+      const cy = y + hh / 2;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, hw / 1.4);
+      grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
+      grad.addColorStop(0.75, 'rgba(0, 0, 0, 1)');
+      grad.addColorStop(1, 'rgba(60, 40, 20, 0.5)');
+      ctx.fillStyle = grad;
+      roundRect(ctx, x, y, hw, hh, 10);
+      ctx.fill();
+    };
+
+    for (let x = 40; x < w - holeW; x += holeGap) {
+      drawHole(x, holeYTop, holeW, holeH);
+      drawHole(x, holeYBottom, holeW, holeH);
     }
 
-    // 5. 划痕（随机细线）
-    ctx.strokeStyle = 'rgba(255, 220, 180, 0.15)';
+    // 3. 中间信息区：分 4 段，每段一组完整胶片信息
+    const segCount = 4;
+    const segW = w / segCount;
+    const infoY = h / 2;
+    const films = [
+      'KODAK GOLD 200-24',
+      'FUJI SUPERIA 400',
+      'ILFORD HP5 PLUS',
+      'AGFA VISTA 400',
+    ];
+    const filmCodes = ['5020 024', 'FU 400 24', 'IP5 400 24', 'AV 400 024'];
+
+    for (let s = 0; s < segCount; s++) {
+      const x0 = s * segW;
+      const cx = x0 + segW / 2;
+
+      // 3a. 胶片型号（黄色，等宽字体）
+      ctx.fillStyle = 'rgba(255, 210, 130, 0.85)';
+      ctx.font = 'bold 22px "VT323", "Share Tech Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(films[s], cx, infoY - 26);
+
+      // 3b. DX 光敏条形码（黑白条纹，模拟 35mm 胶片的 DX 码）
+      //     真实胶片在齿孔旁有 12 位条码用于相机自动识别 ISO
+      const bcH = 12;
+      const bcW = 100;
+      const bcX = cx - bcW / 2;
+      const bcY = infoY - bcH / 2 + 6;
+      // 白色背景
+      ctx.fillStyle = '#f0e8d8';
+      ctx.fillRect(bcX - 2, bcY - 2, bcW + 4, bcH + 4);
+      // 黑色条纹（伪随机但确定性的图案）
+      let curX = bcX;
+      const rng = (seed: number) => {
+        const x = Math.sin(seed * 12.9898) * 43758.5453;
+        return x - Math.floor(x);
+      };
+      for (let b = 0; b < 18; b++) {
+        const barW = 2 + rng(s * 100 + b) * 4;
+        if (rng(s * 200 + b) > 0.45) {
+          ctx.fillStyle = '#0a0a0a';
+          ctx.fillRect(curX, bcY, barW, bcH);
+        }
+        curX += barW + 1;
+        if (curX > bcX + bcW) break;
+      }
+
+      // 3c. 帧编号（左下角）
+      ctx.fillStyle = 'rgba(255, 190, 110, 0.7)';
+      ctx.font = '18px "VT323", monospace';
+      ctx.textAlign = 'left';
+      const frameNum = String(s * 24 + 1).padStart(4, '0');
+      ctx.fillText(`#${frameNum}`, x0 + 22, infoY + 24);
+
+      // 3d. 时间码（右下角，SMPTE 格式 HH:MM:SS:FF）
+      ctx.textAlign = 'right';
+      const tc = `00:00:${String(s * 12).padStart(2, '0')}:24`;
+      ctx.fillText(tc, x0 + segW - 22, infoY + 24);
+
+      // 3e. ASA/ISO 标识（再下一行）
+      ctx.fillStyle = 'rgba(255, 220, 180, 0.55)';
+      ctx.font = '14px "VT323", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('ASA 200', x0 + 22, infoY + 44);
+      ctx.textAlign = 'right';
+      ctx.fillText('ISO 200/24°', x0 + segW - 22, infoY + 44);
+
+      // 3f. 胶片编码（最下方，深色小字）
+      ctx.fillStyle = 'rgba(255, 180, 100, 0.45)';
+      ctx.font = '12px "VT323", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(filmCodes[s], cx, infoY + 60);
+    }
+
+    // 4. 划痕（随机细线，多一些增加真实感）
+    ctx.strokeStyle = 'rgba(255, 220, 180, 0.2)';
     ctx.lineWidth = 1;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 35; i++) {
       ctx.beginPath();
       const x = Math.random() * w;
       const y1 = Math.random() * h;
-      const y2 = y1 + (Math.random() - 0.5) * 40;
+      const y2 = y1 + (Math.random() - 0.5) * 60;
       ctx.moveTo(x, y1);
-      ctx.lineTo(x + (Math.random() - 0.5) * 20, y2);
+      ctx.lineTo(x + (Math.random() - 0.5) * 30, y2);
+      ctx.stroke();
+    }
+    // 长划痕（横贯胶片的纵向划痕，胶片老化的典型特征）
+    ctx.strokeStyle = 'rgba(255, 200, 150, 0.12)';
+    ctx.lineWidth = 0.6;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      const x = Math.random() * w;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + (Math.random() - 0.5) * 8, h);
       ctx.stroke();
     }
 
-    // 6. 污渍（随机深色斑点）
-    for (let i = 0; i < 20; i++) {
+    // 5. 污渍（随机深色斑点，模拟指纹/灰尘）
+    for (let i = 0; i < 50; i++) {
       const x = Math.random() * w;
       const y = Math.random() * h;
-      const r = 2 + Math.random() * 6;
-      ctx.fillStyle = `rgba(0, 0, 0, ${0.1 + Math.random() * 0.2})`;
+      const r = 2 + Math.random() * 8;
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.1 + Math.random() * 0.3})`;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
     }
+    // 浅色磨损斑（胶片基底老化发白）
+    for (let i = 0; i < 25; i++) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      const r = 1 + Math.random() * 3;
+      ctx.fillStyle = `rgba(255, 220, 180, ${0.05 + Math.random() * 0.1})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 6. 边缘暗化（上下边缘加深，模拟胶片边缘的磨损暗化）
+    const edgeGrad = ctx.createLinearGradient(0, 0, 0, h);
+    edgeGrad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
+    edgeGrad.addColorStop(0.12, 'rgba(0, 0, 0, 0)');
+    edgeGrad.addColorStop(0.88, 'rgba(0, 0, 0, 0)');
+    edgeGrad.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
+    ctx.fillStyle = edgeGrad;
+    ctx.fillRect(0, 0, w, h);
 
     edgeTexture.needsUpdate = true;
   };
@@ -745,16 +937,27 @@ function FilmStrip() {
   };
 
   // 首次挂载绘制胶片边缘
+  // 关键修复：立即绘制一次（不依赖字体加载），字体加载后再绘制一次
+  // 之前只依赖 document.fonts.ready，若 VT323 字体加载慢或失败，Promise
+  // 不 resolve，drawFilmEdge 永远不执行，canvas 一直空白 → 齿孔看不到
   useEffect(() => {
-    const draw = () => drawFilmEdge();
+    // 立即绘制一次（用 fallback 字体，齿孔和图形元素不受影响）
+    drawFilmEdge();
+    console.log('[FilmStrip] drawFilmEdge executed immediately, edgeCanvas size:',
+      edgeCanvas.width, 'x', edgeCanvas.height);
+    // 字体加载完成后再绘制一次（让 VT323 字体生效于胶片编码文字）
     if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(draw);
-    } else {
-      setTimeout(draw, 500);
+      document.fonts.ready.then(() => {
+        drawFilmEdge();
+        console.log('[FilmStrip] drawFilmEdge re-executed after fonts ready');
+      }).catch((err: unknown) => {
+        console.warn('[FilmStrip] fonts.ready rejected, using fallback fonts', err);
+      });
     }
-  }, []);
+  }, [edgeCanvas]);
 
   // 胶片基底材质：深褐色 + dirt 污渍 + grunge 粗糙度
+  // DoubleSide：弯曲后从背面也能看到（防止从某个视角看到穿透）
   const filmBaseMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
@@ -763,71 +966,137 @@ function FilmStrip() {
         roughnessMap: grungeMap,
         roughness: 0.9,
         metalness: 0.1,
+        side: THREE.DoubleSide,
       }),
     [dirtMap, grungeMap]
   );
 
   // 胶片边缘材质：带齿孔的 CanvasTexture
+  // DoubleSide：上下边缘从背面看也要正确显示
+  // emissiveIntensity 提到 10：让齿孔区域背景充分发光，齿孔（纯黑）对比最明显
+  //   之前 0.15 太暗，整个边缘几乎全黑，齿孔与背景混在一起看不见
+  // emissive 用更暖的琥珀色 #6a3a00：背景偏暖橙，与齿孔纯黑对比更鲜明
   const filmEdgeMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
         map: edgeTexture,
-        color: '#3a2a1a',
+        color: '#5a3a22',
         roughnessMap: grungeMap,
         roughness: 0.95,
         metalness: 0.05,
-        emissive: '#1a0a00',
+        emissive: '#6a3a00',
         emissiveMap: edgeTexture,
-        emissiveIntensity: 0.15,
+        emissiveIntensity: 5,
+        side: THREE.DoubleSide,
       }),
     [edgeTexture, grungeMap]
   );
 
-  // 胶片尺寸：宽 20，高 4.2（屏幕 16×3 在中间，左右各延伸 2）
+  // 胶片尺寸：宽 20，高 4.6（屏幕 16×3 在中间，上下边缘各 0.8 高）
   // 屏幕宽 16 = 4 个 section × 每个 4 宽
+  // edgeH 从 0.6 增到 0.8：让齿孔在 world 中更显眼
+  //   之前 edgeH=0.6，齿孔 55px 仅占 0.13 world 高，视角 0.5° 看不见
+  //   现在 edgeH=0.8，齿孔 90px 占 0.225 world 高，视角 1.8° 明显可见
   const FILM_W = 20;
-  const FILM_H = 4.2;
+  const FILM_H = 4.6;
   const SCREEN_W = 16;
   const SCREEN_H = 3;
-  const edgeH = (FILM_H - SCREEN_H) / 2;  // 上下边缘各 0.6 高
+  const edgeH = (FILM_H - SCREEN_H) / 2;  // 上下边缘各 0.8 高
   const sideW = (FILM_W - SCREEN_W) / 2;  // 左右延伸各 2 宽
+
+  // 弯曲强度：负值 → 中间凸向相机，两端凹向远处（微笑形）
+  // -0.004 在 |x|=10 处产生 z=-0.4 的偏移，足够看出弧度，又不会让 Html 文字严重错位
+  const CURVATURE = -0.004;
+
+  // 左右延伸 mesh 在 group 中的 x 偏移
+  // 左延伸位置 x = -SCREEN_W/2 - sideW/2 = -8 - 1 = -9
+  // 右延伸位置 x = 9
+  const LEFT_EXT_X = -SCREEN_W / 2 - sideW / 2;
+  const RIGHT_EXT_X = SCREEN_W / 2 + sideW / 2;
+
+  // 各 mesh 的弯曲几何体（每个 mesh 独立几何体，不能共享）
+  // xOffset 关键：让每段 mesh 在 group worldX 坐标系中弯曲连续
+  // 基底/上下边缘居中（xOffset=0），左右延伸 xOffset=±9，分隔线 xOffset=各自 x 位置
+  const baseGeo = useMemo(
+    () => makeCurvedGeometry(FILM_W, FILM_H, 32, 4, CURVATURE, 0),
+    [FILM_W, FILM_H, CURVATURE]
+  );
+  const topEdgeGeo = useMemo(
+    () => makeCurvedGeometry(FILM_W, edgeH, 32, 2, CURVATURE, 0),
+    [FILM_W, edgeH, CURVATURE]
+  );
+  const bottomEdgeGeo = useMemo(
+    () => makeCurvedGeometry(FILM_W, edgeH, 32, 2, CURVATURE, 0),
+    [FILM_W, edgeH, CURVATURE]
+  );
+  const leftExtGeo = useMemo(
+    () => makeCurvedGeometry(sideW, SCREEN_H, 8, 4, CURVATURE, LEFT_EXT_X),
+    [sideW, SCREEN_H, CURVATURE, LEFT_EXT_X]
+  );
+  const rightExtGeo = useMemo(
+    () => makeCurvedGeometry(sideW, SCREEN_H, 8, 4, CURVATURE, RIGHT_EXT_X),
+    [sideW, SCREEN_H, CURVATURE, RIGHT_EXT_X]
+  );
+  // 4 条帧分隔线，xOffset 各自不同
+  const dividerGeos = useMemo(
+    () =>
+      [-4, 0, 4, 8].map((x) =>
+        makeCurvedGeometry(0.04, SCREEN_H, 2, 4, CURVATURE, x)
+      ),
+    [SCREEN_H, CURVATURE]
+  );
+
+  // 卸载时释放几何体内存
+  useEffect(() => {
+    return () => {
+      baseGeo.dispose();
+      topEdgeGeo.dispose();
+      bottomEdgeGeo.dispose();
+      leftExtGeo.dispose();
+      rightExtGeo.dispose();
+      dividerGeos.forEach((g) => g.dispose());
+    };
+  }, [baseGeo, topEdgeGeo, bottomEdgeGeo, leftExtGeo, rightExtGeo, dividerGeos]);
 
   // 胶片整体偏移 x=6：让 section 0 中心在原点（相机初始看向 0,0,0）
   // 屏幕从 -2 到 14，中心 6；胶片从 -4 到 16，中心 6
   return (
     <group position={[6, 0, 0]}>
-      {/* 胶片基底（整体背板）：深褐色，带 dirt 污渍 */}
+      {/* 胶片基底（整体背板）：深褐色，带 dirt 污渍，弯曲
+          原本是 boxGeometry（有厚度），改成弯曲 planeGeometry 失去厚度
+          但基底被前面 mesh 遮挡看不到，影响小，换来弯曲效果值得 */}
       <mesh position={[0, 0, -0.15]} material={filmBaseMat}>
-        <boxGeometry args={[FILM_W, FILM_H, 0.08]} />
+        <primitive object={baseGeo} attach="geometry" />
       </mesh>
 
-      {/* 上边缘：齿孔 + 编码（CanvasTexture） */}
+      {/* 上边缘：齿孔 + 编码（CanvasTexture），弯曲 */}
       <mesh position={[0, SCREEN_H / 2 + edgeH / 2, -0.05]} material={filmEdgeMat}>
-        <planeGeometry args={[FILM_W, edgeH]} />
+        <primitive object={topEdgeGeo} attach="geometry" />
       </mesh>
 
-      {/* 下边缘：齿孔 + 编码（CanvasTexture） */}
+      {/* 下边缘：齿孔 + 编码（CanvasTexture），弯曲 */}
       <mesh position={[0, -SCREEN_H / 2 - edgeH / 2, -0.05]} material={filmEdgeMat}>
-        <planeGeometry args={[FILM_W, edgeH]} />
+        <primitive object={bottomEdgeGeo} attach="geometry" />
       </mesh>
 
-      {/* 左延伸：纯胶片色 + dirt */}
-      <mesh position={[-SCREEN_W / 2 - sideW / 2, 0, -0.05]} material={filmBaseMat}>
-        <planeGeometry args={[sideW, SCREEN_H]} />
+      {/* 左延伸：纯胶片色 + dirt，弯曲（xOffset=-9 让弯曲在 worldX 连续） */}
+      <mesh position={[LEFT_EXT_X, 0, -0.05]} material={filmBaseMat}>
+        <primitive object={leftExtGeo} attach="geometry" />
       </mesh>
 
-      {/* 右延伸：纯胶片色 + dirt */}
-      <mesh position={[SCREEN_W / 2 + sideW / 2, 0, -0.05]} material={filmBaseMat}>
-        <planeGeometry args={[sideW, SCREEN_H]} />
+      {/* 右延伸：纯胶片色 + dirt，弯曲（xOffset=9） */}
+      <mesh position={[RIGHT_EXT_X, 0, -0.05]} material={filmBaseMat}>
+        <primitive object={rightExtGeo} attach="geometry" />
       </mesh>
 
       {/* 帧分隔线：每个 section 之间的竖线，标识胶片画面帧边界
           section i 和 i+1 之间在 x = i*4 - SCREEN_W/2 + 4 = i*4 - 4
-          即 x = -4, 0, 4, 8（相对 group 中心） */}
+          即 x = -4, 0, 4, 8（相对 group 中心）
+          每条分隔线用对应 xOffset 的弯曲几何体，弯曲与胶片一致 */}
       {[-4, 0, 4, 8].map((x, i) => (
         <mesh key={i} position={[x, 0, -0.02]}>
-          <planeGeometry args={[0.04, SCREEN_H]} />
-          <meshBasicMaterial color="#050300" />
+          <primitive object={dividerGeos[i]} attach="geometry" />
+          <meshBasicMaterial color="#050300" side={THREE.DoubleSide} />
         </mesh>
       ))}
     </group>
