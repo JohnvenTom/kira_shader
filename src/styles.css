@@ -496,16 +496,16 @@ body.camera-debug-mode .scroll-container {
   box-shadow: 0 0 12px currentColor;
 }
 
-/* === 跨 demo 切换的全屏闪光层 ===
+/* === 跨 demo 切换的全屏黑屏层 ===
  * 用于 App → film demo 的无缝过渡：
- *  - App 滚动到末尾时白色渐强（掩盖相机穿过屏幕的画面跳变）
- *  - flash 峰值时切换 hash 到 #film
- *  - film demo mount 时从白色淡出，露出新场景
+ *  - App 滚动到末尾相机穿过屏幕时画面渐黑（延续"穿入屏幕"的暗化感）
+ *  - 黑屏峰值时切换 hash 到 #film
+ *  - film demo mount 时从黑屏淡出，露出新场景
  * z-index 200 高于所有层（loading 100 / nav 60 / scroll 50 / canvas 40 / overlay 45） */
 .demo-flash {
   position: fixed;
   inset: 0;
-  background: #ffffff;
+  background: #000000;
   z-index: 200;
   pointer-events: none;
   opacity: 0;
@@ -516,7 +516,7 @@ body.camera-debug-mode .scroll-container {
   opacity: 1;
 }
 
-/* film demo 进入时的白色淡出层（mount 时 opacity=1，淡出到 0） */
+/* film demo 进入时的黑色淡出层（mount 时 opacity=1，淡出到 0） */
 .demo-flash.entering {
   opacity: 1;
   transition: opacity 0.8s ease-out 0.2s;
