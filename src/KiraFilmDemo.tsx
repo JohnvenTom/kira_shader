@@ -97,6 +97,9 @@ export default function KiraFilmDemo() {
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
+  // 鼠标拖动偏移（世界坐标 x，负值表示胶片向左移动）
+  // 范围 0 ~ -12（section 0 在 x=0，section 3 在 x=-12）
+  const dragOffsetRef = useRef(0);
 
   // 后处理参数（参考 shader.se 的胶片质感）
   // bloomIntensity 1.2 + 4 sin 波动态闪烁，sepia 0.25 略偏暖，
@@ -198,6 +201,90 @@ export default function KiraFilmDemo() {
     };
   }, []);
 
+  /**
+   * 鼠标拖动监听（左右切换 section）
+   *
+   * 功能：
+   *  - mousedown 记录起始位置，但不立即标记为拖动（避免误触）
+   *  - mousemove 检查水平移动距离，超过阈值（5px）才标记为拖动
+   *  - 标记为拖动后，后续 mousemove 更新 dragOffsetRef
+   *  - mouseup 结束拖动，吸附到最近的帧（-i*4，i=0~3）
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 拖动缩放因子 DRAG_SCALE = 0.015：鼠标移动 100px ≈ 世界坐标 1.5 单位
+   *    （4 个 section 间距 4，需要拖动约 270px 切换一帧，手感适中）
+   *  - dragOffset 范围限制在 [-12, 0]（section 0 ~ 3）
+   *  - 不阻止默认行为（保留滚动功能），仅水平拖动触发切换
+   *  - 拖动时设置 cursor: grabbing，提示用户正在拖动
+   *  - 仅在鼠标位于视口中间区域（屏幕区域）时触发拖动，避免误触 NavBar
+   */
+  useEffect(() => {
+    let isPending = false;     // mousedown 已触发，等待移动阈值确认
+    let isDragging = false;    // 已确认拖动
+    let startX = 0;
+    let startY = 0;
+    let startOffset = 0;
+    const DRAG_SCALE = 0.015;  // 鼠标像素 → 世界坐标的缩放因子
+    const DRAG_THRESHOLD = 5;  // 水平移动阈值（px），超过才确认拖动
+
+    const onMouseDown = (e: MouseEvent) => {
+      // 仅左键触发
+      if (e.button !== 0) return;
+      // 仅在视口中间区域（Y 在 15%~85%）触发，避免误触 NavBar 和底部
+      const yRatio = e.clientY / window.innerHeight;
+      if (yRatio < 0.15 || yRatio > 0.85) return;
+      isPending = true;
+      isDragging = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      startOffset = dragOffsetRef.current;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isPending) return;
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+      // 水平移动超过阈值才确认拖动（避免垂直滚动误触）
+      if (!isDragging) {
+        if (Math.abs(deltaX) < DRAG_THRESHOLD) return;
+        // 水平移动超过阈值，且水平移动大于垂直移动（确认是水平拖动而非滚动）
+        if (Math.abs(deltaX) < Math.abs(deltaY)) return;
+        isDragging = true;
+        document.body.style.cursor = 'grabbing';
+      }
+      // 更新 dragOffset
+      let newOffset = startOffset + deltaX * DRAG_SCALE;
+      // 限制范围 [-12, 0]
+      newOffset = Math.max(-12, Math.min(0, newOffset));
+      dragOffsetRef.current = newOffset;
+    };
+
+    const onMouseUp = () => {
+      isPending = false;
+      if (!isDragging) return;
+      isDragging = false;
+      document.body.style.cursor = '';
+      // 吸附到最近的帧（-i*4，i = round(-offset / 4)）
+      const currentOffset = dragOffsetRef.current;
+      const nearestFrame = Math.round(-currentOffset / 4);
+      const clampedFrame = Math.max(0, Math.min(3, nearestFrame));
+      dragOffsetRef.current = -clampedFrame * 4;
+    };
+
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+    };
+  }, []);
+
   // 当前 section 内容
   const currentSection = SECTIONS[sectionIndex];
 
@@ -232,6 +319,7 @@ export default function KiraFilmDemo() {
           <FilmScene
             scrollProgress={scrollProgress}
             mouseRef={mouseRef}
+            dragOffsetRef={dragOffsetRef}
             onSectionChange={handleSectionChange}
           />
           <FilmPostProcessing params={filmParams} />

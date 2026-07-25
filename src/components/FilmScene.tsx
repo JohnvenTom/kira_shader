@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
+import { Html, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 
 /**
@@ -357,10 +357,11 @@ function ScreenDisplay({
   const meshRef = useRef<THREE.Mesh>(null);
   const rectLightRef = useRef<THREE.RectAreaLight>(null);
 
-  // 主 canvas（CanvasTexture 源）
+  // 主 canvas（CanvasTexture 源）— 宽胶片：4 个 section 横向排列
+  // 每个 section 占 1024 宽，总宽 4096，对应 3D 空间 16 单位宽（4×4）
   const canvas = useMemo(() => {
     const c = document.createElement('canvas');
-    c.width = 1024;
+    c.width = 4096;
     c.height = 768;
     return c;
   }, []);
@@ -376,110 +377,126 @@ function ScreenDisplay({
   }, [canvas]);
 
   /**
-   * 在 canvas 上绘制指定 section 的内容
+   * 在 canvas 上绘制所有 4 个 section 的内容（横向排列）
    *
    * 功能：
-   *  - 清空 canvas
-   *  - 绘制径向渐变背景（用 accentColor）
-   *  - 绘制网格线（增强复古 CRT 感）
-   *  - 绘制大标题、副标题、描述
-   *  - 绘制装饰圆点和扫描线
+   *  - 每个 section 占 1024 宽，共 4096 宽
+   *  - 每个 section 绘制：径向渐变背景 + 网格线 + 光晕 + 装饰圆环 + 角标 + 扫描线
+   *  - 帧之间用细线分隔（标识胶片画面帧边界）
    *
-   * 参数：
-   *  - section {SectionContent} 要绘制的内容
-   *  - idx     {number} section 索引（用于角标显示）
+   * 参数：无
    *
    * 返回值：无
+   *
+   * 注意事项：
+   *  - 一次性绘制所有 section，不再随 sectionIndex 变化重绘
+   *  - 文字内容（标题/副标题/描述）由 <Html> 组件渲染（ScreenText/WorkCarousel）
    */
-  const drawSection = (section: SectionContent, idx: number) => {
+  const drawAllSections = () => {
     const ctx = canvas.getContext('2d')!;
-    const w = canvas.width;
-    const h = canvas.height;
+    const totalW = canvas.width;   // 4096
+    const h = canvas.height;        // 768
+    const frameW = 1024;            // 每个 section 占 1024 宽
 
-    // 1. 背景：深色径向渐变
-    const bgGrad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 1.5);
-    bgGrad.addColorStop(0, '#1a1a1f');
-    bgGrad.addColorStop(1, '#050507');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, w, h);
+    // 1. 整体背景：深色填充
+    ctx.fillStyle = '#050507';
+    ctx.fillRect(0, 0, totalW, h);
 
-    // 2. 网格线（淡色 CRT 风）
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-    ctx.lineWidth = 1;
-    const gridSize = 64;
-    for (let x = 0; x < w; x += gridSize) {
+    // 2. 逐个 section 绘制
+    SECTIONS.forEach((section, idx) => {
+      const xOff = idx * frameW;  // 该 section 在 canvas 上的 x 偏移
+
+      // 2.1 径向渐变背景（以该 section 中心为圆心）
+      const cx = xOff + frameW / 2;
+      const cy = h / 2;
+      const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, frameW / 1.5);
+      bgGrad.addColorStop(0, '#1a1a1f');
+      bgGrad.addColorStop(1, '#050507');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(xOff, 0, frameW, h);
+
+      // 2.2 网格线（淡色 CRT 风，仅在该 section 范围内）
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(xOff, 0, frameW, h);
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      const gridSize = 64;
+      for (let x = xOff; x < xOff + frameW; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(xOff, y);
+        ctx.lineTo(xOff + frameW, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // 2.3 径向光晕（accentColor）
+      const accentRgb = hexToRgb(section.accentColor);
+      const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, frameW / 2.5);
+      glowGrad.addColorStop(0, `rgba(${accentRgb.r},${accentRgb.g},${accentRgb.b},0.35)`);
+      glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glowGrad;
+      ctx.fillRect(xOff, 0, frameW, h);
+
+      // 2.4 装饰圆环（左上角，相对该 section 偏移）
+      ctx.strokeStyle = section.accentColor;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(xOff + 120, 120, 60, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(xOff + 120, 120, 80, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 2.5 角标：section 编号（老式 CRT 字体）
+      ctx.fillStyle = 'rgba(252,249,243,0.5)';
+      ctx.font = '40px "VT323", "Share Tech Mono", "Courier New", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`0${idx + 1} / 04`, xOff + 40, h - 40);
+
+      // 2.6 角标：右上角时间戳
+      ctx.textAlign = 'right';
+      ctx.fillText(new Date().toISOString().slice(0, 10), xOff + frameW - 40, h - 40);
+
+      // 2.7 扫描线（复古 CRT 感）
+      ctx.fillStyle = 'rgba(0,0,0,0.06)';
+      for (let y = 0; y < h; y += 8) {
+        ctx.fillRect(xOff, y, frameW, 1);
+      }
+    });
+
+    // 3. 帧分隔线：每个 section 之间画一条竖线（标识胶片画面帧边界）
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = 3;
+    for (let i = 1; i < SECTIONS.length; i++) {
+      const x = i * frameW;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
-    }
-    for (let y = 0; y < h; y += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-    }
-
-    // 3. 径向光晕（accentColor）
-    const accentRgb = hexToRgb(section.accentColor);
-    const glowGrad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2.5);
-    glowGrad.addColorStop(0, `rgba(${accentRgb.r},${accentRgb.g},${accentRgb.b},0.35)`);
-    glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = glowGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    // 4. 装饰圆环（左上角）
-    ctx.strokeStyle = section.accentColor;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(120, 120, 60, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(120, 120, 80, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // 5. 文字（标题/副标题/描述）已移到 <Html> 组件渲染（见 ScreenText）
-    //    原因：CanvasTexture 文字在相机推近后会模糊/锯齿，DOM 文字更清晰且可用
-    //    CSS 灵活排版。这里只保留装饰元素（光晕、网格、扫描线、角标）。
-
-    // 6. 角标：section 编号 — 老式 CRT 字体，放大显示
-    ctx.fillStyle = 'rgba(252,249,243,0.5)';
-    ctx.font = '40px "VT323", "Share Tech Mono", "Courier New", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`0${idx + 1} / 04`, 40, h - 40);
-
-    // 7. 角标：右上角时间戳 — 同款老式字体
-    ctx.textAlign = 'right';
-    ctx.fillText(new Date().toISOString().slice(0, 10), w - 40, h - 40);
-
-    // 8. 扫描线（复古 CRT 感）
-    // 间距从 3px 加大到 8px、不透明度从 0.15 降到 0.06：
-    // 之前 256 条密集暗线 + 色散垂直 RGB 偏移 → 推近时裂成彩色条纹（"裂纹"感）
-    ctx.fillStyle = 'rgba(0,0,0,0.06)';
-    for (let y = 0; y < h; y += 8) {
-      ctx.fillRect(0, y, w, 1);
     }
 
     // 通知 CanvasTexture 更新
     texture.needsUpdate = true;
   };
 
-  // sectionIndex 变化时重绘
-  useEffect(() => {
-    drawSection(SECTIONS[sectionIndex], sectionIndex);
-  }, [sectionIndex]);
-
-  // 首次挂载：等老式字体（VT323）加载完成后再绘制，避免 canvas 用 fallback 字体
+  // 首次挂载：等老式字体（VT323）加载完成后绘制所有 section
   useEffect(() => {
     let cancelled = false;
     const draw = () => {
-      if (!cancelled) drawSection(SECTIONS[sectionIndex], sectionIndex);
+      if (!cancelled) drawAllSections();
     };
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(draw);
     } else {
-      // 不支持 document.fonts 时延迟 500ms 重绘
       setTimeout(draw, 500);
     }
     return () => {
@@ -521,19 +538,27 @@ function ScreenDisplay({
 
   return (
     <>
-      {/* RectAreaLight 面光源：与屏幕同位置，让屏幕照亮周围几何体 */}
+      {/* RectAreaLight 面光源：跟随当前 section 位置，让屏幕照亮周围几何体
+          section 0 中心在 x=0，section i 中心在 x=i*4 */}
       <rectAreaLight
         ref={rectLightRef}
-        position={[0, 0, 0]}
+        position={[sectionIndex * 4, 0, 0]}
         rotation={[0, 0, 0]}
         width={4}
         height={3}
         color={SECTIONS[sectionIndex].accentColor}
         intensity={8}
       />
-      {/* 屏幕平面 */}
-      <mesh ref={meshRef} position={[0, 0, 0]} rotation={[0, 0, 0]}>
-        <planeGeometry args={[4, 3]} />
+      {/* 胶片屏幕平面：宽 16（4 个 section × 每个 4 宽），高 3
+          位置 x=6 让 section 0 中心在原点（相机初始看向 0,0,0）
+          planeGeometry 以中心为原点，宽 16 → 从 -8 到 +8
+          plane 位置 x=6 → plane 从 -2 到 14
+          section 0（canvas 0~1024）对应 3D -2~2，中心 0 ✓
+          section 1（canvas 1024~2048）对应 3D 2~6，中心 4
+          section 2 对应 3D 6~10，中心 8
+          section 3 对应 3D 10~14，中心 12 */}
+      <mesh ref={meshRef} position={[6, 0, 0]} rotation={[0, 0, 0]}>
+        <planeGeometry args={[16, 3]} />
         <meshStandardMaterial
           ref={matRef}
           map={texture}
@@ -544,69 +569,267 @@ function ScreenDisplay({
           side={THREE.DoubleSide}
         />
       </mesh>
-      {/* 屏幕内容（Html 投影到屏幕平面）：
-          - SELECTED WORK section（idx=1）→ 项目轮播 WorkCarousel
-          - 其他 section → 文字 ScreenText */}
-      {sectionIndex === 1 ? (
-        <WorkCarousel transitionFlashRef={transitionFlashRef} />
-      ) : (
-        <ScreenText sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />
-      )}
+      {/* 屏幕内容（Html 投影到胶片各画面帧）：
+          渲染所有 4 个 section 的文字/轮播，每个位置 x = i * 4
+          当前 sectionIndex 的实例完全可见，其他实例透明度降低（侧边预览） */}
+      {SECTIONS.map((_, i) => (
+        <group key={i} position={[i * 4, 0, 0]}>
+          {i === 1 ? (
+            <WorkCarousel transitionFlashRef={transitionFlashRef} />
+          ) : (
+            <ScreenText sectionIndex={i} transitionFlashRef={transitionFlashRef} />
+          )}
+        </group>
+      ))}
     </>
   );
 }
 
 /**
- * 屏幕外框（复古 CRT 显示器简化版）
+ * 胶片条组件（35mm 电影胶片风格，替代电脑外壳）
  *
- * 功能：在屏幕周围绘制深色边框，让屏幕看起来嵌在显示器里
+ * 功能：
+ *  - 胶片横向延伸（比屏幕宽），屏幕作为其中一个画面帧
+ *  - 上下边缘有齿孔（perforations）— 35mm 胶片特征
+ *  - 用 CanvasTexture 绘制胶片边缘：齿孔 + 胶片编码 + 划痕
+ *  - 应用 dirt/grunge 纹理做旧化（污渍、磨损）
+ *  - 胶片基底色为深褐色（胶片片基的琥珀色调）
  *
  * 参数：无
  *
  * 返回值：React.ReactElement
  *
- * 注意事项：用 BoxGeometry 简化，不做精细建模
+ * 注意事项：
+ *  - 胶片总尺寸 8×4.2（宽×高），屏幕 4×3 在中间作为画面帧
+ *  - 上下边缘各 0.6 高，带齿孔（黑色圆角矩形排列）
+ *  - 左右延伸各 2 宽，纯胶片色 + 划痕
+ *  - CanvasTexture 1024×512 绘制上下边缘的齿孔和编码
+ *  - dirt 作为 map 叠加污渍颜色，grunge 作为 roughnessMap 模拟磨损
  */
-function ScreenFrame() {
-  const frameMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#1a1a1f', roughness: 0.7, metalness: 0.3 }),
-    []
-  );
-  const baseMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#0e0e12', roughness: 0.8, metalness: 0.2 }),
-    []
-  );
-  const backMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#0a0a0e', roughness: 0.9, metalness: 0.1 }),
-    []
+function FilmStrip() {
+  // 加载 dirt + grunge 纹理做旧化
+  const dirtMap = useTexture('/asset/textures/dirt.jpg');
+  const grungeMap = useTexture('/asset/textures/grunge.webp');
+
+  // 配置纹理：RepeatWrapping 让纹理平铺
+  useMemo(() => {
+    [dirtMap, grungeMap].forEach((tex) => {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(3, 1);
+    });
+    dirtMap.colorSpace = THREE.SRGBColorSpace;
+  }, [dirtMap, grungeMap]);
+
+  // 胶片边缘 CanvasTexture（齿孔 + 编码 + 划痕）
+  const edgeCanvas = useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = 2048;
+    c.height = 256;
+    return c;
+  }, []);
+
+  const edgeTexture = useMemo(() => {
+    const t = new THREE.CanvasTexture(edgeCanvas);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.minFilter = THREE.LinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    t.generateMipmaps = false;
+    return t;
+  }, [edgeCanvas]);
+
+  /**
+   * 绘制胶片边缘（齿孔 + 编码 + 划痕）
+   *
+   * 功能：
+   *  - 深褐色背景（胶片片基色 #2a1a0e）
+   *  - 上下排列齿孔（黑色圆角矩形，模拟 35mm 胶片穿孔）
+   *  - 中间区域绘制胶片编码（如 "KODAK 5219 50D"）
+   *  - 随机划痕和污渍
+   */
+  const drawFilmEdge = () => {
+    const ctx = edgeCanvas.getContext('2d')!;
+    const w = edgeCanvas.width;
+    const h = edgeCanvas.height;
+
+    // 1. 背景：深褐色胶片片基
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+    bgGrad.addColorStop(0, '#1a1008');
+    bgGrad.addColorStop(0.5, '#2a1a0e');
+    bgGrad.addColorStop(1, '#1a1008');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, w, h);
+
+    // 2. 齿孔（perforations）：上下两排，黑色圆角矩形
+    // 35mm 胶片每帧 4 个齿孔，这里密集排列模拟
+    ctx.fillStyle = '#050300';
+    const holeW = 48;
+    const holeH = 32;
+    const holeGap = 80;  // 齿孔间距
+    const holeYTop = 16;
+    const holeYBottom = h - holeH - 16;
+    for (let x = 16; x < w - holeW; x += holeGap) {
+      // 上排齿孔
+      roundRect(ctx, x, holeYTop, holeW, holeH, 4);
+      ctx.fill();
+      // 下排齿孔
+      roundRect(ctx, x, holeYBottom, holeW, holeH, 4);
+      ctx.fill();
+    }
+
+    // 3. 胶片编码（中间区域，老式字体）
+    ctx.fillStyle = 'rgba(255, 200, 120, 0.5)';
+    ctx.font = 'bold 28px "VT323", "Share Tech Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const codes = ['KODAK 5219', '50D 250T', 'DX 50A 01', '35MM 24FPS'];
+    codes.forEach((code, i) => {
+      const x = (w / codes.length) * (i + 0.5);
+      ctx.fillText(code, x, h / 2);
+    });
+
+    // 4. 帧编号（小字，分散排列）
+    ctx.fillStyle = 'rgba(255, 180, 100, 0.35)';
+    ctx.font = '20px "VT323", monospace';
+    ctx.textAlign = 'left';
+    for (let i = 0; i < 8; i++) {
+      const x = (w / 8) * i + 20;
+      ctx.fillText(`#${String(i * 12 + 1).padStart(4, '0')}`, x, h / 2 + 30);
+    }
+
+    // 5. 划痕（随机细线）
+    ctx.strokeStyle = 'rgba(255, 220, 180, 0.15)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 12; i++) {
+      ctx.beginPath();
+      const x = Math.random() * w;
+      const y1 = Math.random() * h;
+      const y2 = y1 + (Math.random() - 0.5) * 40;
+      ctx.moveTo(x, y1);
+      ctx.lineTo(x + (Math.random() - 0.5) * 20, y2);
+      ctx.stroke();
+    }
+
+    // 6. 污渍（随机深色斑点）
+    for (let i = 0; i < 20; i++) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      const r = 2 + Math.random() * 6;
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.1 + Math.random() * 0.2})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    edgeTexture.needsUpdate = true;
+  };
+
+  // 圆角矩形辅助函数（canvas 无原生 roundRect，手动实现）
+  const roundRect = (
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number,
+    w: number, h: number,
+    r: number
+  ) => {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  };
+
+  // 首次挂载绘制胶片边缘
+  useEffect(() => {
+    const draw = () => drawFilmEdge();
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(draw);
+    } else {
+      setTimeout(draw, 500);
+    }
+  }, []);
+
+  // 胶片基底材质：深褐色 + dirt 污渍 + grunge 粗糙度
+  const filmBaseMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#2a1a0e',
+        map: dirtMap,
+        roughnessMap: grungeMap,
+        roughness: 0.9,
+        metalness: 0.1,
+      }),
+    [dirtMap, grungeMap]
   );
 
+  // 胶片边缘材质：带齿孔的 CanvasTexture
+  const filmEdgeMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        map: edgeTexture,
+        color: '#3a2a1a',
+        roughnessMap: grungeMap,
+        roughness: 0.95,
+        metalness: 0.05,
+        emissive: '#1a0a00',
+        emissiveMap: edgeTexture,
+        emissiveIntensity: 0.15,
+      }),
+    [edgeTexture, grungeMap]
+  );
+
+  // 胶片尺寸：宽 20，高 4.2（屏幕 16×3 在中间，左右各延伸 2）
+  // 屏幕宽 16 = 4 个 section × 每个 4 宽
+  const FILM_W = 20;
+  const FILM_H = 4.2;
+  const SCREEN_W = 16;
+  const SCREEN_H = 3;
+  const edgeH = (FILM_H - SCREEN_H) / 2;  // 上下边缘各 0.6 高
+  const sideW = (FILM_W - SCREEN_W) / 2;  // 左右延伸各 2 宽
+
+  // 胶片整体偏移 x=6：让 section 0 中心在原点（相机初始看向 0,0,0）
+  // 屏幕从 -2 到 14，中心 6；胶片从 -4 到 16，中心 6
   return (
-    <group>
-      {/* 外框：4 条边 */}
-      <mesh position={[0, 1.6, -0.05]} material={frameMat}>
-        <boxGeometry args={[4.4, 0.25, 0.15]} />
+    <group position={[6, 0, 0]}>
+      {/* 胶片基底（整体背板）：深褐色，带 dirt 污渍 */}
+      <mesh position={[0, 0, -0.15]} material={filmBaseMat}>
+        <boxGeometry args={[FILM_W, FILM_H, 0.08]} />
       </mesh>
-      <mesh position={[0, -1.6, -0.05]} material={frameMat}>
-        <boxGeometry args={[4.4, 0.25, 0.15]} />
+
+      {/* 上边缘：齿孔 + 编码（CanvasTexture） */}
+      <mesh position={[0, SCREEN_H / 2 + edgeH / 2, -0.05]} material={filmEdgeMat}>
+        <planeGeometry args={[FILM_W, edgeH]} />
       </mesh>
-      <mesh position={[-2.1, 0, -0.05]} material={frameMat}>
-        <boxGeometry args={[0.25, 3.4, 0.15]} />
+
+      {/* 下边缘：齿孔 + 编码（CanvasTexture） */}
+      <mesh position={[0, -SCREEN_H / 2 - edgeH / 2, -0.05]} material={filmEdgeMat}>
+        <planeGeometry args={[FILM_W, edgeH]} />
       </mesh>
-      <mesh position={[2.1, 0, -0.05]} material={frameMat}>
-        <boxGeometry args={[0.25, 3.4, 0.15]} />
+
+      {/* 左延伸：纯胶片色 + dirt */}
+      <mesh position={[-SCREEN_W / 2 - sideW / 2, 0, -0.05]} material={filmBaseMat}>
+        <planeGeometry args={[sideW, SCREEN_H]} />
       </mesh>
-      {/* 底座 */}
-      <mesh position={[0, -2.0, -0.3]} material={baseMat}>
-        <boxGeometry args={[1.2, 0.3, 0.6]} />
+
+      {/* 右延伸：纯胶片色 + dirt */}
+      <mesh position={[SCREEN_W / 2 + sideW / 2, 0, -0.05]} material={filmBaseMat}>
+        <planeGeometry args={[sideW, SCREEN_H]} />
       </mesh>
-      <mesh position={[0, -2.3, -0.3]} material={baseMat}>
-        <boxGeometry args={[2.0, 0.15, 0.8]} />
-      </mesh>
-      {/* 背板 */}
-      <mesh position={[0, 0, -0.18]} material={backMat}>
-        <boxGeometry args={[4.4, 3.4, 0.1]} />
-      </mesh>
+
+      {/* 帧分隔线：每个 section 之间的竖线，标识胶片画面帧边界
+          section i 和 i+1 之间在 x = i*4 - SCREEN_W/2 + 4 = i*4 - 4
+          即 x = -4, 0, 4, 8（相对 group 中心） */}
+      {[-4, 0, 4, 8].map((x, i) => (
+        <mesh key={i} position={[x, 0, -0.02]}>
+          <planeGeometry args={[0.04, SCREEN_H]} />
+          <meshBasicMaterial color="#050300" />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -723,37 +946,40 @@ const HOME_FOV = 45;
 const END_FOV = 70;
 
 interface FilmSceneProps {
-  /** 滚动进度 0~1，驱动相机推入与 section 切换 */
+  /** 滚动进度 0~1，驱动相机推入（z 轴推进） */
   scrollProgress: number;
   /** 鼠标归一化坐标 ref（-1~1），驱动相机视差旋转 */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  /** 鼠标拖动偏移 ref（世界坐标 x），驱动胶片水平滑动切换 section
+   *  范围 0 ~ -12（section 0 在 x=0，section 3 在 x=-12） */
+  dragOffsetRef: React.MutableRefObject<number>;
   /** 当前 section 索引变化回调（通知外层更新文字 UI） */
   onSectionChange?: (index: number) => void;
 }
 
 /**
- * 3D 场景组件（多 section 版）
+ * 3D 场景组件（胶片版）
  *
  * 功能：
- *  - 渲染程序化屏幕（CanvasTexture）+ 外框 + 粒子
- *  - 根据滚动进度切换 section 内容
- *  - 滚动到段末（接近屏幕最近处）时触发闪光过渡
- *  - 相机沿屏幕法线推进：远景 → 穿过屏幕 → 重置（被闪光掩盖）
+ *  - 渲染宽胶片屏幕（CanvasTexture 4096×768，4 个 section 横向排列）
+ *  - 鼠标拖动改变胶片水平偏移，切换显示不同 section
+ *  - 滚动控制相机 z 轴推进（远景 → 近景）
+ *  - section 切换时触发闪光掩盖
  *
  * 参数：
- *  - scrollProgress: number，0~1
- *  - mouseRef: 鼠标 ref
+ *  - scrollProgress: number，0~1，驱动相机推进
+ *  - mouseRef: 鼠标归一化坐标 ref
+ *  - dragOffsetRef: 鼠标拖动偏移 ref（世界坐标 x）
  *  - onSectionChange: section 切换回调
  *
  * 返回值：React.ReactElement
  *
  * 注意事项：
- *  - 总进度 0~1 分成 4 段，每段 0.25
- *  - 每段内部：[0, 0.15] 闪光淡出，[0.15, 0.85] 正常显示+推进，[0.85, 1.0] 闪光+切换
- *  - sectionIndex 在段切换瞬间更新（被闪光掩盖）
- *  - 相机推入用 lerp + 缓动，闪光用 smoothstep
+ *  - sectionIndex 由 dragOffset 计算：Math.round(-dragOffset / 4)
+ *  - 闪光在 sectionIndex 变化时短暂触发
+ *  - 相机看向当前 section 中心（sectionIndex * 4, 0, 0）
  */
-export function FilmScene({ scrollProgress, mouseRef, onSectionChange }: FilmSceneProps) {
+export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionChange }: FilmSceneProps) {
   const { camera } = useThree();
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
@@ -766,9 +992,12 @@ export function FilmScene({ scrollProgress, mouseRef, onSectionChange }: FilmSce
   // 上一次触发的 section 索引（避免重复回调）
   const lastNotifiedSectionRef = useRef(0);
 
-  // 切换闪光强度 [0, 1]（驱动屏幕过曝 + 相机重置掩盖）
+  // 切换闪光强度 [0, 1]（驱动屏幕过曝掩盖切换）
   // 用 ref 不触发 React 重渲染，每帧由 ScreenDisplay 的 useFrame 读取
   const transitionFlashRef = useRef(0);
+
+  // 胶片水平偏移平滑值（用于平滑插值到目标 dragOffset）
+  const filmXSmoothedRef = useRef(0);
 
   // section 切换通知
   useEffect(() => {
@@ -781,52 +1010,77 @@ export function FilmScene({ scrollProgress, mouseRef, onSectionChange }: FilmSce
   // 每帧更新相机、闪光
   useFrame(() => {
     const totalProgress = progressRef.current;
+    const rawDragOffset = dragOffsetRef.current;  // 原始拖动偏移（0 ~ -12）
 
-    // === section 切换：直接跟随 floor(progress * 4) ===
-    // 4 段，切换边界在 progress = 0.25/0.5/0.75
-    const totalSegment = totalProgress * 4;
-    const segIndex = Math.min(3, Math.floor(totalSegment));
-    if (sectionIndex !== segIndex) {
-      setSectionIndex(segIndex);
+    // === 平滑插值胶片偏移 ===
+    // dragOffset 由鼠标拖动直接更新，这里用 lerp 平滑到目标值
+    // lerp 系数 0.12：适中的平滑度，拖动后有惯性感
+    const target = rawDragOffset;
+    filmXSmoothedRef.current += (target - filmXSmoothedRef.current) * 0.12;
+    const smoothed = filmXSmoothedRef.current;
+
+    // === 根据 dragOffset 计算 sectionIndex ===
+    // dragOffset = 0 → sectionIndex = 0
+    // dragOffset = -4 → sectionIndex = 1
+    // dragOffset = -8 → sectionIndex = 2
+    // dragOffset = -12 → sectionIndex = 3
+    // 用 Math.round 让偏移超过半帧时切换
+    const newSectionIndex = Math.max(0, Math.min(3, Math.round(-smoothed / 4)));
+    if (newSectionIndex !== sectionIndex) {
+      setSectionIndex(newSectionIndex);
     }
 
-    // === 计算闪光强度（在 section 切换边界短暂触发）===
-    // 边界位置 = (segIndex + 1) / 4，即 0.25/0.5/0.75
-    // 在边界 ±0.04 范围内触发闪光，峰值在边界中心
-    // 第一段开头（progress < 0.04）不闪光（首次进入）
+    // === 计算闪光强度（切换过程中短暂触发，到达 section 中心时归零）===
+    // section i 的中心位置：dragOffset = -i*4（即 0, -4, -8, -12 对应 section 0~3）
+    // section i → section i+1 切换的过渡中点：dragOffset = -(i+0.5)*4 = -2, -6, -10
+    //
+    // 触发逻辑：
+    //  - dragOffset 在 section 中心（-i*4）时，距离最近中点 2.0 → flash = 0（静止时不闪光）
+    //  - dragOffset 在过渡中点（-(i+0.5)*4）时 → flash = 1（峰值，掩盖切换）
+    //  - dragOffset 在中间过渡区时 → flash 平滑从 0 → 1 → 0
+    //
+    // 注意：之前用 -(i+1)*4（即 -4/-8/-12）作为触发点，正好是 section 1/2/3 的
+    //       中心位置，导致切换到这些 section 后 flash 一直是 1，文字永远消失、屏幕过亮
     let flash = 0;
-    if (segIndex < 3) {
-      const boundary = (segIndex + 1) / 4;
-      const distToBoundary = Math.abs(totalProgress - boundary);
-      if (distToBoundary < 0.04) {
-        flash = 1 - smoothstep(0, 0.04, distToBoundary);
+    for (let i = 0; i < 3; i++) {
+      const midPoint = -(i + 0.5) * 4; // i=0: -2, i=1: -6, i=2: -10
+      const distToMid = Math.abs(smoothed - midPoint);
+      if (distToMid < 2.0) {
+        const f = 1 - smoothstep(0, 2.0, distToMid);
+        flash = Math.max(flash, f);
       }
     }
     transitionFlashRef.current = flash;
 
-    // === 相机连续推进（不再每段重置）===
-    // 整个 progress 0~1 对应相机从远景 z=7 连续推进到 z=0.2（屏幕前很近）
-    // 缓动 pow(t, 1.6)：前期慢（远景欣赏），后期加速（扎进屏幕感）
-    // 相机路径不再分段重置，保持连续性
+    // === 相机推进（z 轴，由 scrollProgress 控制）===
+    // 整个 progress 0~1 对应相机从远景 z=7 推进到 z=0.2
     const cameraT = Math.pow(Math.max(0, Math.min(1, totalProgress)), 1.6);
 
-    // 鼠标视差（仅在非闪光 + 远景时生效，推近后视差衰减）
-    // 幅度压到极小（0.12/0.08），避免相机旋转导致屏幕投影面积波动 → bloom 辉光区域波动 → 闪烁
-    const target = mouseRef.current;
-    const smoothed = mouseSmoothedRef.current;
-    smoothed.x += (target.x - smoothed.x) * 0.05;
-    smoothed.y += (target.y - smoothed.y) * 0.05;
+    // 鼠标视差（仅在非闪光 + 远景时生效）
+    const mouseTarget = mouseRef.current;
+    const mouseSmoothed = mouseSmoothedRef.current;
+    mouseSmoothed.x += (mouseTarget.x - mouseSmoothed.x) * 0.05;
+    mouseSmoothed.y += (mouseTarget.y - mouseSmoothed.y) * 0.05;
     const parallaxStrength = (1 - cameraT) * (1 - flash);
 
-    // 相机位置：从远景 lerp 到推入终点（连续推进，不分段）
+    // 相机位置：
+    // - x 跟随平滑后的 dragOffset（相机水平移动看胶片不同位置）
+    //   dragOffset = 0 → 相机 x = 0（section 0 中心）
+    //   dragOffset = -4 → 相机 x = 4（section 1 中心）
+    //   dragOffset = -12 → 相机 x = 12（section 3 中心）
+    // - 鼠标视差微调 x/y
+    // - z 由 scrollProgress 推进
+    const cameraX = -smoothed;  // smoothed 是 dragOffset 的平滑值（负数），取反得正值
     camera.position.x =
-      CAMERA_HOME.x + (CAMERA_END.x - CAMERA_HOME.x) * cameraT + smoothed.x * 0.12 * parallaxStrength;
+      cameraX +
+      mouseSmoothed.x * 0.12 * parallaxStrength;
     camera.position.y =
-      CAMERA_HOME.y + (CAMERA_END.y - CAMERA_HOME.y) * cameraT + smoothed.y * 0.08 * parallaxStrength;
+      CAMERA_HOME.y + (CAMERA_END.y - CAMERA_HOME.y) * cameraT +
+      mouseSmoothed.y * 0.08 * parallaxStrength;
     camera.position.z = CAMERA_HOME.z + (CAMERA_END.z - CAMERA_HOME.z) * cameraT;
 
-    // 相机始终看向屏幕中心
-    camera.lookAt(0, 0, 0);
+    // 相机看向当前胶片位置（跟随拖动平滑移动）
+    camera.lookAt(cameraX, 0, 0);
 
     // FOV：HOME_FOV（远景）→ END_FOV（推入终，广角拉伸）
     const cam = camera as THREE.PerspectiveCamera;
@@ -842,8 +1096,8 @@ export function FilmScene({ scrollProgress, mouseRef, onSectionChange }: FilmSce
       {/* 顶部冷色补光 */}
       <directionalLight color="#d4e0ff" intensity={0.4} position={[0, 5, 2]} />
 
-      {/* 屏幕外框（CRT 显示器简化版） */}
-      <ScreenFrame />
+      {/* 胶片条（35mm 电影胶片风格，替代电脑外壳） */}
+      <FilmStrip />
 
       {/* 屏幕显示（含 RectAreaLight） */}
       <ScreenDisplay sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />
