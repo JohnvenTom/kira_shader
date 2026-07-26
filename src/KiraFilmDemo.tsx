@@ -675,12 +675,14 @@ function ContactDetailPage({
       {/* 3D Canvas：独立 WebGL 上下文渲染电话模型
           - shadows 开启让 castShadow 生效
           - alpha:true 让背景透明
-          - 相机初始位置在 (0, 8, 8) 高处俯视，由 ContactScene 内部 useFrame 覆盖 */}
+          - 相机初始位置在 (0, 18, 8) 高处俯视，与 ContactScene 的 camPosRef 初始值一致
+            避免 mount 第一帧从 (0,8,8) 跳到 (0,18,8) 的视觉跳变
+          - FOV 初始值 30，与 ContactScene 的 FOV_START 一致 */}
       <div className="contact-canvas-wrapper">
         <Canvas
           shadows
           gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
-          camera={{ fov: 35, near: 0.1, far: 100, position: [0, 8, 8] }}
+          camera={{ fov: 30, near: 0.1, far: 100, position: [0, 18, 8] }}
           onCreated={({ gl }) => {
             gl.setClearColor(new THREE.Color('#000000'), 0);
           }}

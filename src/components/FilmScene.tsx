@@ -1603,32 +1603,61 @@ export function ContactScene({
   // 焦点电话位置（中间，最靠近相机）
   const focusPos = useMemo<[number, number, number]>(() => [0, 0.1, 1.0], []);
 
-  // 相机动画参数：起点（高处俯视）→ 终点（电话机水平）
-  // progress=0 时相机在高处看电话机上方（看不到电话机，Hello 占据屏幕中心）
-  // progress=1 时相机降到电话机水平，正面看电话机
-  // 增大 Y 轴移动范围（10.5 → 1.5 = 9 单位），让下降过程更有冲击力
-  const CAMERA_START_Y = 10.5;  // 起点高度（从 8 → 10.5，更高处俯视）
-  const CAMERA_END_Y = 1.5;     // 终点高度（从 2.2 → 1.5，更贴近电话机）
-  const LOOKAT_START_Y = 8.5;   // 视线起点（电话机上方更远处）
-  const LOOKAT_END_Y = 0.1;     // 视线终点（电话机位置）
+  // 相机动画参数：起点（高处俯视看不到电话）→ 终点（电话机水平正面看）
+  // progress=0：相机在 y=18 高处，lookAt y=9（视线指向电话上方）
+  //   - 视线方向 (0, -9, -7)，电话方向 (0, -17.9, -7)
+  //   - 角度差：atan(17.9/7) - atan(9/7) ≈ 68.6° - 52.1° = 16.5°
+  //   - 加上 FOV/2=15°（FOV=30 时），电话在画面下方边缘外，看不到
+  // progress=1：相机降到 y=1.5，lookAt y=2.0，正面看电话机
+  //   - lookAt 从 0.1 抬到 2.0，视线落在电话中部，避免看电话底部太矮
+  const CAMERA_START_Y = 18.0;  // 起点高度（高处俯视）
+  const CAMERA_END_Y = 1.5;     // 终点高度（贴近电话机水平）
+  const LOOKAT_START_Y = 9.0;   // 视线起点：指向电话上方远处（电话在画面外）
+  const LOOKAT_END_Y = 2.0;     // 视线终点：抬高到电话中部（原 0.1 太矮）
   const CAMERA_Z = 8;          // 相机 z 固定
 
-  // 每帧：根据 contactScrollProgress 更新相机位置和 lookAt（平滑 lerp）
+  // FOV 动画参数：随 progress 从 30° 增大到 60°
+  // - progress=0：FOV=30°（窄视野），看不到电话（电话在画面下方边缘外）
+  // - progress=1：FOV=60°（宽视野），电话在画面中较大
+  // - FOV 增大让"镜头从远处拉近"的视觉冲击更强（透视变形增加）
+  const FOV_START = 30;
+  const FOV_END = 60;
+
+  // 相机当前位置（用于 lerp 平滑，避免滚轮离散变化直接反映到相机）
+  // 初始化为起点，每帧向目标位置 lerp，制造惯性感
+  const camPosRef = useRef(new THREE.Vector3(0, CAMERA_START_Y, CAMERA_Z));
+  const lookPosRef = useRef(new THREE.Vector3(0, LOOKAT_START_Y, focusPos[2]));
+  // FOV 当前值（用于 lerp 平滑）
+  const fovRef = useRef(FOV_START);
+
+  // 每帧：根据 contactScrollProgress 计算目标位置，用 lerp 平滑追随
   //        + 鼠标视差让模型组轻微旋转
   useFrame(() => {
     const p = contactScrollProgress.current;
     // 用 smootherstep（Ken Perlin）替代 smoothstep，过渡更丝滑
     // smootherstep: t = p^3 * (p * (p * 6 - 15) + 10)
-    // 比 smoothstep（p*p*(3-2p)）在两端变化更缓、中段更顺滑
     const t = p * p * p * (p * (p * 6 - 15) + 10);
 
-    // 相机 y 从起点插值到终点
-    const camY = CAMERA_START_Y + (CAMERA_END_Y - CAMERA_START_Y) * t;
-    camera.position.set(0, camY, CAMERA_Z);
+    // 计算目标位置（离散，跟随滚轮）
+    const targetCamY = CAMERA_START_Y + (CAMERA_END_Y - CAMERA_START_Y) * t;
+    const targetLookY = LOOKAT_START_Y + (LOOKAT_END_Y - LOOKAT_START_Y) * t;
+    // 目标 FOV
+    const targetFov = FOV_START + (FOV_END - FOV_START) * t;
 
-    // lookAt y 从起点插值到终点（视线从电话机上方降到电话机）
-    const lookY = LOOKAT_START_Y + (LOOKAT_END_Y - LOOKAT_START_Y) * t;
-    camera.lookAt(0, lookY, focusPos[2]);
+    // lerp 平滑：当前 → 目标，系数 0.15 让相机有惯性追随感
+    // 系数越小越丝滑但延迟越大，0.15 平衡跟手度与平滑度（约 150ms 到达目标）
+    const LERP_FACTOR = 0.15;
+    camPosRef.current.y += (targetCamY - camPosRef.current.y) * LERP_FACTOR;
+    lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * LERP_FACTOR;
+    fovRef.current += (targetFov - fovRef.current) * LERP_FACTOR;
+
+    camera.position.copy(camPosRef.current);
+    camera.lookAt(lookPosRef.current);
+    // 更新 FOV（perspectiveCamera 的 fov 改变后必须调用 updateProjectionMatrix）
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov = fovRef.current;
+      camera.updateProjectionMatrix();
+    }
 
     // 鼠标视差让模型组轻微旋转（相机由 progress 控制，不受鼠标影响）
     if (groupRef.current) {
