@@ -952,11 +952,19 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* contact 详情页内容容器：全屏布局，垂直堆叠
-   - overflow: hidden 不让外层滚动，内部由 contact-scroll-container 驱动 */
+   - overflow: hidden 不让外层滚动，内部由 contact-scroll-container 驱动
+   - 默认 pointer-events: none，让 wheel 事件穿透到外层 film-scroll-container
+     （详情页未打开时，ContactDetailPage 仍渲染在 DOM 中，但不应拦截事件）
+   - overlay.visible 时设为 auto，让 contact-scroll-container 接收滚轮 */
 .contact-detail-inner {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  pointer-events: none;
+}
+
+.film-detail-overlay.visible .contact-detail-inner {
+  pointer-events: auto;
 }
 
 /* 独立滚动容器：撑出滚动空间让用户能滚动驱动相机下降
@@ -996,6 +1004,16 @@ body.camera-debug-mode .scroll-container {
   height: 100%;
   z-index: 0;
   pointer-events: none;
+}
+
+/* Canvas 及其所有内部元素都设为 none：
+   R3F 的 Canvas 会创建内部 div 并设 pointer-events: auto，
+   会覆盖父元素的 none，导致详情页未打开时也拦截 wheel 事件，
+   阻止外层 film-scroll-container 滚动。
+   用 * 强制所有后代元素 none，contact 详情页的相机由
+   contactScrollProgress 驱动，不需要鼠标交互。 */
+.contact-canvas-wrapper * {
+  pointer-events: none !important;
 }
 
 .contact-canvas-wrapper canvas {

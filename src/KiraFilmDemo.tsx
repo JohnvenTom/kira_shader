@@ -541,6 +541,8 @@ function ContactDetailPage({
   const atTopRef = useRef(true);
   // 内容层 ref（用于写入 CSS 变量 --contact-progress 驱动子元素淡入）
   const contentLayerRef = useRef<HTMLDivElement>(null);
+  // contact-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
+  const contactInnerRef = useRef<HTMLDivElement>(null);
 
   /**
    * contact 详情页内部滚动事件处理
@@ -581,8 +583,52 @@ function ContactDetailPage({
     return () => el.removeEventListener('scroll', handleContactScroll);
   }, [handleContactScroll]);
 
+  /**
+   * contact 详情页根元素 wheel 事件拦截
+   *
+   * 功能：在 contact-detail-inner 根元素上拦截 wheel 事件，手动滚动
+   *      contact-scroll-container，避免外层 overlay 的 wheel 转发逻辑
+   *      拦截滚轮事件。
+   *      特例：已滚到顶（scrollTop<=0）且继续上滑（deltaY<0）时，
+   *      允许事件冒泡到 overlay，让外层 wheel 转发逻辑触发退出详情页。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 必须用 passive: false 才能 preventDefault
+   *  - preventDefault 阻止浏览器默认滚动行为（避免外层 scroll-container 滚动）
+   *  - stopPropagation 阻止事件冒泡到 overlay，避免被外层 wheel 转发逻辑拦截
+   *  - 手动把 deltaY 同步到 contactScrollRef.scrollTop，触发 scroll 事件
+   *  - 滚到顶后用户继续上滑，事件冒泡到 overlay，外层 wheel 转发把 deltaY
+   *    同步到 scrollContainerRef.scrollTop，触发外层 handleScroll 中
+   *    progress<0.85 → 退出详情页
+   *  - 监听器绑在 contact-detail-inner 而不是 contact-scroll-container，
+   *    因为 contact-content-layer 的子元素（Hello 标题等）有 pointer-events: auto，
+   *    鼠标在它们上面时 wheel 事件不经过 contact-scroll-container
+   */
+  useEffect(() => {
+    const el = contactInnerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const scrollEl = contactScrollRef.current;
+      if (!scrollEl) return;
+      // 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层 wheel 转发逻辑触发退出
+      if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
+        return;
+      }
+      // 阻止默认行为（避免外层 scroll-container 滚动）和冒泡（避免 overlay 拦截）
+      e.preventDefault();
+      e.stopPropagation();
+      // 手动滚动 contact-scroll-container，触发 scroll 事件 → handleContactScroll
+      scrollEl.scrollTop += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
   return (
-    <div className="contact-detail-inner">
+    <div ref={contactInnerRef} className="contact-detail-inner">
       {/* 3D Canvas：独立 WebGL 上下文渲染电话模型
           - shadows 开启让 castShadow 生效
           - alpha:true 让背景透明
