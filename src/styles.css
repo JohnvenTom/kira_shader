@@ -1041,11 +1041,26 @@ body.camera-debug-mode .scroll-container {
   --contact-progress: 0;
 }
 
-/* 让可交互子元素（链接、卡片）能接收点击 */
-.contact-content-layer a,
-.contact-info-card,
-.contact-footer {
-  pointer-events: auto;
+/* 让可交互子元素（链接、卡片）能接收点击
+   重要：pointer-events 不是继承属性，默认值是 auto。
+   即使父元素 contact-content-layer 设了 pointer-events:none，
+   子元素（contact-info-row、contact-info-card、a、contact-footer 等）
+   默认仍是 auto，会成为 wheel 事件的 target。事件冒泡到 contact-detail-inner
+   会触发它的 wheel 监听器（addEventListener 不受 pointer-events 影响），
+   导致 wheel 被拦截同步到 contact-scroll-container，外层 film-scroll-container
+   收不到 wheel → 相机不放大、progress 不增加 → "滚轮被禁用"。
+
+   修复：用 * 选择器把 contact-content-layer 的所有后代元素默认设为 none
+   （详情页关闭时 wheel 穿透），仅在 overlay.visible 时才让可交互元素
+   （链接、卡片）设为 auto（详情页打开后可点击）。 */
+.contact-content-layer * {
+  pointer-events: none !important;
+}
+
+.film-detail-overlay.visible .contact-content-layer a,
+.film-detail-overlay.visible .contact-info-card,
+.film-detail-overlay.visible .contact-footer {
+  pointer-events: auto !important;
 }
 
 /* "Hello." 大标题：居中、巨型字号、柔和发光

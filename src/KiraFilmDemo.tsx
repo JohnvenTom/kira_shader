@@ -448,7 +448,7 @@ export default function KiraFilmDemo() {
            - 独立滚动容器驱动相机下降动画
            - 初始：相机高处俯视，Hello 居中显示，看不见电话机
            - 滚动后：相机降到电话机水平，露出电话机，显示联系信息 */
-          <ContactDetailPage mouseRef={mouseRef} />
+          <ContactDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
         ) : (
           /* === 默认详情页：项目卡片网格 === */
           <div className="film-detail-inner">
@@ -516,9 +516,12 @@ export default function KiraFilmDemo() {
  *      - 相机降到电话机水平，lookAt 落到电话机 → 露出电话机
  *      - 联系信息卡片淡入
  *  - 滚轮回退到顶部（progress<0.05）后再继续滚 → 退出详情页回 3D 场景
+ *  - 每次进入详情页（detailOpen false→true）时重置内部滚动状态，
+ *    避免上次退出时残留的 scrollTop 导致相机直接到最低端
  *
  * 参数：
- *  - mouseRef  鼠标归一化坐标 ref（-1~1），传给 ContactScene 驱动模型视差旋转
+ *  - mouseRef    鼠标归一化坐标 ref（-1~1），传给 ContactScene 驱动模型视差旋转
+ *  - detailOpen 外层详情页是否打开（用于在每次进入时重置滚动状态）
  *
  * 返回值：React.ReactElement
  *
@@ -527,11 +530,15 @@ export default function KiraFilmDemo() {
  *  - 内容层 z-40 在滚动容器上方，包含 Hello 标题和联系信息
  *  - 3D Canvas 在最底层 z-0，相机随 progress 下降露出电话机
  *  - contactScrollProgress 用 ref 不用 state，避免每帧重渲染
+ *  - ContactDetailPage 在 sectionIndex===3 期间保持 mount，不会因 detailOpen
+ *    变化而 unmount，所以需要在 detailOpen 变 true 时手动重置滚动状态
  */
 function ContactDetailPage({
   mouseRef,
+  detailOpen,
 }: {
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  detailOpen: boolean;
 }) {
   // contact 详情页内部独立滚动容器 ref
   const contactScrollRef = useRef<HTMLDivElement>(null);
@@ -582,6 +589,42 @@ function ContactDetailPage({
     el.addEventListener('scroll', handleContactScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleContactScroll);
   }, [handleContactScroll]);
+
+  /**
+   * 进入/退出详情页时重置内部滚动状态
+   *
+   * 功能：监听 detailOpen 变化，每次进入详情页（detailOpen=true）时
+   *      重置 contact-scroll-container 的 scrollTop 和 contactScrollProgress。
+   *
+   * 原因：ContactDetailPage 在 sectionIndex===3 期间保持 mount，
+   *      上次退出详情页时残留的 scrollTop 不会自动清零。
+   *      如果不重置，下次进入时：
+   *        - scrollTop=最大值 → 用户无法继续滚动 → "滚不进去"
+   *        - contactScrollProgress=1 → 相机直接在最低端 → "摄像头到最低端"
+   *
+   * 参数：无（通过闭包读取 detailOpen）
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 同时重置 CSS 变量 --contact-progress，让联系信息卡片回到隐藏状态
+   *  - 用 requestAnimationFrame 确保重置在浏览器布局之后执行，
+   *    避免 scrollTop=0 被 React 批量更新覆盖
+   */
+  useEffect(() => {
+    if (!detailOpen) return;
+    const el = contactScrollRef.current;
+    if (!el) return;
+    // 用 rAF 确保在 overlay .visible 过渡完成后重置，避免视觉跳变
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = 0;
+      contactScrollProgress.current = 0;
+      atTopRef.current = true;
+      if (contentLayerRef.current) {
+        contentLayerRef.current.style.setProperty('--contact-progress', '0');
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailOpen]);
 
   /**
    * contact 详情页根元素 wheel 事件拦截
