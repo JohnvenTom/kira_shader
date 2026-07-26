@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Html, useTexture } from '@react-three/drei';
+import { Html, useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 
 /**
@@ -357,6 +357,10 @@ function ScreenDisplay({
   const meshRef = useRef<THREE.Mesh>(null);
   const rectLightRef = useRef<THREE.RectAreaLight>(null);
 
+  // 每个 section group 的 ref（用于每帧更新旋转，平滑跟随 sectionIndex）
+  // 用 ref 数组避免 React 重渲染，直接在 useFrame 中操作 group.rotation
+  const sectionGroupRefs = useRef<(THREE.Group | null)[]>([]);
+
   // 主 canvas（CanvasTexture 源）— 宽胶片：4 个 section 横向排列
   // 每个 section 占 1024 宽，总宽 4096，对应 3D 空间 16 单位宽（4×4）
   const canvas = useMemo(() => {
@@ -488,16 +492,25 @@ function ScreenDisplay({
     texture.needsUpdate = true;
   };
 
-  // 首次挂载：等老式字体（VT323）加载完成后绘制所有 section
+  // 首次挂载绘制所有 section
+  // 关键：立即绘制一次（用 fallback 字体），字体加载后再绘制一次
+  // 之前只依赖 document.fonts.ready，若 VT323 字体加载慢/失败，
+  // drawAllSections 永不执行，canvas 空白 → 日期/文字看不见
   useEffect(() => {
     let cancelled = false;
-    const draw = () => {
-      if (!cancelled) drawAllSections();
-    };
+    // 立即绘制一次（用 fallback 字体，背景/图形元素不受影响）
+    drawAllSections();
+    console.log('[ScreenDisplay] drawAllSections executed immediately');
+    // 字体加载完成后再绘制一次（让 VT323 字体生效）
     if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(draw);
-    } else {
-      setTimeout(draw, 500);
+      document.fonts.ready.then(() => {
+        if (!cancelled) {
+          drawAllSections();
+          console.log('[ScreenDisplay] drawAllSections re-executed after fonts ready');
+        }
+      }).catch((err: unknown) => {
+        console.warn('[ScreenDisplay] fonts.ready rejected', err);
+      });
     }
     return () => {
       cancelled = true;
@@ -511,21 +524,25 @@ function ScreenDisplay({
   );
   const whiteColor = useMemo(() => new THREE.Color('#ffffff'), []);
 
+  // 屏幕平面不应用弯曲 shader：屏幕需要保持平直，确保内容（含日期/文字）清晰可见
+  // 之前应用了 applyCurvedShader，导致屏幕在远离当前 section 的区域弯曲很大，
+  // 跑到 dirt mesh 后面，被 dirt 遮挡（屏幕日期/文字看不见）
+  // 胶片边缘/基底/左右延伸保留弯曲，屏幕平直，视觉上胶片卷曲但画面帧清晰
+
   // 每帧：根据 transitionFlash 调整 emissive 强度（闪光掩盖切换）
-  useFrame(() => {
+  //        + 平滑更新每个 section group 的 rotateY（模拟胶片弯曲卷曲）
+  useFrame((_, delta) => {
     if (!matRef.current) return;
     const flash = transitionFlashRef.current;
     // 基础 emissive 0.9 + 闪光时拉到 4.0
-    // 基础值压低避免屏幕大面积过亮 → bloom 区域过大 → 鼠标视差时辉光波动闪烁
     matRef.current.emissiveIntensity = 0.9 + flash * 4.0;
-    // 闪光时颜色偏向白色（flash=0 时跳过 lerp，避免每帧写 emissive 触发不必要更新）
     if (flash > 0.001) {
       matRef.current.emissive.lerpColors(accentColorObj, whiteColor, flash);
     } else {
       matRef.current.emissive.copy(accentColorObj);
     }
 
-    // RectAreaLight 同步（基础强度降低，与屏幕 emissive 平衡）
+    // RectAreaLight 同步
     if (rectLightRef.current) {
       rectLightRef.current.intensity = 4 + flash * 20;
       if (flash > 0.001) {
@@ -534,6 +551,25 @@ function ScreenDisplay({
         rectLightRef.current.color.copy(accentColorObj);
       }
     }
+
+    // 平滑更新每个 section group 的旋转（模拟胶片弯曲）
+    // 当前 section：rotateY=0（正面朝相机）
+    // 左侧 section（i < sectionIndex）：rotateY > 0（向右旋转）
+    // 右侧 section（i > sectionIndex）：rotateY < 0（向左旋转）
+    // 距离越远旋转越大，模拟胶片卷曲效果
+    const lerpFactor = Math.min(delta * 4, 1);  // 帧率无关 lerp
+    sectionGroupRefs.current.forEach((grp, i) => {
+      if (!grp) return;
+      const offset = i - sectionIndex;  // -3 ~ +3
+      // 旋转角度：每偏移 1 单位旋转 0.25 rad（约 14°）
+      // 两侧 section 旋转明显，模拟胶片弯曲卷曲
+      const targetRotateY = offset * 0.25;
+      // 远离的 section 稍微后退（z 负方向），增强深度感
+      const targetZ = -Math.abs(offset) * 0.2;
+      // lerp 平滑过渡（切换 section 时旋转有缓动）
+      grp.rotation.y += (targetRotateY - grp.rotation.y) * lerpFactor;
+      grp.position.z += (targetZ - grp.position.z) * lerpFactor;
+    });
   });
 
   return (
@@ -571,9 +607,19 @@ function ScreenDisplay({
       </mesh>
       {/* 屏幕内容（Html 投影到胶片各画面帧）：
           渲染所有 4 个 section 的文字/轮播，每个位置 x = i * 4
-          当前 sectionIndex 的实例完全可见，其他实例透明度降低（侧边预览） */}
+          当前 sectionIndex 的实例完全可见，其他实例透明度降低（侧边预览）
+          每个 section 的 group 加 rotateY 旋转模拟弯曲：
+            - 当前 section（i === sectionIndex）：旋转 0（正面朝向相机）
+            - 左侧 section：rotateY 正值（向右旋转，远离相机）
+            - 右侧 section：rotateY 负值（向左旋转，远离相机）
+            - 距离越远，旋转角度越大（模拟胶片卷曲）
+          旋转量由 useFrame 平滑过渡（lerp 到目标值），避免 section 切换突变 */}
       {SECTIONS.map((_, i) => (
-        <group key={i} position={[i * 4, 0, 0]}>
+        <group
+          key={i}
+          ref={(el) => { sectionGroupRefs.current[i] = el; }}
+          position={[i * 4, 0, 0]}
+        >
           {i === 1 ? (
             <WorkCarousel transitionFlashRef={transitionFlashRef} />
           ) : (
@@ -583,6 +629,110 @@ function ScreenDisplay({
       ))}
     </>
   );
+}
+
+/**
+ * 动态弯曲共享 uniforms
+ *
+ * 功能：所有胶片 mesh 共享这套 uniform，由 useFrame 在每帧
+ *      根据 sectionIndex 平滑更新 uActiveCenterX，实现弯曲随 section 切换
+ *
+ * 字段：
+ *  - uActiveCenterX  当前 section 中心的 world x（section 0=0, 1=4, 2=8, 3=12）
+ *  - uCurvatureNear  当前 section 区域的弯曲强度（小 → 接近平直）
+ *  - uCurvatureFar   远离 section 区域的弯曲强度（大 → 明显卷曲）
+ *  - uFalloff        弯曲过渡距离（near → far 的 smoothstep 范围）
+ *
+ * 注意事项：
+ *  - 用模块级单例，确保 FilmStrip 中所有材质共享同一份
+ *  - useFrame 中 lerp 更新 uActiveCenterX，避免 section 切换时弯曲突变
+ *  - 屏幕平面（ScreenDisplay）不使用这套 uniform，保持平直确保内容清晰
+ */
+const curvedUniforms = {
+  uActiveCenterX: { value: 0 },
+  uCurvatureNear: { value: -0.002 },   // 当前 section：轻微弯曲（保持可读）
+  uCurvatureFar: { value: -0.04 },      // 远离 section：非常夸张的卷曲
+  uFalloff: { value: 3.0 },              // 3 单位内从 near 过渡到 far（过渡更快）
+};
+
+/**
+ * dirt mesh 专用 uniforms（弯曲量受限）
+ *
+ * 功能：左右延伸（dirt）mesh 用这套 uniform，弯曲强度比胶片边缘小，
+ *      确保 dirt 弯曲后 z 永远在屏幕（z=0）之后，不会遮挡屏幕内容
+ *
+ * 设计原理：
+ *  - 屏幕在 worldX=[-2,14]，右延伸在 worldX=[12,14]，重叠区域 dx=12~14
+ *  - 胶片边缘弯曲：z = -0.04 × 14² = -7.84（远离相机）
+ *  - dirt 弯曲需 < 0（向后退），且 |z| < 0.08（mesh 初始 z）确保不跑到屏幕前
+ *  - 用 uCurvatureFar=-0.005：z = -0.005 × 14² = -0.98，加 mesh z=-0.08 = -1.06
+ *    仍在屏幕 z=0 之后，但弯曲量足够看出卷曲效果
+ */
+const dirtCurvedUniforms = {
+  uActiveCenterX: curvedUniforms.uActiveCenterX,  // 共享 active center
+  uCurvatureNear: { value: -0.0005 },  // 当前 section：几乎平直
+  uCurvatureFar: { value: -0.006 },     // 远离 section：轻微卷曲（受限）
+  uFalloff: { value: 3.0 },
+};
+
+/**
+ * 给 MeshStandardMaterial 注入动态弯曲 vertex shader
+ *
+ * 功能：在 vertex shader 的 project_vertex 之前，根据顶点 world x 与
+ *      uActiveCenterX 的距离，用 smoothstep 混合 near/far 弯曲强度，
+ *      应用二次曲线 z 偏移（z = cur * dx²），实现：
+ *       - 当前 section 区域弯曲小（接近平直，正面观察清晰）
+ *       - 远离 section 区域弯曲大（侧边卷曲，视觉上有"胶片感"）
+ *
+ * 参数：
+ *  - mat        要注入 shader 的 MeshStandardMaterial
+ *  - uniforms   使用的 uniforms 对象（默认 curvedUniforms，dirt 用 dirtCurvedUniforms）
+ *
+ * 返回值：无（直接修改 mat.onBeforeCompile）
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - 必须在 material 首次编译前调用（onBeforeCompile 只在首次编译生效）
+ *  - 用 modelMatrix 算 world x，自动包含 group/mesh 的位移
+ *  - 只修改 transformed.z，不影响 UV/normal（normal 由原 shader 计算）
+ *  - dirt mesh 用 dirtCurvedUniforms（弯曲受限），避免跑到屏幕前遮挡内容
+ */
+function applyCurvedShader(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: typeof curvedUniforms = curvedUniforms
+) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uActiveCenterX = uniforms.uActiveCenterX;
+    shader.uniforms.uCurvatureNear = uniforms.uCurvatureNear;
+    shader.uniforms.uCurvatureFar = uniforms.uCurvatureFar;
+    shader.uniforms.uFalloff = uniforms.uFalloff;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+         uniform float uActiveCenterX;
+         uniform float uCurvatureNear;
+         uniform float uCurvatureFar;
+         uniform float uFalloff;`
+      )
+      .replace(
+        '#include <project_vertex>',
+        `// 动态弯曲：在投影前给 transformed.z 加二次曲线偏移
+         // 用 modelMatrix 算顶点 world x（已包含 group/mesh 位移）
+         vec4 wpos_curved = modelMatrix * vec4(transformed, 1.0);
+         float dx = wpos_curved.x - uActiveCenterX;
+         float dist = abs(dx);
+         // 距离 active center 越远，弯曲强度越大（near → far 平滑过渡）
+         float mixFactor = smoothstep(0.0, uFalloff, dist);
+         float cur = mix(uCurvatureNear, uCurvatureFar, mixFactor);
+         // 二次曲线弯曲：curvature<0 → 中间凸向相机，两端凹向远处（微笑形）
+         float dz = cur * dx * dx;
+         transformed.z += dz;
+         #include <project_vertex>`
+      );
+  };
 }
 
 /**
@@ -658,10 +808,15 @@ function makeCurvedGeometry(
  *  - 左右延伸各 2 宽，纯胶片色 + 划痕
  *  - CanvasTexture 2048×256 绘制上下边缘的齿孔/编码/DX 条码/时间码
  *  - dirt 作为 map 叠加污渍颜色，grunge 作为 roughnessMap 模拟磨损
- *  - 弯曲 curvature = -0.004：中间凸 0.4 单位向相机，两端凹向远处
- *    （足够明显看出弧度，又不会让 Html 文字严重错位）
+ *  - 动态弯曲：通过 applyCurvedShader 注入 vertex shader，弯曲随
+ *    activeSectionX 变化（当前 section 平直，远离 section 卷曲）
+ *
+ * 参数：
+ *  - activeSectionX  当前 section 中心的 world x（section i → i*4）
+ *
+ * 返回值：React.ReactElement
  */
-function FilmStrip() {
+function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
   // 加载 dirt + grunge 纹理做旧化
   const dirtMap = useTexture('/asset/textures/dirt.jpg');
   const grungeMap = useTexture('/asset/textures/grunge.webp');
@@ -677,12 +832,12 @@ function FilmStrip() {
   }, [dirtMap, grungeMap]);
 
   // 胶片边缘 CanvasTexture（齿孔 + 编码 + 划痕）
-  // canvas 高 320：增大高度让齿孔在 world 中更明显
-  // （之前 256 → 齿孔 55px 仅占 0.13 world 高，远景下视角 0.5° 几乎看不见）
+  // canvas 高 512：留足中间信息区空间，避免时间码/帧编号被下排齿孔遮挡
+  // 布局：上齿孔 [40, 130] | 信息区 [140, 370] | 下齿孔 [380, 470]
   const edgeCanvas = useMemo(() => {
     const c = document.createElement('canvas');
     c.width = 2048;
-    c.height = 320;
+    c.height = 512;
     return c;
   }, []);
 
@@ -738,13 +893,16 @@ function FilmStrip() {
     }
 
     // 2. 齿孔：上下两排，纯黑 + 内阴影 + 浅褐描边
-    //    齿孔尺寸 90×90（增大尺寸让齿孔在 world 中更显眼）
-    //    间距 120，每排约 17 个，接近真实 35mm 胶片密度
+    //    齿孔尺寸 90×90，间距 120，每排约 17 个
+    //    canvas 高 512，齿孔位置调整：
+    //      上排 y=40~130（上方留 40px 边距）
+    //      下排 y=382~472（下方留 40px 边距）
+    //      中间 [130, 382] 共 252px 留给信息区，避免齿孔遮挡文字
     const holeW = 90;
     const holeH = 90;
     const holeGap = 120;
-    const holeYTop = 30;
-    const holeYBottom = h - holeH - 30;
+    const holeYTop = 40;
+    const holeYBottom = h - holeH - 40;  // 512 - 90 - 40 = 382
 
     /**
      * 绘制单个齿孔（带内阴影和描边）
@@ -786,9 +944,12 @@ function FilmStrip() {
     }
 
     // 3. 中间信息区：分 4 段，每段一组完整胶片信息
+    //    infoY = 256（canvas 中心），位于上下齿孔之间的空白区 [130, 382]
+    //    信息内容：型号(y-60) / DX码(y-30) / 帧编号+时间码(y+10) / ASA/ISO(y+40) / 胶片码(y+70)
+    //    所有内容 y 范围 [196, 326]，完全在空白区内，不被齿孔遮挡
     const segCount = 4;
     const segW = w / segCount;
-    const infoY = h / 2;
+    const infoY = h / 2;  // 256
     const films = [
       'KODAK GOLD 200-24',
       'FUJI SUPERIA 400',
@@ -802,18 +963,19 @@ function FilmStrip() {
       const cx = x0 + segW / 2;
 
       // 3a. 胶片型号（黄色，等宽字体）
+      //     y = infoY - 60 = 196（空白区上边界）
       ctx.fillStyle = 'rgba(255, 210, 130, 0.85)';
       ctx.font = 'bold 22px "VT323", "Share Tech Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(films[s], cx, infoY - 26);
+      ctx.fillText(films[s], cx, infoY - 60);
 
       // 3b. DX 光敏条形码（黑白条纹，模拟 35mm 胶片的 DX 码）
-      //     真实胶片在齿孔旁有 12 位条码用于相机自动识别 ISO
+      //     y = infoY - 30 = 226
       const bcH = 12;
       const bcW = 100;
       const bcX = cx - bcW / 2;
-      const bcY = infoY - bcH / 2 + 6;
+      const bcY = infoY - bcH / 2 - 30;
       // 白色背景
       ctx.fillStyle = '#f0e8d8';
       ctx.fillRect(bcX - 2, bcY - 2, bcW + 4, bcH + 4);
@@ -834,31 +996,77 @@ function FilmStrip() {
       }
 
       // 3c. 帧编号（左下角）
+      //     y = infoY + 10 = 266
       ctx.fillStyle = 'rgba(255, 190, 110, 0.7)';
       ctx.font = '18px "VT323", monospace';
       ctx.textAlign = 'left';
       const frameNum = String(s * 24 + 1).padStart(4, '0');
-      ctx.fillText(`#${frameNum}`, x0 + 22, infoY + 24);
+      ctx.fillText(`#${frameNum}`, x0 + 22, infoY + 10);
 
       // 3d. 时间码（右下角，SMPTE 格式 HH:MM:SS:FF）
       ctx.textAlign = 'right';
       const tc = `00:00:${String(s * 12).padStart(2, '0')}:24`;
-      ctx.fillText(tc, x0 + segW - 22, infoY + 24);
+      ctx.fillText(tc, x0 + segW - 22, infoY + 10);
 
       // 3e. ASA/ISO 标识（再下一行）
+      //     y = infoY + 40 = 296
       ctx.fillStyle = 'rgba(255, 220, 180, 0.55)';
       ctx.font = '14px "VT323", monospace';
       ctx.textAlign = 'left';
-      ctx.fillText('ASA 200', x0 + 22, infoY + 44);
+      ctx.fillText('ASA 200', x0 + 22, infoY + 40);
       ctx.textAlign = 'right';
-      ctx.fillText('ISO 200/24°', x0 + segW - 22, infoY + 44);
+      ctx.fillText('ISO 200/24°', x0 + segW - 22, infoY + 40);
 
       // 3f. 胶片编码（最下方，深色小字）
+      //     y = infoY + 70 = 326（空白区下边界）
       ctx.fillStyle = 'rgba(255, 180, 100, 0.45)';
       ctx.font = '12px "VT323", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(filmCodes[s], cx, infoY + 60);
+      ctx.fillText(filmCodes[s], cx, infoY + 70);
     }
+
+    // 3g. dirt 污渍效果（在中间信息区叠加污渍纹理）
+    //     之前 dirt 只在左右延伸 mesh 上，但左右延伸在视野外看不到
+    //     这里在 edgeCanvas 中间区域绘制污渍，让 dirt 效果在齿孔之间可见
+    //     污渍分布：深褐色斑点 + 浅色磨损 + 油渍痕迹
+    ctx.save();
+    // 限制污渍只在中间信息区 [140, 370]（y 范围，避开齿孔）
+    ctx.beginPath();
+    ctx.rect(0, 140, w, 230);
+    ctx.clip();
+    // 深褐色斑点（污渍主体）
+    for (let i = 0; i < 200; i++) {
+      const x = Math.random() * w;
+      const y = 140 + Math.random() * 230;
+      const r = 2 + Math.random() * 8;
+      const alpha = 0.1 + Math.random() * 0.3;
+      ctx.fillStyle = `rgba(40, 25, 10, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 浅色磨损斑（胶片基底老化发白）
+    for (let i = 0; i < 80; i++) {
+      const x = Math.random() * w;
+      const y = 140 + Math.random() * 230;
+      const r = 3 + Math.random() * 12;
+      const alpha = 0.05 + Math.random() * 0.15;
+      ctx.fillStyle = `rgba(200, 170, 120, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 油渍痕迹（横向条状）
+    for (let i = 0; i < 15; i++) {
+      const x = Math.random() * w;
+      const y = 140 + Math.random() * 230;
+      const w2 = 30 + Math.random() * 80;
+      const h2 = 2 + Math.random() * 6;
+      const alpha = 0.08 + Math.random() * 0.12;
+      ctx.fillStyle = `rgba(30, 20, 10, ${alpha})`;
+      ctx.fillRect(x, y, w2, h2);
+    }
+    ctx.restore();
 
     // 4. 划痕（随机细线，多一些增加真实感）
     ctx.strokeStyle = 'rgba(255, 220, 180, 0.2)';
@@ -958,39 +1166,117 @@ function FilmStrip() {
 
   // 胶片基底材质：深褐色 + dirt 污渍 + grunge 粗糙度
   // DoubleSide：弯曲后从背面也能看到（防止从某个视角看到穿透）
-  const filmBaseMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: '#2a1a0e',
-        map: dirtMap,
-        roughnessMap: grungeMap,
-        roughness: 0.9,
-        metalness: 0.1,
-        side: THREE.DoubleSide,
-      }),
-    [dirtMap, grungeMap]
-  );
+  // applyCurvedShader：注入动态弯曲 vertex shader（弯曲随 activeSectionX 变化）
+  const filmBaseMat = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      color: '#2a1a0e',
+      map: dirtMap,
+      roughnessMap: grungeMap,
+      roughness: 0.9,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    applyCurvedShader(m);
+    return m;
+  }, [dirtMap, grungeMap]);
 
   // 胶片边缘材质：带齿孔的 CanvasTexture
   // DoubleSide：上下边缘从背面看也要正确显示
-  // emissiveIntensity 提到 10：让齿孔区域背景充分发光，齿孔（纯黑）对比最明显
-  //   之前 0.15 太暗，整个边缘几乎全黑，齿孔与背景混在一起看不见
+  // emissiveIntensity 提到 5：让齿孔区域背景发光，齿孔（纯黑）对比明显
   // emissive 用更暖的琥珀色 #6a3a00：背景偏暖橙，与齿孔纯黑对比更鲜明
-  const filmEdgeMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        map: edgeTexture,
-        color: '#5a3a22',
-        roughnessMap: grungeMap,
-        roughness: 0.95,
-        metalness: 0.05,
-        emissive: '#6a3a00',
-        emissiveMap: edgeTexture,
-        emissiveIntensity: 5,
-        side: THREE.DoubleSide,
-      }),
-    [edgeTexture, grungeMap]
-  );
+  // applyCurvedShader：注入动态弯曲（与基底同步弯曲）
+  const filmEdgeMat = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      map: edgeTexture,
+      color: '#5a3a22',
+      roughnessMap: grungeMap,
+      roughness: 0.95,
+      metalness: 0.05,
+      emissive: '#6a3a00',
+      emissiveMap: edgeTexture,
+      emissiveIntensity: 5,
+      side: THREE.DoubleSide,
+    });
+    applyCurvedShader(m);
+    return m;
+  }, [edgeTexture, grungeMap]);
+
+  // useFrame：平滑更新弯曲中心到当前 section
+  // lerp 系数 0.08：切换时有缓动过渡，避免弯曲突变
+  useFrame((_, delta) => {
+    curvedUniforms.uActiveCenterX.value = THREE.MathUtils.lerp(
+      curvedUniforms.uActiveCenterX.value,
+      activeSectionX,
+      Math.min(delta * 3, 1)  // 帧率无关 lerp，速度 3
+    );
+  });
+
+  // 左延伸独立材质：UV offset 让 dirt 与基底连续
+  // 基底 mesh 宽 20，UV [0,1] 对应 worldX [-10,10]，dirt repeat=3 → UV 范围 [0,3]
+  // 左延伸在 worldX [-10,-6]（基底左边缘部分），对应基底 UV [0, 0.2]（×3 → [0, 0.6]）
+  // 但左延伸是独立 mesh，UV 从 [0,1] 开始，需要 offset=-2 让 dirt 纹理对齐基底左边缘
+  // 简化：repeat=3，sideW=2 占总宽 20 的 10%，UV 应占 0.1×3=0.3 范围
+  //        左延伸 UV offset = -0.3（让 dirt 接着基底左边缘继续）
+  // 注意：dirtMap/grungeMap 是共享纹理，必须用独立材质实例才能有独立 offset
+  const leftExtMat = useMemo(() => {
+    const dirt = dirtMap.clone();
+    dirt.needsUpdate = true;
+    dirt.wrapS = THREE.RepeatWrapping;
+    dirt.wrapT = THREE.RepeatWrapping;
+    dirt.repeat.set(0.3, 1);    // sideW=2 占总宽 10%，repeat 缩放
+    dirt.offset.set(-0.3, 0);    // 让 dirt 接着基底左边缘继续
+    dirt.colorSpace = THREE.SRGBColorSpace;
+
+    const grunge = grungeMap.clone();
+    grunge.needsUpdate = true;
+    grunge.wrapS = THREE.RepeatWrapping;
+    grunge.wrapT = THREE.RepeatWrapping;
+    grunge.repeat.set(0.3, 1);
+    grunge.offset.set(-0.3, 0);
+
+    const m = new THREE.MeshStandardMaterial({
+      color: '#2a1a0e',
+      map: dirt,
+      roughnessMap: grunge,
+      roughness: 0.9,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    // 用 dirtCurvedUniforms：弯曲量受限，确保 dirt 永远在屏幕之后
+    applyCurvedShader(m, dirtCurvedUniforms);
+    return m;
+  }, [dirtMap, grungeMap]);
+
+  // 右延伸独立材质：UV offset 让 dirt 与基底连续
+  // 右延伸在 worldX [6,10]（基底右边缘部分），UV offset = 3（接着基底右边缘继续）
+  const rightExtMat = useMemo(() => {
+    const dirt = dirtMap.clone();
+    dirt.needsUpdate = true;
+    dirt.wrapS = THREE.RepeatWrapping;
+    dirt.wrapT = THREE.RepeatWrapping;
+    dirt.repeat.set(0.3, 1);
+    dirt.offset.set(3.0, 0);    // 接着基底右边缘继续
+    dirt.colorSpace = THREE.SRGBColorSpace;
+
+    const grunge = grungeMap.clone();
+    grunge.needsUpdate = true;
+    grunge.wrapS = THREE.RepeatWrapping;
+    grunge.wrapT = THREE.RepeatWrapping;
+    grunge.repeat.set(0.3, 1);
+    grunge.offset.set(3.0, 0);
+
+    const m = new THREE.MeshStandardMaterial({
+      color: '#2a1a0e',
+      map: dirt,
+      roughnessMap: grunge,
+      roughness: 0.9,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    // 用 dirtCurvedUniforms：弯曲量受限，确保 dirt 永远在屏幕之后
+    applyCurvedShader(m, dirtCurvedUniforms);
+    return m;
+  }, [dirtMap, grungeMap]);
 
   // 胶片尺寸：宽 20，高 4.6（屏幕 16×3 在中间，上下边缘各 0.8 高）
   // 屏幕宽 16 = 4 个 section × 每个 4 宽
@@ -1004,9 +1290,10 @@ function FilmStrip() {
   const edgeH = (FILM_H - SCREEN_H) / 2;  // 上下边缘各 0.8 高
   const sideW = (FILM_W - SCREEN_W) / 2;  // 左右延伸各 2 宽
 
-  // 弯曲强度：负值 → 中间凸向相机，两端凹向远处（微笑形）
-  // -0.004 在 |x|=10 处产生 z=-0.4 的偏移，足够看出弧度，又不会让 Html 文字严重错位
-  const CURVATURE = -0.004;
+  // 几何体静态弯曲：设为 0（平直），弯曲完全由 applyCurvedShader 在
+  // vertex shader 中动态控制（当前 section 平直，远离 section 卷曲）
+  // 如果非 0，会和 shader 弯曲叠加，导致弯曲过度
+  const CURVATURE = 0;
 
   // 左右延伸 mesh 在 group 中的 x 偏移
   // 左延伸位置 x = -SCREEN_W/2 - sideW/2 = -8 - 1 = -9
@@ -1029,13 +1316,17 @@ function FilmStrip() {
     () => makeCurvedGeometry(FILM_W, edgeH, 32, 2, CURVATURE, 0),
     [FILM_W, edgeH, CURVATURE]
   );
+  // 左右延伸几何体：高度用 FILM_H 而非 SCREEN_H
+  // 之前用 SCREEN_H=3，左右延伸只覆盖 y[-1.5,1.5]，上下各 0.8 单位
+  // 被上下边缘 mesh（齿孔）遮挡，导致 dirt 看起来被截断
+  // 现在用 FILM_H=4.6，完全覆盖基底高度，dirt 完整可见
   const leftExtGeo = useMemo(
-    () => makeCurvedGeometry(sideW, SCREEN_H, 8, 4, CURVATURE, LEFT_EXT_X),
-    [sideW, SCREEN_H, CURVATURE, LEFT_EXT_X]
+    () => makeCurvedGeometry(sideW, FILM_H, 8, 4, CURVATURE, LEFT_EXT_X),
+    [sideW, FILM_H, CURVATURE, LEFT_EXT_X]
   );
   const rightExtGeo = useMemo(
-    () => makeCurvedGeometry(sideW, SCREEN_H, 8, 4, CURVATURE, RIGHT_EXT_X),
-    [sideW, SCREEN_H, CURVATURE, RIGHT_EXT_X]
+    () => makeCurvedGeometry(sideW, FILM_H, 8, 4, CURVATURE, RIGHT_EXT_X),
+    [sideW, FILM_H, CURVATURE, RIGHT_EXT_X]
   );
   // 4 条帧分隔线，xOffset 各自不同
   const dividerGeos = useMemo(
@@ -1069,23 +1360,32 @@ function FilmStrip() {
         <primitive object={baseGeo} attach="geometry" />
       </mesh>
 
-      {/* 上边缘：齿孔 + 编码（CanvasTexture），弯曲 */}
-      <mesh position={[0, SCREEN_H / 2 + edgeH / 2, -0.05]} material={filmEdgeMat}>
+      {/* 上边缘：齿孔 + 编码（CanvasTexture），弯曲
+          z=0.05 前移到屏幕(0)之前，确保齿孔+编码永远在最前可见
+          （上下边缘宽 20 覆盖整个 x，与左右延伸在两侧 y 区域重叠，
+           需前移避免被 dirt 遮挡；y=[1.5,2.3] 不与屏幕 y=[-1.5,1.5] 重叠） */}
+      <mesh position={[0, SCREEN_H / 2 + edgeH / 2, 0.05]} material={filmEdgeMat}>
         <primitive object={topEdgeGeo} attach="geometry" />
       </mesh>
 
-      {/* 下边缘：齿孔 + 编码（CanvasTexture），弯曲 */}
-      <mesh position={[0, -SCREEN_H / 2 - edgeH / 2, -0.05]} material={filmEdgeMat}>
+      {/* 下边缘：齿孔 + 编码（CanvasTexture），弯曲
+          z=0.05 与上边缘同步，前移到最前 */}
+      <mesh position={[0, -SCREEN_H / 2 - edgeH / 2, 0.05]} material={filmEdgeMat}>
         <primitive object={bottomEdgeGeo} attach="geometry" />
       </mesh>
 
-      {/* 左延伸：纯胶片色 + dirt，弯曲（xOffset=-9 让弯曲在 worldX 连续） */}
-      <mesh position={[LEFT_EXT_X, 0, -0.05]} material={filmBaseMat}>
+      {/* 左延伸：纯胶片色 + dirt，弯曲（xOffset=-9 让弯曲在 worldX 连续）
+          z=-0.08 在齿孔(0.05)之后，dirt 不会遮挡齿孔+编码
+          高度用 FILM_H=4.6 完整覆盖基底，dirt 不被截断
+          用 leftExtMat 独立材质：UV offset 让 dirt 与基底连续（不独立平铺） */}
+      <mesh position={[LEFT_EXT_X, 0, -0.08]} material={leftExtMat}>
         <primitive object={leftExtGeo} attach="geometry" />
       </mesh>
 
-      {/* 右延伸：纯胶片色 + dirt，弯曲（xOffset=9） */}
-      <mesh position={[RIGHT_EXT_X, 0, -0.05]} material={filmBaseMat}>
+      {/* 右延伸：纯胶片色 + dirt，弯曲（xOffset=9）
+          z=-0.08 在齿孔之后
+          用 rightExtMat 独立材质：UV offset 让 dirt 与基底连续 */}
+      <mesh position={[RIGHT_EXT_X, 0, -0.08]} material={rightExtMat}>
         <primitive object={rightExtGeo} attach="geometry" />
       </mesh>
 
@@ -1195,6 +1495,182 @@ function DustParticles({
         </sprite>
       ))}
     </group>
+  );
+}
+
+/**
+ * PhoneModel - 复古电话 3D 模型组件（静态）
+ *
+ * 功能：加载 phones.glb 模型，按传入的 position/rotation 静态摆放，
+ *      不做自转动画。三角排列时各电话朝向不同，营造戏剧感。
+ *      模型组整体的鼠标视差旋转由父级 ContactScene 控制。
+ *
+ * 参数：
+ *  - position  模型位置 [x, y, z]
+ *  - rotation  模型初始旋转 [x, y, z]（固定不变）
+ *  - scale     缩放（默认 1）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 异常：useGLTF 加载失败时由 Suspense 边界处理
+ *
+ * 注意事项：
+ *  - useGLTF 必须在 <Suspense> 内部使用
+ *  - 用 scene.clone(true) 避免多个 PhoneModel 共享同一场景图（否则位置/旋转互相干扰）
+ *  - traverse 设置 castShadow/receiveShadow 让模型参与阴影
+ *  - toneMapped=false 让贴图颜色保持鲜艳，呼应 shader.se 的暖色调
+ *  - 不使用 useFrame，模型保持静态（仅父级 group 的视差旋转影响整体）
+ */
+function PhoneModel({
+  position,
+  rotation,
+  scale = 1,
+}: {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale?: number;
+}) {
+  const { scene } = useGLTF('/asset/models/phones.glb');
+  // 克隆场景图：多个 PhoneModel 实例独立位置/旋转
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+
+  // 遍历设置阴影和材质（让模型更立体）
+  useMemo(() => {
+    cloned.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        // 让金属/塑料材质更鲜艳
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((m) => {
+          if (m && (m as THREE.MeshStandardMaterial).toneMapped !== undefined) {
+            (m as THREE.MeshStandardMaterial).toneMapped = false;
+          }
+        });
+      }
+    });
+  }, [cloned]);
+
+  return (
+    <primitive
+      object={cloned}
+      position={position}
+      rotation={rotation}
+      scale={scale}
+    />
+  );
+}
+
+// 预加载电话模型，避免首次进入 contact 详情页时卡顿
+useGLTF.preload('/asset/models/phones.glb');
+
+/**
+ * ContactScene - shader.se/#contact 风格 3D 场景
+ *
+ * 功能：复刻 shader.se/#contact 页面的 3D 效果：
+ *  - 电话模型静态摆放，焦点电话在 z=1.0
+ *  - 相机随 contactScrollProgress 从高处俯视下降到电话机水平：
+ *      progress=0：相机在高处 (y=8)，lookAt 在电话机上方 (y=6) → 看不见电话机
+ *      progress=1：相机降到电话机水平 (y=2.2)，lookAt 落到电话机 (y=0.1) → 正面看电话机
+ *  - 三点布光（key 暖色主光 + fill 冷色补光 + rim 轮廓光）
+ *  - 漂浮尘埃粒子营造氛围
+ *  - 鼠标视差：模型组轻微跟随鼠标旋转（相机由 progress 控制，不受鼠标影响）
+ *
+ * 参数：
+ *  - mouseRef                鼠标归一化坐标 ref（-1~1），驱动模型组视差旋转
+ *  - contactScrollProgress   contact 详情页内部滚动进度 0~1（驱动相机下降）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - PhoneModel 在 <Suspense> 内部（模型未加载完时显示 null）
+ *  - 相机 y 和 lookAt y 都由 progress 线性插值，让镜头"从天上降到地面"
+ *  - 相机 z 保持 8 不变（不前后移动，只上下移动 + 视线下移）
+ *  - 阴影由 Canvas 的 shadows 属性开启
+ */
+export function ContactScene({
+  mouseRef,
+  contactScrollProgress,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  contactScrollProgress: React.MutableRefObject<number>;
+}) {
+  const { camera } = useThree();
+  const groupRef = useRef<THREE.Group>(null);
+  const mouseSmoothed = useRef({ x: 0, y: 0 });
+
+  // 焦点电话位置（中间，最靠近相机）
+  const focusPos = useMemo<[number, number, number]>(() => [0, 0.1, 1.0], []);
+
+  // 相机动画参数：起点（高处俯视）→ 终点（电话机水平）
+  // progress=0 时相机在高处看电话机上方（看不到电话机）
+  // progress=1 时相机降到电话机水平，正面看电话机
+  const CAMERA_START_Y = 8.0;   // 起点高度
+  const CAMERA_END_Y = 2.2;     // 终点高度
+  const LOOKAT_START_Y = 6.0;   // 视线起点（电话机上方）
+  const LOOKAT_END_Y = 0.1;    // 视线终点（电话机位置）
+  const CAMERA_Z = 8;          // 相机 z 固定
+
+  // 每帧：根据 contactScrollProgress 更新相机位置和 lookAt（平滑 lerp）
+  //        + 鼠标视差让模型组轻微旋转
+  useFrame(() => {
+    const p = contactScrollProgress.current;
+    // 用 smoothstep 让相机运动有缓入缓出感（避免线性运动的生硬）
+    const t = p * p * (3 - 2 * p);
+
+    // 相机 y 从起点插值到终点
+    const camY = CAMERA_START_Y + (CAMERA_END_Y - CAMERA_START_Y) * t;
+    camera.position.set(0, camY, CAMERA_Z);
+
+    // lookAt y 从起点插值到终点（视线从电话机上方降到电话机）
+    const lookY = LOOKAT_START_Y + (LOOKAT_END_Y - LOOKAT_START_Y) * t;
+    camera.lookAt(0, lookY, focusPos[2]);
+
+    // 鼠标视差让模型组轻微旋转（相机由 progress 控制，不受鼠标影响）
+    if (groupRef.current) {
+      const target = mouseRef.current;
+      mouseSmoothed.current.x += (target.x - mouseSmoothed.current.x) * 0.05;
+      mouseSmoothed.current.y += (target.y - mouseSmoothed.current.y) * 0.05;
+      // 视差旋转幅度：±0.18 rad（约 ±10°）
+      groupRef.current.rotation.y = mouseSmoothed.current.x * 0.18;
+      groupRef.current.rotation.x = mouseSmoothed.current.y * -0.08;
+    }
+  });
+
+  return (
+    <>
+      {/* 环境光：提升亮度，避免画面太暗看不见模型 */}
+      <ambientLight intensity={0.55} color="#605570" />
+
+      {/* Key light：右上前方暖色主光，照亮电话顶部和右侧 */}
+      <directionalLight position={[4, 5, 4]} intensity={4.0} color="#ffe5b4" castShadow />
+
+      {/* Fill light：左侧冷色补光，照亮阴影区域，降低对比度 */}
+      <directionalLight position={[-4, 2, 3]} intensity={1.6} color="#88aaff" />
+
+      {/* Rim light：后下方暖色轮廓光，让电话边缘有金色描边 */}
+      <directionalLight position={[0, -2, -5]} intensity={2.0} color="#ff8866" />
+
+      {/* 模型组（鼠标视差作用对象） */}
+      <group ref={groupRef}>
+        <Suspense fallback={null}>
+          {/* 电话模型（静态）：
+              - phones.glb 本身可能已包含多个电话，只渲染 1 个实例避免重复
+              - 焦点位置（z=1.0，相机 lookAt 目标）
+              - rotation y=PI 让模型正面朝向相机（默认正面朝 -z，相机在 +z）
+              整体随鼠标视差轻微旋转（由 groupRef 控制） */}
+          <PhoneModel
+            position={focusPos}
+            rotation={[0, Math.PI, 0]}
+            scale={1}
+          />
+        </Suspense>
+      </group>
+
+      {/* 漂浮尘埃粒子，营造电影感氛围 */}
+      <DustParticles count={45} areaSize={6} color="#ffe5b4" />
+    </>
   );
 }
 
@@ -1365,8 +1841,10 @@ export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionCh
       {/* 顶部冷色补光 */}
       <directionalLight color="#d4e0ff" intensity={0.4} position={[0, 5, 2]} />
 
-      {/* 胶片条（35mm 电影胶片风格，替代电脑外壳） */}
-      <FilmStrip />
+      {/* 胶片条（35mm 电影胶片风格，替代电脑外壳）
+          activeSectionX：当前 section 中心 world x（section i → i*4）
+          传给 FilmStrip 让弯曲中心随 section 切换平滑移动 */}
+      <FilmStrip activeSectionX={sectionIndex * 4} />
 
       {/* 屏幕显示（含 RectAreaLight） */}
       <ScreenDisplay sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />

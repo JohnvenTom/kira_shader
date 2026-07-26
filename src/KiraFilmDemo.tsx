@@ -1,7 +1,7 @@
-import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-import { FilmScene, SECTIONS } from './components/FilmScene';
+import { FilmScene, SECTIONS, PROJECTS, ContactScene } from './components/FilmScene';
 import {
   FilmPostProcessing,
   DEFAULT_FILM_PARAMS,
@@ -85,6 +85,15 @@ export default function KiraFilmDemo() {
   // mount 时 entering=true（白屏），下一帧加 fade-out class 触发淡出过渡
   const [enteringFadeOut, setEnteringFadeOut] = useState(false);
 
+  // 详情模式：滚轮滚到底（镜头贴到最近）时丝滑进入对应 section 的展示页面
+  // - detailOpen=true 时显示全屏详情覆盖层（项目卡片 + 完整信息）
+  // - 用滞回阈值避免在边界来回抖动：进入 >0.92，退出 <0.85
+  const [detailOpen, setDetailOpen] = useState(false);
+  // 用于滞回判断的 ref（避免闭包读到旧 state）
+  const detailOpenRef = useRef(false);
+  // 详情覆盖层 ref（用于绑定原生 wheel 事件，转发到 scrollContainer）
+  const detailOverlayRef = useRef<HTMLDivElement>(null);
+
   // mount 后立即触发淡出（用 rAF 确保浏览器先把 entering 状态渲染成白屏）
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
@@ -109,11 +118,19 @@ export default function KiraFilmDemo() {
   /**
    * 滚动事件处理
    *
-   * 功能：读取滚动容器的 scrollTop，计算 0~1 的进度并写入 state
+   * 功能：读取滚动容器的 scrollTop，计算 0~1 的进度并写入 state；
+   *      同时用滞回阈值判断是否进入详情模式：
+   *       - progress > 0.92 且当前未进入 → 进入详情（detailOpen=true）
+   *       - progress < 0.85 且当前已进入 → 退出详情（detailOpen=false）
+   *      滞回避免在边界来回抖动，保证丝滑切换
+   *
    * 参数：无
    * 返回值：无
    *
-   * 注意事项：用 passive 监听提升性能，避免阻塞滚动
+   * 注意事项：
+   *  - 用 passive 监听提升性能，避免阻塞滚动
+   *  - 用 ref 读取当前 detailOpen 状态，避免闭包读到旧值
+   *  - 详情进入/退出由 CSS transition 控制过渡，state 切换是离散的但视觉是丝滑的
    */
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -121,6 +138,16 @@ export default function KiraFilmDemo() {
     const max = el.scrollHeight - el.clientHeight;
     const progress = max > 0 ? el.scrollTop / max : 0;
     setScrollProgress(progress);
+
+    // 滞回判断详情模式
+    const isOpen = detailOpenRef.current;
+    if (!isOpen && progress > 0.92) {
+      detailOpenRef.current = true;
+      setDetailOpen(true);
+    } else if (isOpen && progress < 0.85) {
+      detailOpenRef.current = false;
+      setDetailOpen(false);
+    }
   }, []);
 
   // 绑定滚动监听
@@ -133,6 +160,39 @@ export default function KiraFilmDemo() {
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
+
+  /**
+   * 详情覆盖层 wheel 事件转发
+   *
+   * 功能：详情覆盖层 pointer-events:auto 会拦截 wheel 事件，导致
+   *      scrollContainer 收不到滚动 → progress 不变 → 无法退出详情。
+   *      这里在覆盖层上用原生 addEventListener 监听 wheel（passive:false），
+   *      阻止默认行为（避免页面/覆盖层自身滚动），把 deltaY 同步到
+   *      scrollContainer.scrollTop，触发 handleScroll 更新 progress。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 必须用 passive:false 才能 preventDefault()
+   *  - 覆盖层未 visible 时 pointer-events:none，wheel 不会触发在它上面，
+   *    直接到 scrollContainer，所以只在详情打开时拦截，不影响正常滚动
+   *  - deltaY 同步到 scrollTop 后会触发 scroll 事件，handleScroll 中滞回
+   *    判断 progress<0.85 会退出详情
+   */
+  useEffect(() => {
+    const overlay = detailOverlayRef.current;
+    if (!overlay) return;
+    const onWheel = (e: WheelEvent) => {
+      const el = scrollContainerRef.current;
+      if (!el) return;
+      e.preventDefault();
+      // 把 wheel delta 同步到底层 scrollContainer
+      el.scrollTop += e.deltaY;
+    };
+    overlay.addEventListener('wheel', onWheel, { passive: false });
+    return () => overlay.removeEventListener('wheel', onWheel);
+  }, []);
 
   /**
    * section 切换回调
@@ -370,6 +430,258 @@ export default function KiraFilmDemo() {
 
         <div className="scroll-hint">Scroll to switch sections</div>
       </div>
+
+      {/* 第 4 层：详情展示覆盖层 z-60
+          滚轮滚到底（progress>0.92）时丝滑淡入，展示当前 section 的完整信息
+          - opacity + transform 由 CSS transition 控制（0.6s cubic-bezier）
+          - detailOpen=true 时 visible class 触发淡入
+          - sectionIndex === 3 (CONTACT) 时显示 shader.se/#contact 风格页面：
+            独立 3D Canvas 渲染电话模型 + "Hello." 大标题 + 横向联系信息
+          - 其他 section：显示项目卡片网格
+          - 滚轮回退（progress<0.85）时淡出，丝滑回到 3D 场景 */}
+      <div
+        ref={detailOverlayRef}
+        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''}`}
+      >
+        {sectionIndex === 3 ? (
+          /* === Contact 详情页：shader.se/#contact 风格 ===
+           - 独立滚动容器驱动相机下降动画
+           - 初始：相机高处俯视，Hello 居中显示，看不见电话机
+           - 滚动后：相机降到电话机水平，露出电话机，显示联系信息 */
+          <ContactDetailPage mouseRef={mouseRef} />
+        ) : (
+          /* === 默认详情页：项目卡片网格 === */
+          <div className="film-detail-inner">
+            {/* 顶部：section 标识 + 标题 */}
+            <div className="film-detail-header">
+              <span
+                className="film-detail-index"
+                style={{ color: currentSection.accentColor }}
+              >
+                0{sectionIndex + 1} / 0{SECTIONS.length}
+              </span>
+              <h2 className="film-detail-title">{currentSection.title}</h2>
+              <p
+                className="film-detail-subtitle"
+                style={{ color: currentSection.accentColor }}
+              >
+                {currentSection.subtitle}
+              </p>
+              <p className="film-detail-desc">{currentSection.description}</p>
+            </div>
+
+            {/* 中部：项目卡片网格（展示 PROJECTS 数据） */}
+            <div className="film-detail-grid">
+              {PROJECTS.map((p, i) => (
+                <div
+                  key={p.id}
+                  className="film-detail-card"
+                  style={{
+                    // 卡片淡入延迟，逐个出现
+                    transitionDelay: `${0.15 + i * 0.08}s`,
+                  }}
+                >
+                  <div className="film-detail-card-thumb">
+                    <img src={p.thumb} alt={p.name} />
+                  </div>
+                  <div className="film-detail-card-info">
+                    <span className="film-detail-card-year">{p.year}</span>
+                    <h3 className="film-detail-card-name">{p.name}</h3>
+                    <p className="film-detail-card-tagline">{p.tagline}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* 底部：提示滚回 */}
+            <div className="film-detail-footer">
+              <span>Scroll up to return</span>
+            </div>
+          </div>
+        )}
+      </div>
     </>
+  );
+}
+
+/**
+ * ContactDetailPage - Contact section 详情页（shader.se/#contact 复刻）
+ *
+ * 功能：
+ *  - 独立滚动容器驱动 contact 详情页内部滚动状态（与外层 scroll-container 解耦）
+ *  - 初始状态（progress=0）：
+ *      - 相机在高处俯视，lookAt 在电话机上方 → 看不见电话机
+ *      - "Hello." 标题居中显示
+ *  - 滚动后（progress→1）：
+ *      - 相机降到电话机水平，lookAt 落到电话机 → 露出电话机
+ *      - 联系信息卡片淡入
+ *  - 滚轮回退到顶部（progress<0.05）后再继续滚 → 退出详情页回 3D 场景
+ *
+ * 参数：
+ *  - mouseRef  鼠标归一化坐标 ref（-1~1），传给 ContactScene 驱动模型视差旋转
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 滚动容器 contactScrollRef 占据整个详情页，z-30 在内容下方
+ *  - 内容层 z-40 在滚动容器上方，包含 Hello 标题和联系信息
+ *  - 3D Canvas 在最底层 z-0，相机随 progress 下降露出电话机
+ *  - contactScrollProgress 用 ref 不用 state，避免每帧重渲染
+ */
+function ContactDetailPage({
+  mouseRef,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+}) {
+  // contact 详情页内部独立滚动容器 ref
+  const contactScrollRef = useRef<HTMLDivElement>(null);
+  // contact 详情页内部滚动进度 0~1（驱动相机下降）
+  const contactScrollProgress = useRef(0);
+  // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
+  const atTopRef = useRef(true);
+  // 内容层 ref（用于写入 CSS 变量 --contact-progress 驱动子元素淡入）
+  const contentLayerRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * contact 详情页内部滚动事件处理
+   *
+   * 功能：读取 contactScrollRef 的 scrollTop，计算 0~1 的进度
+   *      1. 写入 contactScrollProgress.current（驱动 3D 相机下降，由 useFrame 读取）
+   *      2. 写入内容层的 CSS 变量 --contact-progress（驱动联系信息淡入）
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 用 passive 监听提升性能
+   *  - 不触发 React 重渲染（用 ref + CSS 变量直接驱动样式）
+   *  - CSS 变量驱动副标题/联系信息卡片随滚动进度淡入
+   */
+  const handleContactScroll = useCallback(() => {
+    const el = contactScrollRef.current;
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    const progress = max > 0 ? el.scrollTop / max : 0;
+    const clamped = Math.max(0, Math.min(1, progress));
+    contactScrollProgress.current = clamped;
+    atTopRef.current = el.scrollTop <= 0;
+    // 写入 CSS 变量驱动子元素淡入（副标题/联系信息卡片）
+    if (contentLayerRef.current) {
+      contentLayerRef.current.style.setProperty('--contact-progress', String(clamped));
+    }
+  }, []);
+
+  // 绑定滚动监听
+  useEffect(() => {
+    const el = contactScrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    contactScrollProgress.current = 0;
+    el.addEventListener('scroll', handleContactScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleContactScroll);
+  }, [handleContactScroll]);
+
+  return (
+    <div className="contact-detail-inner">
+      {/* 3D Canvas：独立 WebGL 上下文渲染电话模型
+          - shadows 开启让 castShadow 生效
+          - alpha:true 让背景透明
+          - 相机初始位置在 (0, 8, 8) 高处俯视，由 ContactScene 内部 useFrame 覆盖 */}
+      <div className="contact-canvas-wrapper">
+        <Canvas
+          shadows
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+          camera={{ fov: 35, near: 0.1, far: 100, position: [0, 8, 8] }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#000000'), 0);
+          }}
+        >
+          <Suspense fallback={null}>
+            <ContactScene
+              mouseRef={mouseRef}
+              contactScrollProgress={contactScrollProgress}
+            />
+          </Suspense>
+        </Canvas>
+      </div>
+
+      {/* 独立滚动容器：撑出滚动空间让用户能滚动驱动相机下降
+          - z-30 在 3D Canvas 之上，但低于内容层 z-40
+          - pointer-events: auto 接收滚轮事件
+          - 高度 = 2 倍视口高度，让滚动有足够距离让相机动画完整 */}
+      <div ref={contactScrollRef} className="contact-scroll-container">
+        <div className="contact-scroll-placeholder" />
+      </div>
+
+      {/* 内容层：固定全屏，包含 Hello 标题 + 联系信息
+          - pointer-events: none 让滚轮事件穿透到滚动容器
+          - 单独子元素 pointer-events: auto 才能交互（链接等）
+          - 通过 ref 写入 --contact-progress CSS 变量驱动子元素淡入 */}
+      <div ref={contentLayerRef} className="contact-content-layer">
+        {/* 居中 "Hello." 大标题（逐字浮现，呼应 shader.se 的标题动画）
+            - 用 .contact-hello-char span 包裹每个字符，递增 transitionDelay
+            - 父级 .visible 时所有字符同时触发动画
+            - text-shadow 多层叠加营造柔和发光 */}
+        <h1 className="contact-hello-title">
+          {'Hello.'.split('').map((ch, i) => (
+            <span
+              key={i}
+              className="contact-hello-char"
+              style={{ transitionDelay: `${0.25 + i * 0.08}s` }}
+            >
+              {ch === ' ' ? '\u00A0' : ch}
+            </span>
+          ))}
+        </h1>
+
+        {/* 副标题：联系说明（随滚动进度淡入） */}
+        <p className="contact-tagline">
+          Contact us about your digital project idea or general enquires.
+          <br />
+          Let&apos;s interface, call us today!
+        </p>
+
+        {/* 横向联系信息：三张卡片（随滚动进度淡入） */}
+        <div className="contact-info-row">
+          <div className="contact-info-card">
+            <span className="contact-info-label">General Enquiries</span>
+            <a
+              href="mailto:hello@shader.se"
+              className="contact-info-value"
+            >
+              hello@shader.se
+            </a>
+          </div>
+          <div className="contact-info-card">
+            <span className="contact-info-label">Book a call</span>
+            <a
+              href="https://cal.com/simon-hedlund-kglzne"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="contact-info-value"
+            >
+              Schedule a call →
+            </a>
+          </div>
+          <div className="contact-info-card">
+            <span className="contact-info-label">Visit us</span>
+            <span className="contact-info-value">
+              Laxholmstorget 3
+              <br />
+              602 21 Norrköping, Sweden
+            </span>
+          </div>
+        </div>
+
+        {/* 底部 footer：新业务邮箱 + 滚回提示 */}
+        <div className="contact-footer">
+          <span className="contact-footer-business">
+            New business:{' '}
+            <a href="mailto:ceo@shader.se">ceo@shader.se</a>
+          </span>
+          <span className="contact-footer-hint">Scroll up to return</span>
+        </div>
+      </div>
+    </div>
   );
 }

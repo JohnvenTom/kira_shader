@@ -743,3 +743,487 @@ body.camera-debug-mode .scroll-container {
 
 /* 顶部导航增加 demo 切换链接的视觉提示（可选，NavBar 组件不变） */
 
+/* =========================================================================
+   详情展示覆盖层（滚轮滚到底丝滑进入）
+   - z-60 在所有层之上，覆盖 3D 场景
+   - 默认 opacity:0 + scale(1.05) 不可见
+   - .visible 时 opacity:1 + scale(1) 丝滑淡入
+   - 0.6s cubic-bezier 过渡，有缓动感
+   ========================================================================= */
+.film-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;  /* 默认不拦截交互，避免影响 3D 拖动 */
+  opacity: 0;
+  transform: scale(1.05);
+  transition:
+    opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  /* 半透明深色背景 + 模糊，让 3D 场景隐约可见（沉浸感） */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(10, 8, 6, 0.92) 0%,
+    rgba(5, 4, 3, 0.98) 100%
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  /* 胶片颗粒纹理叠加 */
+  overflow: hidden;
+}
+
+.film-detail-overlay.visible {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;  /* 进入后可交互（点击卡片等） */
+}
+
+/* 内容容器：居中 + 最大宽度 */
+.film-detail-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 80px 6vw 60px;
+  overflow-y: auto;
+}
+
+/* 顶部 header：section 标识 + 标题 */
+.film-detail-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 48px;
+}
+
+.film-detail-index {
+  font-family: var(--font-retro);
+  font-size: 18px;
+  letter-spacing: 0.15em;
+  opacity: 0.85;
+}
+
+.film-detail-title {
+  font-family: var(--font-stix);
+  font-size: clamp(40px, 6vw, 88px);
+  font-weight: 700;
+  color: #fcf9f3;
+  margin: 0;
+  letter-spacing: 0.01em;
+  line-height: 1.05;
+}
+
+.film-detail-subtitle {
+  font-family: var(--font-display);
+  font-size: clamp(18px, 2vw, 28px);
+  font-weight: 300;
+  margin: 8px 0 0;
+  letter-spacing: 0.06em;
+}
+
+.film-detail-desc {
+  font-family: var(--font-display);
+  font-size: clamp(14px, 1.4vw, 18px);
+  color: rgba(252, 249, 243, 0.65);
+  margin: 16px 0 0;
+  max-width: 640px;
+  line-height: 1.6;
+}
+
+/* 项目卡片网格：响应式 2~4 列 */
+.film-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 24px;
+  margin-bottom: 40px;
+}
+
+/* 单个卡片：默认隐藏（透明 + 下移），.visible 时父级触发淡入 */
+.film-detail-card {
+  display: flex;
+  flex-direction: column;
+  background: rgba(252, 249, 243, 0.04);
+  border: 1px solid rgba(252, 249, 243, 0.1);
+  border-radius: 2px;  /* 锐利直角（用户偏好） */
+  overflow: hidden;
+  /* 卡片自身淡入：透明 + 下移 */
+  opacity: 0;
+  transform: translateY(24px);
+  transition:
+    opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+/* 父级 .visible 时卡片淡入（用 transition-delay 实现逐个出现） */
+.film-detail-overlay.visible .film-detail-card {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.film-detail-card:hover {
+  border-color: rgba(252, 249, 243, 0.3);
+  background: rgba(252, 249, 243, 0.08);
+}
+
+/* 卡片缩略图 */
+.film-detail-card-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: #0a0806;
+}
+
+.film-detail-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.4s ease;
+}
+
+.film-detail-card:hover .film-detail-card-thumb img {
+  transform: scale(1.05);
+}
+
+/* 卡片信息 */
+.film-detail-card-info {
+  padding: 16px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.film-detail-card-year {
+  font-family: var(--font-retro);
+  font-size: 14px;
+  color: rgba(252, 249, 243, 0.5);
+  letter-spacing: 0.1em;
+}
+
+.film-detail-card-name {
+  font-family: var(--font-stix);
+  font-size: 22px;
+  font-weight: 700;
+  color: #fcf9f3;
+  margin: 4px 0 0;
+  letter-spacing: 0.01em;
+}
+
+.film-detail-card-tagline {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 300;
+  color: rgba(252, 249, 243, 0.6);
+  margin: 4px 0 0;
+  letter-spacing: 0.04em;
+}
+
+/* 底部提示 */
+.film-detail-footer {
+  margin-top: auto;
+  padding-top: 24px;
+  text-align: center;
+  font-family: var(--font-retro);
+  font-size: 14px;
+  color: rgba(252, 249, 243, 0.4);
+  letter-spacing: 0.15em;
+}
+
+/* =========================================================================
+   Contact 详情页样式（shader.se/#contact 复刻）
+   - contact-mode 时切换布局：3D Canvas 居中 + Hello 标题 + 联系信息
+   - 背景更暗、模糊更强，凸显 3D 模型
+   ========================================================================= */
+
+/* contact-mode 时隐藏默认 inner 容器的 padding，让 3D Canvas 全屏铺满 */
+.film-detail-overlay.contact-mode {
+  /* 更深邃的径向背景，呼应 shader.se 的暗调 */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(15, 12, 8, 0.94) 0%,
+    rgba(2, 2, 2, 0.99) 70%,
+    rgba(0, 0, 0, 1) 100%
+  );
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* contact 详情页内容容器：全屏布局，垂直堆叠
+   - overflow: hidden 不让外层滚动，内部由 contact-scroll-container 驱动 */
+.contact-detail-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* 独立滚动容器：撑出滚动空间让用户能滚动驱动相机下降
+   - z-30 在 3D Canvas 之上，但低于内容层 z-40
+   - 接收滚轮事件，驱动 contactScrollProgress
+   - 占据整个详情页，高度 = 2 倍视口高度 */
+.contact-scroll-container {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 30;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.contact-scroll-container::-webkit-scrollbar {
+  display: none;
+}
+
+/* 撑出滚动空间的占位：高度 = 2 倍视口
+   让 progress 从 0（顶部）到 1（底部）有足够距离让相机动画完整 */
+.contact-scroll-placeholder {
+  width: 100%;
+  height: 200vh;
+  pointer-events: none;
+}
+
+/* 3D Canvas 容器：铺满整个详情页背景
+   - z-0 最底层
+   - pointer-events: none 不接收交互，让滚轮穿透到 contact-scroll-container */
+.contact-canvas-wrapper {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.contact-canvas-wrapper canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* 内容层：固定全屏，包含 Hello 标题 + 联系信息
+   - z-40 在滚动容器之上，但不接收滚轮事件（pointer-events: none）
+   - 单独子元素（链接）用 pointer-events: auto 才能交互
+   - 通过 --contact-progress 变量驱动子元素淡入 */
+.contact-content-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 6vw 32px;
+  pointer-events: none;
+  /* CSS 变量：由 JS 写入 contactScrollProgress，驱动子元素淡入
+     默认 0（初始状态，Hello 显示，其他隐藏） */
+  --contact-progress: 0;
+}
+
+/* 让可交互子元素（链接、卡片）能接收点击 */
+.contact-content-layer a,
+.contact-info-card,
+.contact-footer {
+  pointer-events: auto;
+}
+
+/* "Hello." 大标题：居中、巨型字号、柔和发光
+   - 默认透明 + 下移，父级 .visible 时逐字浮现
+   - text-shadow 多层叠加模拟屏幕自发光 + bloom 辉光
+   - drop-shadow 做轻微 RGB 偏移，呼应镜头色散感 */
+.contact-hello-title {
+  position: relative;
+  z-index: 2;
+  font-family: var(--font-stix);
+  font-size: clamp(80px, 14vw, 220px);
+  font-weight: 700;
+  color: #fcf9f3;
+  margin: 0;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  text-align: center;
+  pointer-events: auto;
+}
+
+/* 每个字符 span：默认隐藏 + 下移 + 缩小
+   父级 .visible 时通过 transition 逐字浮现 */
+.contact-hello-char {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(60px) scale(0.7);
+  /* 柔和辉光：多层 text-shadow 由内到外 */
+  text-shadow:
+    0 0 12px rgba(255, 244, 224, 0.85),
+    0 0 32px rgba(255, 210, 140, 0.65),
+    0 0 64px rgba(255, 170, 100, 0.45),
+    0 0 120px rgba(255, 130, 70, 0.3);
+  /* 色散：drop-shadow 做 RGB 偏移 */
+  filter:
+    drop-shadow(2.8px 0 0 rgba(255, 60, 60, 0.8))
+    drop-shadow(-2.8px 0 0 rgba(60, 160, 255, 0.8));
+  transition:
+    opacity 0.9s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.9s cubic-bezier(0.16, 1, 0.3, 1),
+    text-shadow 0.9s ease,
+    filter 0.9s ease;
+  will-change: transform, opacity;
+}
+
+/* 父级 .visible 时字符浮现，并减弱辉光（避免过曝） */
+.film-detail-overlay.visible .contact-hello-char {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  text-shadow:
+    0 0 10px rgba(255, 244, 224, 0.7),
+    0 0 26px rgba(255, 210, 140, 0.55),
+    0 0 52px rgba(255, 170, 100, 0.35),
+    0 0 96px rgba(255, 130, 70, 0.22);
+  filter:
+    drop-shadow(2.2px 0 0 rgba(255, 60, 60, 0.7))
+    drop-shadow(-2.2px 0 0 rgba(60, 160, 255, 0.7));
+}
+
+/* 副标题：优雅细体衬线，居中
+   - 淡入由 --contact-progress 控制（progress > 0.4 时显示）
+   - 用 calc + clamp 把 progress 映射到 opacity */
+.contact-tagline {
+  position: relative;
+  z-index: 2;
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(15px, 1.6vw, 22px);
+  color: rgba(252, 249, 243, 0.75);
+  text-align: center;
+  margin: 28px 0 56px;
+  letter-spacing: 0.08em;
+  line-height: 1.6;
+  max-width: 640px;
+  /* opacity 由 --contact-progress 驱动：progress<0.4 时为 0，>0.7 时为 1 */
+  opacity: clamp(0, calc((var(--contact-progress) - 0.4) * 3.33), 1);
+  transform: translateY(calc((1 - clamp(0, calc((var(--contact-progress) - 0.4) * 3.33), 1)) * 20px));
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  pointer-events: auto;
+}
+
+/* 横向联系信息：三张卡片水平排列
+   - 淡入由 --contact-progress 控制（progress > 0.6 时显示） */
+.contact-info-row {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: clamp(20px, 4vw, 64px);
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  margin-bottom: 40px;
+  pointer-events: auto;
+}
+
+/* 单张联系信息卡片：锐利直角（用户偏好）
+   - 淡入由 --contact-progress 控制（progress > 0.7 时显示） */
+.contact-info-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 20px 24px;
+  min-width: 200px;
+  background: rgba(252, 249, 243, 0.03);
+  border: 1px solid rgba(252, 249, 243, 0.12);
+  border-radius: 0;  /* 锐利直角 */
+  /* opacity 由 --contact-progress 驱动：progress<0.7 时为 0，>0.95 时为 1 */
+  opacity: clamp(0, calc((var(--contact-progress) - 0.7) * 3.33), 1);
+  transform: translateY(calc((1 - clamp(0, calc((var(--contact-progress) - 0.7) * 3.33), 1)) * 24px));
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease,
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+/* 三张卡片分别错开淡入（用 nth-child 微调 progress 阈值） */
+.contact-info-card:nth-child(1) {
+  opacity: clamp(0, calc((var(--contact-progress) - 0.65) * 3.33), 1);
+  transform: translateY(calc((1 - clamp(0, calc((var(--contact-progress) - 0.65) * 3.33), 1)) * 24px));
+}
+.contact-info-card:nth-child(2) {
+  opacity: clamp(0, calc((var(--contact-progress) - 0.75) * 3.33), 1);
+  transform: translateY(calc((1 - clamp(0, calc((var(--contact-progress) - 0.75) * 3.33), 1)) * 24px));
+}
+.contact-info-card:nth-child(3) {
+  opacity: clamp(0, calc((var(--contact-progress) - 0.85) * 3.33), 1);
+  transform: translateY(calc((1 - clamp(0, calc((var(--contact-progress) - 0.85) * 3.33), 1)) * 24px));
+}
+
+.contact-info-card:hover {
+  border-color: rgba(255, 200, 120, 0.4);
+  background: rgba(255, 200, 120, 0.05);
+}
+
+.contact-info-label {
+  font-family: var(--font-retro);
+  font-size: 14px;
+  color: rgba(255, 210, 140, 0.7);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.contact-info-value {
+  font-family: var(--font-stix);
+  font-size: clamp(15px, 1.5vw, 20px);
+  font-weight: 400;
+  color: #fcf9f3;
+  text-decoration: none;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  transition: color 0.2s ease;
+}
+
+.contact-info-value:hover {
+  color: #ffd9a0;
+}
+
+/* 底部 footer：新业务邮箱 + 滚回提示 */
+.contact-footer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 24px;
+  font-family: var(--font-retro);
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  color: rgba(252, 249, 243, 0.5);
+  opacity: 0;
+  transition: opacity 1s ease 1.4s;
+  pointer-events: auto;
+}
+
+.film-detail-overlay.visible .contact-footer {
+  opacity: 1;
+}
+
+.contact-footer-business a {
+  color: rgba(255, 210, 140, 0.85);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.contact-footer-business a:hover {
+  color: #ffd9a0;
+}
+
+.contact-footer-hint {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: rgba(252, 249, 243, 0.35);
+  text-transform: uppercase;
+}
+
