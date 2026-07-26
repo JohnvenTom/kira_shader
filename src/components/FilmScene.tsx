@@ -1604,20 +1604,23 @@ export function ContactScene({
   const focusPos = useMemo<[number, number, number]>(() => [0, 0.1, 1.0], []);
 
   // 相机动画参数：起点（高处俯视）→ 终点（电话机水平）
-  // progress=0 时相机在高处看电话机上方（看不到电话机）
+  // progress=0 时相机在高处看电话机上方（看不到电话机，Hello 占据屏幕中心）
   // progress=1 时相机降到电话机水平，正面看电话机
-  const CAMERA_START_Y = 8.0;   // 起点高度
-  const CAMERA_END_Y = 2.2;     // 终点高度
-  const LOOKAT_START_Y = 6.0;   // 视线起点（电话机上方）
-  const LOOKAT_END_Y = 0.1;    // 视线终点（电话机位置）
+  // 增大 Y 轴移动范围（10.5 → 1.5 = 9 单位），让下降过程更有冲击力
+  const CAMERA_START_Y = 10.5;  // 起点高度（从 8 → 10.5，更高处俯视）
+  const CAMERA_END_Y = 1.5;     // 终点高度（从 2.2 → 1.5，更贴近电话机）
+  const LOOKAT_START_Y = 8.5;   // 视线起点（电话机上方更远处）
+  const LOOKAT_END_Y = 0.1;     // 视线终点（电话机位置）
   const CAMERA_Z = 8;          // 相机 z 固定
 
   // 每帧：根据 contactScrollProgress 更新相机位置和 lookAt（平滑 lerp）
   //        + 鼠标视差让模型组轻微旋转
   useFrame(() => {
     const p = contactScrollProgress.current;
-    // 用 smoothstep 让相机运动有缓入缓出感（避免线性运动的生硬）
-    const t = p * p * (3 - 2 * p);
+    // 用 smootherstep（Ken Perlin）替代 smoothstep，过渡更丝滑
+    // smootherstep: t = p^3 * (p * (p * 6 - 15) + 10)
+    // 比 smoothstep（p*p*(3-2p)）在两端变化更缓、中段更顺滑
+    const t = p * p * p * (p * (p * 6 - 15) + 10);
 
     // 相机 y 从起点插值到终点
     const camY = CAMERA_START_Y + (CAMERA_END_Y - CAMERA_START_Y) * t;

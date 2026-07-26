@@ -1064,11 +1064,16 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* "Hello." 大标题：居中、巨型字号、柔和发光
-   - 默认透明 + 下移，父级 .visible 时逐字浮现
-   - text-shadow 多层叠加模拟屏幕自发光 + bloom 辉光
-   - drop-shadow 做轻微 RGB 偏移，呼应镜头色散感 */
+   - 初始（progress=0）：屏幕正中间显示，逐字浮现
+   - 滚动后（progress→1）：向上划出屏幕 + 淡出
+   - 划出由 --contact-progress 驱动（无 transition，实时跟随滚动）
+   - 逐字浮现由 .visible + transition 驱动（详情页打开时触发）
+   - 用绝对定位居中，避免其他子元素（tagline/info-row 等 opacity:0 时仍占空间）
+     把 Hello 挤到上方 */
 .contact-hello-title {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 50%;
   z-index: 2;
   font-family: var(--font-stix);
   font-size: clamp(80px, 14vw, 220px);
@@ -1079,10 +1084,18 @@ body.camera-debug-mode .scroll-container {
   letter-spacing: -0.02em;
   text-align: center;
   pointer-events: auto;
+  /* 居中 + 由 --contact-progress 驱动向上划出
+     - translate(-50%, -50%) 让自身居中
+     - 追加 translateY(progress * -350px) 实现向上划出
+     - progress=0：translate(-50%, -50%) → 正中间
+     - progress=1：translate(-50%, -50%) translateY(-350px) → 上方划出
+     opacity 同步淡出：progress<0.7 时开始淡出，>0.7 时完全消失 */
+  transform: translate(-50%, -50%) translateY(calc(var(--contact-progress) * -350px));
+  opacity: clamp(0, calc(1 - var(--contact-progress) * 1.4), 1);
 }
 
 /* 每个字符 span：默认隐藏 + 下移 + 缩小
-   父级 .visible 时通过 transition 逐字浮现 */
+   父级 .visible 时通过 transition 逐字浮现（保留原动画） */
 .contact-hello-char {
   display: inline-block;
   opacity: 0;
@@ -1105,7 +1118,12 @@ body.camera-debug-mode .scroll-container {
   will-change: transform, opacity;
 }
 
-/* 父级 .visible 时字符浮现，并减弱辉光（避免过曝） */
+/* 父级 .visible 时字符浮现，并减弱辉光（避免过曝）
+   注意：这里的 opacity/transform 与 .contact-hello-title 的划出动画叠加
+   - title 的 opacity 由 progress 驱动（0→1 时整体淡出）
+   - char 的 opacity 由 .visible 触发（0→1 逐字浮现）
+   两者相乘，所以 progress=0 时整体 opacity = title(1) * char(1) = 1
+   progress=1 时整体 opacity = title(0) * char(1) = 0 */
 .film-detail-overlay.visible .contact-hello-char {
   opacity: 1;
   transform: translateY(0) scale(1);
