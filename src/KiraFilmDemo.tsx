@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-import { FilmScene, SECTIONS, PROJECTS, ContactScene } from './components/FilmScene';
+import { FilmScene, SECTIONS, PROJECTS, ContactScene, OfficeScene } from './components/FilmScene';
 import {
   FilmPostProcessing,
   DEFAULT_FILM_PARAMS,
@@ -416,14 +416,24 @@ export default function KiraFilmDemo() {
           </p>
         </div>
 
-        {/* 底部进度指示器：4 个小点，当前 section 高亮 */}
-        <div className="film-progress-dots">
+        {/* 底部进度指示器：4 个小点，当前 section 高亮
+            - 容器整体居中后，再向左偏移让 active 那个点对齐屏幕水平中央
+              （即对齐上方 About Us 等标题的水平中间）
+            - 偏移量 = (activeIdx - (n-1)/2) × 单步间距
+              n=4, (n-1)/2=1.5, 单步间距 = 8px(dot) + 14px(gap) = 22px */}
+        <div
+          className="film-progress-dots"
+          style={{
+            transform: `translateX(calc(-50% - ${(sectionIndex - (SECTIONS.length - 1) / 2) * 22}px))`,
+          }}
+        >
           {SECTIONS.map((s, i) => (
             <span
               key={i}
               className={`film-dot ${i === sectionIndex ? 'active' : ''}`}
               style={{
                 backgroundColor: i === sectionIndex ? s.accentColor : 'rgba(255,255,255,0.2)',
+                color: i === sectionIndex ? s.accentColor : 'rgba(255,255,255,0.2)',
               }}
             />
           ))}
@@ -450,6 +460,12 @@ export default function KiraFilmDemo() {
            - 初始：相机高处俯视，Hello 居中显示，看不见电话机
            - 滚动后：相机降到电话机水平，露出电话机，显示联系信息 */
           <ContactDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
+        ) : sectionIndex === 2 ? (
+          /* === About Us 详情页：格子间办公场景 ===
+           - 独立滚动容器驱动相机下降动画
+           - 初始：相机高处俯视，About Us 居中显示，看不见格子间
+           - 滚动后：相机降到桌子水平，露出 8 个面对面排列的格子间 */
+          <OfficeDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
         ) : (
           /* === 默认详情页：项目卡片网格 === */
           <div className="film-detail-inner">
@@ -772,6 +788,225 @@ function ContactDetailPage({
           <span className="contact-footer-business">
             New business:{' '}
             <a href="mailto:ceo@shader.se">ceo@shader.se</a>
+          </span>
+          <span className="contact-footer-hint">Scroll up to return</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * OfficeDetailPage - About Us section 详情页（格子间办公场景）
+ *
+ * 功能：
+ *  - 独立滚动容器驱动 office 详情页内部滚动状态（与外层 scroll-container 解耦）
+ *  - 初始状态（progress=0）：
+ *      - 相机在高处俯视，lookAt 在桌子上方 → 看不见格子间
+ *      - "About Us" 标题居中显示
+ *  - 滚动后（progress→1）：
+ *      - 相机降到桌子水平，lookAt 落到桌面 → 露出 8 个面对面排列的格子间
+ *      - About Us 描述卡片淡入
+ *  - 滚轮回退到顶部（progress<0.05）后再继续滚 → 退出详情页回 3D 场景
+ *  - 每次进入详情页（detailOpen false→true）时重置内部滚动状态
+ *
+ * 参数：
+ *  - mouseRef    鼠标归一化坐标 ref（-1~1），传给 OfficeScene 驱动模型视差旋转
+ *  - detailOpen 外层详情页是否打开（用于在每次进入时重置滚动状态）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 复用 ContactDetailPage 的滚动 + 视差机制，仅替换场景和文案
+ *  - 不使用 ContactPostProcessing（避免鱼眼扭曲格子间的几何感）
+ */
+function OfficeDetailPage({
+  mouseRef,
+  detailOpen,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  detailOpen: boolean;
+}) {
+  // office 详情页内部独立滚动容器 ref
+  const officeScrollRef = useRef<HTMLDivElement>(null);
+  // office 详情页内部滚动进度 0~1（驱动相机下降）
+  const officeScrollProgress = useRef(0);
+  // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
+  const atTopRef = useRef(true);
+  // 内容层 ref（用于写入 CSS 变量 --office-progress 驱动子元素淡入）
+  const contentLayerRef = useRef<HTMLDivElement>(null);
+  // office-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
+  const officeInnerRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * office 详情页内部滚动事件处理
+   *
+   * 功能：读取 officeScrollRef 的 scrollTop，计算 0~1 的进度
+   *      1. 写入 officeScrollProgress.current（驱动 3D 相机下降）
+   *      2. 写入内容层的 CSS 变量 --office-progress（驱动描述卡片淡入）
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  const handleOfficeScroll = useCallback(() => {
+    const el = officeScrollRef.current;
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    const progress = max > 0 ? el.scrollTop / max : 0;
+    const clamped = Math.max(0, Math.min(1, progress));
+    officeScrollProgress.current = clamped;
+    atTopRef.current = el.scrollTop <= 0;
+    if (contentLayerRef.current) {
+      contentLayerRef.current.style.setProperty('--office-progress', String(clamped));
+    }
+  }, []);
+
+  // 绑定滚动监听
+  useEffect(() => {
+    const el = officeScrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    officeScrollProgress.current = 0;
+    el.addEventListener('scroll', handleOfficeScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleOfficeScroll);
+  }, [handleOfficeScroll]);
+
+  /**
+   * 进入/退出详情页时重置内部滚动状态
+   *
+   * 功能：监听 detailOpen 变化，每次进入详情页时重置 scrollTop 和 progress，
+   *      避免上次退出时残留的 scrollTop 导致下次进入时相机直接到最低端
+   *
+   * 参数：无（通过闭包读取 detailOpen）
+   * 返回值：无
+   */
+  useEffect(() => {
+    if (!detailOpen) return;
+    const el = officeScrollRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = 0;
+      officeScrollProgress.current = 0;
+      atTopRef.current = true;
+      if (contentLayerRef.current) {
+        contentLayerRef.current.style.setProperty('--office-progress', '0');
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailOpen]);
+
+  /**
+   * office 详情页根元素 wheel 事件拦截
+   *
+   * 功能：在 office-detail-inner 根元素上拦截 wheel 事件，手动滚动
+   *      office-scroll-container，避免外层 overlay 的 wheel 转发逻辑拦截。
+   *      特例：已滚到顶（scrollTop<=0）且继续上滑（deltaY<0）时，
+   *      允许事件冒泡到 overlay，让外层 wheel 转发逻辑触发退出详情页。
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  useEffect(() => {
+    const el = officeInnerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const scrollEl = officeScrollRef.current;
+      if (!scrollEl) return;
+      // 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层 wheel 转发逻辑触发退出
+      if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      scrollEl.scrollTop += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  return (
+    <div ref={officeInnerRef} className="contact-detail-inner">
+      {/* 3D Canvas：独立 WebGL 上下文渲染格子间场景
+          - 相机初始位置在高处远处（与 OfficeScene 起点风格一致）
+          - OfficeScene 的 useFrame 会根据模型实际尺寸动态 lerp 到正确位置
+          - 初始值设一个合理高位避免 mount 第一帧视觉跳变 */}
+      <div className="contact-canvas-wrapper">
+        <Canvas
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+          camera={{ fov: 42, near: 0.1, far: 5000, position: [100, 60, 450] }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#000000'), 0);
+          }}
+        >
+          <Suspense fallback={null}>
+            <OfficeScene
+              mouseRef={mouseRef}
+              officeScrollProgress={officeScrollProgress}
+            />
+          </Suspense>
+        </Canvas>
+      </div>
+
+      {/* 独立滚动容器：撑出滚动空间让用户能滚动驱动相机下降 */}
+      <div ref={officeScrollRef} className="contact-scroll-container">
+        <div className="contact-scroll-placeholder" />
+      </div>
+
+      {/* 内容层：固定全屏，包含 About Us 标题 + 描述卡片
+          - pointer-events: none 让滚轮事件穿透到滚动容器
+          - 通过 ref 写入 --office-progress CSS 变量驱动子元素淡入 */}
+      <div ref={contentLayerRef} className="contact-content-layer">
+        {/* 居中 "About Us." 大标题（逐字浮现，呼应 contact 的标题动画） */}
+        <h1 className="contact-hello-title">
+          {'About Us.'.split('').map((ch, i) => (
+            <span
+              key={i}
+              className="contact-hello-char"
+              style={{ transitionDelay: `${0.25 + i * 0.08}s` }}
+            >
+              {ch === ' ' ? '\u00A0' : ch}
+            </span>
+          ))}
+        </h1>
+
+        {/* 副标题：联系说明（随滚动进度淡入） */}
+        <p className="contact-tagline">
+          Playful, Powerful, Alive.
+          <br />
+          Serious about business, based in Sweden.
+        </p>
+
+        {/* 横向信息卡片：三张（随滚动进度淡入）
+            - 复用 contact-info-card 的样式，避免新增 CSS
+            - 内容描述公司规模/团队/位置 */}
+        <div className="contact-info-row">
+          <div className="contact-info-card">
+            <span className="contact-info-label">Team</span>
+            <span className="contact-info-value">
+              12 designers & engineers
+            </span>
+          </div>
+          <div className="contact-info-card">
+            <span className="contact-info-label">Founded</span>
+            <span className="contact-info-value">
+              2018 in Norrköping
+            </span>
+          </div>
+          <div className="contact-info-card">
+            <span className="contact-info-label">Studio</span>
+            <span className="contact-info-value">
+              Laxholmstorget 3
+              <br />
+              602 21 Norrköping, Sweden
+            </span>
+          </div>
+        </div>
+
+        {/* 底部 footer：业务邮箱 + 滚回提示 */}
+        <div className="contact-footer">
+          <span className="contact-footer-business">
+            Careers:{' '}
+            <a href="mailto:jobs@shader.se">jobs@shader.se</a>
           </span>
           <span className="contact-footer-hint">Scroll up to return</span>
         </div>

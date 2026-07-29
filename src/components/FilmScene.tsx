@@ -1710,6 +1710,69 @@ function PhoneModel({
 
 // 预加载电话模型，避免首次进入 contact 详情页时卡顿
 useGLTF.preload('/asset/models/phones.glb');
+// 预加载办公桌盒模型，避免首次进入 about us 详情页时卡顿
+useGLTF.preload('/asset/models/deskbox.glb');
+
+/**
+ * DeskboxModel - 单个办公桌盒模型组件
+ *
+ * 功能：加载 deskbox.glb 模型，按传入的 position/rotation 静态摆放。
+ *      整体由父级 OfficeScene 的 group 控制位置/视差旋转。
+ *
+ * 参数：
+ *  - position  模型位置 [x, y, z]
+ *  - rotation  模型初始旋转 [x, y, z]（用于面对面排列朝向）
+ *  - scale     缩放（默认 1）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 异常：useGLTF 加载失败时由 Suspense 边界处理
+ *
+ * 注意事项：
+ *  - useGLTF 必须在 <Suspense> 内部使用
+ *  - 用 scene.clone(true) 避免多个 DeskboxModel 共享同一场景图
+ *  - traverse 设置 castShadow/receiveShadow 让模型参与阴影
+ *  - toneMapped=false 让贴图颜色保持鲜艳，呼应场景风格
+ */
+function DeskboxModel({
+  position,
+  rotation,
+  scale = 1,
+}: {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale?: number;
+}) {
+  const { scene } = useGLTF('/asset/models/deskbox.glb');
+  // 克隆场景图：多个 DeskboxModel 实例独立位置/旋转
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+
+  // 遍历设置阴影和材质（让模型更立体）
+  useMemo(() => {
+    cloned.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((m) => {
+          if (m && (m as THREE.MeshStandardMaterial).toneMapped !== undefined) {
+            (m as THREE.MeshStandardMaterial).toneMapped = false;
+          }
+        });
+      }
+    });
+  }, [cloned]);
+
+  return (
+    <primitive
+      object={cloned}
+      position={position}
+      rotation={rotation}
+      scale={scale}
+    />
+  );
+}
 
 /**
  * ContactScene - shader.se/#contact 风格 3D 场景
@@ -1926,13 +1989,282 @@ export function ContactScene({
 }
 
 /**
+ * OfficeScene - About Us section 详情页 3D 场景
+ *
+ * 功能：复刻格子间办公场景，8 个 deskbox 模型面对面排列：
+ *  - 左排 4 个（朝向 +x，面朝右排）
+ *  - 右排 4 个（朝向 -x，面朝左排）
+ *  - 两排之间留出过道（间距 GAP_X），桌面距离适中
+ *  - 沿 z 轴方向均匀分布 4 列，整体形成 4×2 的格子间矩阵
+ *
+ * 相机动画（与 ContactScene 一致的 lerp 平滑追随）：
+ *  - progress=0：相机在高处俯视，看不见桌子（视野在桌子之上）
+ *  - progress=1：相机降到桌子水平，正面看到格子间排列
+ *
+ * 参数：
+ *  - mouseRef                鼠标归一化坐标 ref（-1~1），驱动模型组视差旋转
+ *  - officeScrollProgress    office 详情页内部滚动进度 0~1（驱动相机下降）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - DeskboxModel 在 <Suspense> 内部（模型未加载完时显示 null）
+ *  - 相机 y 和 lookAt y 都由 progress 平滑插值，让镜头"从天上降到地面"
+ *  - 相机 z 保持不变（不前后移动，只上下移动 + 视线下移）
+ *  - 鼠标视差让模型组轻微旋转，营造空间感
+ */
+export function OfficeScene({
+  mouseRef,
+  officeScrollProgress,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  officeScrollProgress: React.MutableRefObject<number>;
+}) {
+  const { camera } = useThree();
+  // 模型组：包住所有 deskbox，由 useFrame 应用鼠标视差旋转
+  const groupRef = useRef<THREE.Group>(null);
+  const mouseSmoothed = useRef({ x: 0, y: 0 });
+
+  // 加载一次原型模型，用于计算 boundingBox 得到真实尺寸和几何中心
+  // useGLTF 有缓存，这里加载与 DeskboxModel 内部加载共享同一份 scene
+  const { scene: prototypeScene } = useGLTF('/asset/models/deskbox.glb');
+
+  // 计算模型 boundingBox：尺寸 + 中心偏移
+  // 原因：deskbox 模型原点不一定在几何中心，直接按 position 排列会导致错位重叠
+  //       需要把模型"居中"后再排列，确保 8 个桌子整齐铺开
+  // 防护：用 Math.max(0.01, value) 避免 size 为 0 导致后续相机参数变 NaN/Infinity
+  const { modelSize, modelCenter } = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(prototypeScene);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    // 防护：模型未加载时 size 可能为 0 或 NaN，强制给最小值
+    const EPS = 0.01;
+    size.set(
+      Math.max(EPS, Math.abs(size.x) || EPS),
+      Math.max(EPS, Math.abs(size.y) || EPS),
+      Math.max(EPS, Math.abs(size.z) || EPS)
+    );
+    return { modelSize: size, modelCenter: center };
+  }, [prototypeScene]);
+
+  // 遍历原型 scene 找屏幕/桌面面板 mesh
+  // deskbox 模型结构：主桌体 Cube（大） + 薄板面板 Cube001（小而薄，即屏幕/桌面）
+  // 检测策略：找"最薄的 mesh"——某一维度远小于其他两个维度的扁平面板
+  //   薄板面板的厚度维度 / 较大维度 < 0.05 时认定为面板
+  //   再从面板中选中心 y 最高的（最像屏幕而非地板）
+  // fallback：找不到时用估算位置（模型高度的 0.55）
+  const screenLocalCenter = useMemo(() => {
+    let bestPos: THREE.Vector3 | null = null;
+    let bestThinness = 0;   // 薄度比 = max(x,y,z) / min(x,y,z)，越大越薄
+    let bestCenterY = -Infinity;
+    prototypeScene.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const box = new THREE.Box3().setFromObject(mesh);
+      const sz = new THREE.Vector3();
+      const ctr = new THREE.Vector3();
+      box.getSize(sz);
+      box.getCenter(ctr);
+      const maxDim = Math.max(sz.x, sz.y, sz.z);
+      const minDim = Math.min(sz.x, sz.y, sz.z);
+      // 跳过主桌体（接近整体尺寸的大 mesh）
+      if (maxDim >= modelSize.x * 0.9) return;
+      const thinness = maxDim / Math.max(0.01, minDim);
+      // 薄度 > 10 且高于模型中部（y > modelSize.y * 0.4）的面板，判定为屏幕/桌面
+      if (thinness > 10 && ctr.y > modelSize.y * 0.4) {
+        // 优先选 y 更高（更接近屏幕）的面板；y 相同时选更薄的
+        if (ctr.y > bestCenterY || (Math.abs(ctr.y - bestCenterY) < 1 && thinness > bestThinness)) {
+          bestCenterY = ctr.y;
+          bestThinness = thinness;
+          bestPos = ctr.clone();
+        }
+      }
+    });
+    if (!bestPos) bestPos = new THREE.Vector3(0, modelSize.y * 0.55, 0);
+    return bestPos;
+  }, [prototypeScene, modelSize]);
+
+  // 第一帧标记：mount 后第一帧直接 set 相机位置（不 lerp），
+  // 避免从 Canvas 初始位置 lerp 导致前几帧相机乱飞
+  const firstFrameRef = useRef(true);
+
+  // === 格子间布局参数（根据模型实际尺寸动态计算，让地板紧贴无缝隙）===
+  // 关键：deskbox 模型绕 Y 轴旋转 PI/2 后，原 x 方向尺寸变成 z 方向，原 z 方向变成 x 方向
+  //   旋转后沿 x 方向的宽度 = 原模型 size.z
+  //   旋转后沿 z 方向的深度 = 原模型 size.x
+  // 因此排列时必须用"旋转后的尺寸"作为间距，否则会留空隙或重叠
+  const ROTATED_X_WIDTH = modelSize.z;  // 旋转后沿 x 方向（朝向另一排）的宽度
+  const ROTATED_Z_DEPTH = modelSize.x;  // 旋转后沿 z 方向（列与列之间）的深度
+
+  // GAP_X：两排桌子中心距 = 旋转后 x 方向宽度（让两排桌子紧贴，地板相连）
+  const GAP_X = ROTATED_X_WIDTH;
+  // GAP_Z：列间距 = 旋转后 z 方向深度（让 z 方向 4 列桌子紧贴，地板相连）
+  const GAP_Z = ROTATED_Z_DEPTH;
+  // 4 列桌子沿 z 方向的中心对齐
+  const Z_OFFSETS = [-1.5, -0.5, 0.5, 1.5];
+  // 场景总尺寸（旋转后实际占用空间）
+  const totalWidth = 2 * ROTATED_X_WIDTH;    // x 方向：两排桌子紧贴
+  const totalDepth = 4 * ROTATED_Z_DEPTH;    // z 方向：4 列桌子紧贴
+
+  // === 相机动画参数 ===
+  // 体验设计：
+  //   起点：斜侧方低处看整体格子间排列（斜视角度，能看到纵深和面对面结构）
+  //   终点：定格到右排最前列格子间，相机站在过道正对屏幕，lookAt 锁定屏幕中心
+  // 最前列格子间中心 z 坐标（Z_OFFSETS[3] = 1.5）
+  const FOCUS_Z = Z_OFFSETS[3] * GAP_Z;
+
+  // 计算右排最前列格子间的屏幕世界坐标
+  // 屏幕世界坐标 = group position + R_y(-PI/2) * (screenLocalCenter - modelCenter)
+  //   右排 rotation y = -PI/2（朝 -x 方向，屏幕正面朝 -x，即朝向过道/左排）
+  //   相机站在过道 x=0 朝 +x 看，能看到屏幕正面
+  //   注意：applyAxisAngle 原地修改，必须 clone 后再旋转
+  const screenWorldPos = useMemo(() => {
+    const localOffset = screenLocalCenter.clone().sub(modelCenter);
+    const rotated = localOffset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
+    // 右排最前列格子间 group position = (GAP_X/2, 0, FOCUS_Z)
+    return new THREE.Vector3(GAP_X / 2, 0, FOCUS_Z).add(rotated);
+  }, [screenLocalCenter, modelCenter, GAP_X, FOCUS_Z]);
+
+  // 起点参数：斜侧方低处看整体
+  // x 偏移制造斜视角度（不要正对，斜着看更有空间感）
+  // y 低一些（不要太高俯视，避免模型出现太晚）
+  // z 距离适中，能看到 z 方向延伸的格子间
+  const CAM_START_X = totalWidth * 0.35;      // 斜视 x 偏移
+  const CAM_START_Y = modelSize.y * 1.2;       // 低处：略高于桌面，斜视而非俯视
+  const CAM_START_Z = totalDepth * 0.6;        // 起点 z 距离
+  const LOOKAT_START_Y = modelSize.y * 0.5;   // 起点视线 y（模型中部）
+  const LOOKAT_START_Z = 0;                    // 起点视线 z（场景中心）
+
+  // 终点参数：定格到右排最前列格子间屏幕
+  // 相机站在过道（x=0），与屏幕同 y 同 z，朝 +x 方向看屏幕正面
+  // 屏幕正面朝 -x（朝向过道），相机在 x=0 朝 +x 看正好对着屏幕正面
+  const CAM_END_X = 0;                         // 过道中央（屏幕正前方）
+  const CAM_END_Y = screenWorldPos.y;          // 与屏幕同高（平视屏幕）
+  const CAM_END_Z = screenWorldPos.z;          // 与屏幕同 z（正对屏幕，无斜视）
+  const LOOKAT_END_Y = screenWorldPos.y;       // 屏幕中心 y
+  const LOOKAT_END_Z = screenWorldPos.z;       // 屏幕中心 z（与相机同 z，正对屏幕）
+
+  const FOV_START = 42;
+  const FOV_END = 30;  // 终点小 FOV，让屏幕更聚焦、充满视野
+
+  // 相机当前位置（用于 lerp 平滑）
+  // lookPosRef 初始 z = LOOKAT_START_Z（场景中心 0），后续 useFrame 会 lerp 到 LOOKAT_END_Z
+  const camPosRef = useRef(new THREE.Vector3(CAM_START_X, CAM_START_Y, CAM_START_Z));
+  const lookPosRef = useRef(new THREE.Vector3(0, LOOKAT_START_Y, LOOKAT_START_Z));
+  const fovRef = useRef(FOV_START);
+
+  // 每帧：根据 officeScrollProgress 计算目标位置，用 lerp 平滑追随
+  //        + 鼠标视差让模型组轻微旋转
+  useFrame(() => {
+    const p = officeScrollProgress.current;
+    // 用 smootherstep（Ken Perlin）让过渡更丝滑
+    const t = p * p * p * (p * (p * 6 - 15) + 10);
+
+    // 计算目标位置（x/y/z 三轴都随 progress 变化，制造"绕到正面推近"的电影感）
+    const targetCamX = CAM_START_X + (CAM_END_X - CAM_START_X) * t;
+    const targetCamY = CAM_START_Y + (CAM_END_Y - CAM_START_Y) * t;
+    const targetCamZ = CAM_START_Z + (CAM_END_Z - CAM_START_Z) * t;
+    const targetLookY = LOOKAT_START_Y + (LOOKAT_END_Y - LOOKAT_START_Y) * t;
+    const targetLookZ = 0 + (LOOKAT_END_Z - 0) * t;
+    const targetFov = FOV_START + (FOV_END - FOV_START) * t;
+
+    // 第一帧直接 set 相机到目标位置，避免 mount 时 Canvas 初始位置
+    // 与 OfficeScene 计算位置差距过大，导致前几帧相机快速 lerp 移动看不到模型
+    if (firstFrameRef.current) {
+      camPosRef.current.set(targetCamX, targetCamY, targetCamZ);
+      lookPosRef.current.set(0, targetLookY, targetLookZ);
+      fovRef.current = targetFov;
+      firstFrameRef.current = false;
+    } else {
+      // lerp 平滑追随，系数 0.15 平衡跟手度与平滑度
+      const LERP_FACTOR = 0.15;
+      camPosRef.current.x += (targetCamX - camPosRef.current.x) * LERP_FACTOR;
+      camPosRef.current.y += (targetCamY - camPosRef.current.y) * LERP_FACTOR;
+      camPosRef.current.z += (targetCamZ - camPosRef.current.z) * LERP_FACTOR;
+      lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * LERP_FACTOR;
+      lookPosRef.current.z += (targetLookZ - lookPosRef.current.z) * LERP_FACTOR;
+      fovRef.current += (targetFov - fovRef.current) * LERP_FACTOR;
+    }
+
+    camera.position.copy(camPosRef.current);
+    camera.lookAt(lookPosRef.current);
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov = fovRef.current;
+      camera.updateProjectionMatrix();
+    }
+
+    // 鼠标视差让模型组轻微旋转（相机由 progress 控制，不受鼠标影响）
+    if (groupRef.current) {
+      const target = mouseRef.current;
+      mouseSmoothed.current.x += (target.x - mouseSmoothed.current.x) * 0.05;
+      mouseSmoothed.current.y += (target.y - mouseSmoothed.current.y) * 0.05;
+      // 视差旋转幅度：±0.18 rad（约 ±10°）
+      groupRef.current.rotation.y = mouseSmoothed.current.x * 0.18;
+      groupRef.current.rotation.x = mouseSmoothed.current.y * -0.08;
+    }
+  });
+
+  return (
+    <>
+      {/* 环境光：稍亮避免画面太暗 */}
+      <ambientLight intensity={0.5} color="#8070a0" />
+
+      {/* Key light：右上前方紫色主光（呼应 About Us section 的紫色 accentColor #b678ff） */}
+      <directionalLight position={[4, 6, 4]} intensity={2.5} color="#d4b8ff" />
+
+      {/* Fill light：左侧冷色补光，照亮阴影区域 */}
+      <directionalLight position={[-4, 3, 3]} intensity={1.2} color="#88aaff" />
+
+      {/* Rim light：后下方暖色轮廓光，让桌子边缘有金色描边 */}
+      <directionalLight position={[0, -1, -5]} intensity={1.5} color="#ffaa66" />
+
+      {/* 格子间模型组（鼠标视差作用对象）
+          - 8 个 deskbox 面对面紧贴排列，地板相连无缝隙：
+            外层 group 设置排列位置（x/z）
+            内层 DeskboxModel 偏移 -modelCenter 让几何中心对齐 group 原点
+          - 左排（x=-GAP_X/2）4 个 rotation y=+PI/2（朝 +x，面朝右排）
+          - 右排（x=+GAP_X/2）4 个 rotation y=-PI/2（朝 -x，面朝左排）
+          - GAP_X = modelSize.x 让两排桌子紧贴（中心距 = 桌宽）
+          - GAP_Z = modelSize.z 让列与列紧贴（中心距 = 桌深） */}
+      <group ref={groupRef}>
+        <Suspense fallback={null}>
+          {/* 左排 4 个：面朝 +x 方向 */}
+          {Z_OFFSETS.map((z, i) => (
+            <group key={`left-${i}`} position={[-GAP_X / 2, 0, z * GAP_Z]}>
+              <DeskboxModel
+                // 偏移 -modelCenter 让模型几何中心对齐 group 原点，避免原点偏移导致错位
+                position={[-modelCenter.x, -modelCenter.y, -modelCenter.z]}
+                rotation={[0, Math.PI / 2, 0]}
+                scale={1}
+              />
+            </group>
+          ))}
+          {/* 右排 4 个：面朝 -x 方向 */}
+          {Z_OFFSETS.map((z, i) => (
+            <group key={`right-${i}`} position={[GAP_X / 2, 0, z * GAP_Z]}>
+              <DeskboxModel
+                position={[-modelCenter.x, -modelCenter.y, -modelCenter.z]}
+                rotation={[0, -Math.PI / 2, 0]}
+                scale={1}
+              />
+            </group>
+          ))}
+        </Suspense>
+      </group>
+    </>
+  );
+}
+
+/**
  * 相机配置
  *
  * 字段说明：
  *  - HOME 远景位置（相机距屏幕较远，能看到完整场景）
  *  - END  推入终点（穿过屏幕到背面，屏幕充满视野）
  *  - HOME_FOV 远景 FOV（°）
- *  - END_FOV  推入终 FOV（°，比远景大，广角拉伸感）
+ *  - END_FOV 推入终 FOV（°，比远景大，广角拉伸感）
  */
 const CAMERA_HOME = { x: 0, y: 0, z: 7 };
 // 相机终点：z=0.2 停在屏幕前很近（不穿过屏幕，避免屏幕在相机背后消失）

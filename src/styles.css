@@ -473,7 +473,9 @@ body.camera-debug-mode .scroll-container {
   transform: translateY(0);
 }
 
-/* 底部进度指示器：4 个小点水平排列 */
+/* 底部进度指示器：4 个小点水平排列
+   - transform 由 JS 动态写入（让 active 那个点对齐屏幕水平中央）
+   - transition 让 section 切换时容器整体平滑滑动 */
 .film-progress-dots {
   position: fixed;
   bottom: 48px;
@@ -483,6 +485,7 @@ body.camera-debug-mode .scroll-container {
   gap: 14px;
   z-index: 46;
   pointer-events: auto;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .film-dot {
