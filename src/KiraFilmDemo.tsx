@@ -7,6 +7,7 @@ import {
   DEFAULT_FILM_PARAMS,
   type FilmFXParams,
 } from './components/FilmPostProcessing';
+import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 
 /**
@@ -693,6 +694,8 @@ function ContactDetailPage({
               contactScrollProgress={contactScrollProgress}
             />
           </Suspense>
+          {/* 鱼眼 + 色散 + 暗角 后处理：随 progress 增强效果 */}
+          <ContactPostProcessing progressRef={contactScrollProgress} />
         </Canvas>
       </div>
 

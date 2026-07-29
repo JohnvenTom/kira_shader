@@ -1404,6 +1404,169 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
 }
 
 /**
+ * 烟雾缭绕层（程序化体积烟雾）
+ *
+ * 功能：在场景中生成多个半透明烟雾 plane，用柔光纹理 + 缓慢自转 + 上下漂浮
+ *      模拟体积烟雾缭绕效果。烟雾不跟随相机旋转（固定朝向），并随 progress
+ *      整体淡入淡出，避免在相机高位时遮挡 Hello 文字。
+ *
+ * 参数：
+ *  - count       烟雾 plane 数量
+ *  - areaSize    烟雾扩散范围（x/z 平面）
+ *  - areaHeight  烟雾高度范围（y）
+ *  - color       烟雾颜色
+ *  - progressRef 当前 contact 滚动进度 ref（控制烟雾整体淡入淡出）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 使用 plane mesh 而非 sprite，避免跟随相机旋转
+ *  - 每个烟雾 plane 独立 material 实例，独立控制 opacity
+ *  - depthWrite=false 避免烟雾遮挡后面的电话
+ *  - NormalBlending（非 Additive）让烟雾有真实遮挡感（半透明）
+ */
+function SmokeLayer({
+  count = 8,
+  areaSize = 10,
+  areaHeight = 8,
+  color = '#3a2a1a',
+  progressRef,
+}: {
+  count?: number;
+  areaSize?: number;
+  areaHeight?: number;
+  color?: string;
+  progressRef: React.MutableRefObject<number>;
+}) {
+  const meshesRef = useRef<THREE.Mesh[]>([]);
+
+  // 程序化烟雾纹理：柔光团状，中心浓边缘淡
+  // 加大多个不规则白点叠加，让烟雾团形状更自然
+  const texture = useMemo(() => {
+    const size = 256;
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    // 基础径向渐变：中心浓，边缘淡
+    const grad = ctx.createRadialGradient(
+      size / 2,
+      size / 2,
+      0,
+      size / 2,
+      size / 2,
+      size / 2
+    );
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.25, 'rgba(255,255,255,0.8)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+    grad.addColorStop(0.8, 'rgba(255,255,255,0.1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    // 叠加多个不规则白点，让烟雾团形状更自然（非完美圆形）
+    for (let i = 0; i < 6; i++) {
+      const px = size / 2 + (Math.random() - 0.5) * size * 0.4;
+      const py = size / 2 + (Math.random() - 0.5) * size * 0.4;
+      const r = size * (0.15 + Math.random() * 0.2);
+      const g2 = ctx.createRadialGradient(px, py, 0, px, py, r);
+      g2.addColorStop(0, 'rgba(255,255,255,0.4)');
+      g2.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g2;
+      ctx.fillRect(0, 0, size, size);
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }, []);
+
+  // 烟雾 plane 初始参数
+  const particles = useMemo(() => {
+    return Array.from({ length: count }, () => ({
+      // 位置：在场景中随机分布
+      x: (Math.random() - 0.5) * areaSize,
+      y: (Math.random() - 0.5) * areaHeight,
+      z: (Math.random() - 0.5) * areaSize,
+      // 缓慢移动参数
+      driftSpeed: 0.05 + Math.random() * 0.08,
+      rotationSpeed: (Math.random() - 0.5) * 0.1,
+      phase: Math.random() * Math.PI * 2,
+      // 烟雾团大小：差异较大，有近有远
+      scale: 2.5 + Math.random() * 4.5,
+      // 基础不透明度：每个 plane 独立
+      baseOpacity: 0.3 + Math.random() * 0.4,
+      // 初始旋转角度
+      rotZ: Math.random() * Math.PI * 2,
+    }));
+  }, [count, areaSize, areaHeight]);
+
+  // 共享 geometry，每粒子独立 material
+  const geometry = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
+  const materials = useMemo(() => {
+    return Array.from({ length: count }, () => {
+      return new THREE.MeshBasicMaterial({
+        map: texture,
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        // AdditiveBlending：在深色背景上叠加发光感，烟雾明显可见
+        // （NormalBlending 在深色背景上几乎看不到半透明物）
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      });
+    });
+  }, [texture, color, count]);
+
+  // 每帧：缓慢漂浮 + 自转 + 随 progress 整体淡入淡出
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
+    const p = progressRef.current;
+    // 烟雾在 progress=0.1~0.7 区间最浓，两端淡化
+    // progress<0.1 时几乎不可见（避免遮挡 Hello）
+    // progress>0.7 逐渐淡化（避免遮挡电话细节）
+    let visibility = 1;
+    if (p < 0.1) visibility = p / 0.1;
+    else if (p > 0.7) visibility = Math.max(0, 1 - (p - 0.7) / 0.3);
+
+    for (let i = 0; i < particles.length; i++) {
+      const sp = particles[i];
+      const m = meshesRef.current[i];
+      if (!m) continue;
+      // 缓慢漂浮：y 上下波动 + x 轻微漂移
+      m.position.x = sp.x + Math.sin(t * sp.driftSpeed + sp.phase) * 0.6;
+      m.position.y =
+        sp.y + Math.sin(t * sp.driftSpeed * 0.8 + sp.phase * 1.3) * 0.8;
+      m.position.z = sp.z;
+      // 缓慢自转
+      m.rotation.z = sp.rotZ + t * sp.rotationSpeed;
+      // opacity 随 visibility 调整
+      const mat = m.material as THREE.MeshBasicMaterial;
+      mat.opacity = sp.baseOpacity * visibility;
+    }
+  });
+
+  return (
+    <group>
+      {particles.map((p, i) => (
+        <mesh
+          key={i}
+          ref={(el) => {
+            if (el) meshesRef.current[i] = el;
+          }}
+          geometry={geometry}
+          material={materials[i]}
+          // 固定朝向 +z，不跟随相机旋转
+          rotation={[0, 0, p.rotZ]}
+          scale={[p.scale, p.scale, 1]}
+        />
+      ))}
+    </group>
+  );
+}
+
+/**
  * 漂浮粒子层（屏幕周围的发光尘埃）
  *
  * 功能：在屏幕周围生成一组 sprite，用 AdditiveBlending 营造发光尘埃氛围
@@ -1716,8 +1879,19 @@ export function ContactScene({
         </Suspense>
       </group>
 
-      {/* 漂浮尘埃粒子，营造电影感氛围 */}
-      <DustParticles count={45} areaSize={6} color="#ffe5b4" />
+      {/* 烟雾缭绕层：缓慢漂浮的半透明烟雾团，营造电影感氛围
+          - 烟雾分布在相机视野内：x/z 范围 ±3.5，y 范围约 -1~7
+            覆盖相机从高处俯视到平视的整个视野
+          - progress<0.1 时几乎不可见（避免遮挡 Hello）
+          - progress 0.1~0.7 区间最浓
+          - progress>0.7 逐渐淡化（避免遮挡电话细节） */}
+      <SmokeLayer
+        count={12}
+        areaSize={7}
+        areaHeight={8}
+        color="#8a6a45"
+        progressRef={contactScrollProgress}
+      />
     </>
   );
 }
