@@ -1424,7 +1424,8 @@ function DustParticles({
   areaSize?: number;
   color?: string;
 }) {
-  const spritesRef = useRef<THREE.Sprite[]>([]);
+  // 用 mesh ref 替代 sprite ref（mesh 朝向固定，不跟随相机旋转）
+  const meshesRef = useRef<THREE.Mesh[]>([]);
 
   // 程序化柔光纹理
   const texture = useMemo(() => {
@@ -1458,16 +1459,34 @@ function DustParticles({
     }));
   }, [count, areaSize]);
 
+  // 共享 plane geometry（所有粒子用同一个圆形 plane）
+  const geometry = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
+  // 每个粒子独立 material 实例（独立控制 opacity，避免互相覆盖）
+  const materials = useMemo(() => {
+    return Array.from({ length: count }, () => {
+      return new THREE.MeshBasicMaterial({
+        map: texture,
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      });
+    });
+  }, [texture, color, count]);
+
   useFrame((state) => {
     const t = state.clock.elapsedTime;
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
-      const s = spritesRef.current[i];
-      if (!s) continue;
-      s.position.x = p.x + Math.sin(t * p.speed + p.phase) * p.amp;
-      s.position.y = p.y + Math.cos(t * p.speed * 0.7 + p.phase) * p.amp;
-      s.position.z = p.z + Math.sin(t * p.speed * 0.9 + p.phase * 1.3) * p.amp;
-      const mat = s.material as THREE.SpriteMaterial;
+      const m = meshesRef.current[i];
+      if (!m) continue;
+      m.position.x = p.x + Math.sin(t * p.speed + p.phase) * p.amp;
+      m.position.y = p.y + Math.cos(t * p.speed * 0.7 + p.phase) * p.amp;
+      m.position.z = p.z + Math.sin(t * p.speed * 0.9 + p.phase * 1.3) * p.amp;
+      const mat = m.material as THREE.MeshBasicMaterial;
       const flicker = 0.5 + 0.5 * Math.sin(t * p.flickerSpeed + p.phase);
       mat.opacity = 0.7 * flicker;
     }
@@ -1476,23 +1495,18 @@ function DustParticles({
   return (
     <group>
       {particles.map((p, i) => (
-        <sprite
+        <mesh
           key={i}
           ref={(el) => {
-            if (el) spritesRef.current[i] = el;
+            if (el) meshesRef.current[i] = el;
           }}
+          geometry={geometry}
+          material={materials[i]}
+          // plane 朝向 +z（固定，不跟随相机旋转）
+          // 相机从高处下降时粒子保持竖直，不会翻转
+          rotation={[0, 0, 0]}
           scale={[0.2 * p.scale, 0.2 * p.scale, 1]}
-        >
-          <spriteMaterial
-            map={texture}
-            color={color}
-            transparent
-            opacity={0.7}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-            toneMapped={false}
-          />
-        </sprite>
+        />
       ))}
     </group>
   );
@@ -1675,8 +1689,10 @@ export function ContactScene({
       {/* 环境光：提升亮度，避免画面太暗看不见模型 */}
       <ambientLight intensity={0.55} color="#605570" />
 
-      {/* Key light：右上前方暖色主光，照亮电话顶部和右侧 */}
-      <directionalLight position={[4, 5, 4]} intensity={4.0} color="#ffe5b4" castShadow />
+      {/* Key light：右上前方暖色主光，照亮电话顶部和右侧
+          不开 castShadow：contact 场景相机跨度大（y=18→1.5），
+          默认阴影相机范围（±5）无法覆盖，会产生方形阴影截断 */}
+      <directionalLight position={[4, 5, 4]} intensity={4.0} color="#ffe5b4" />
 
       {/* Fill light：左侧冷色补光，照亮阴影区域，降低对比度 */}
       <directionalLight position={[-4, 2, 3]} intensity={1.6} color="#88aaff" />
