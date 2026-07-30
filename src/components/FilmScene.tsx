@@ -2104,9 +2104,9 @@ export function OfficeScene({
   const GAP_Z = ROTATED_Z_DEPTH;
   // 4 列桌子沿 z 方向的中心对齐
   const Z_OFFSETS = [-1.5, -0.5, 0.5, 1.5];
-  // 场景总尺寸（旋转后实际占用空间）
+  // 场景总尺寸（旋转后实际占用空间，用于灯光/相机参数计算）
   const totalWidth = 2 * ROTATED_X_WIDTH;    // x 方向：两排桌子紧贴
-  const totalDepth = 4 * ROTATED_Z_DEPTH;    // z 方向：4 列桌子紧贴
+  const totalDepth = 4 * ROTATED_Z_DEPTH;   // z 方向：4 列桌子紧贴
 
   // === 相机动画参数 ===
   // 体验设计：
@@ -2127,32 +2127,33 @@ export function OfficeScene({
     return new THREE.Vector3(GAP_X / 2, 0, FOCUS_Z).add(rotated);
   }, [screenLocalCenter, modelCenter, GAP_X, FOCUS_Z]);
 
-  // 起点参数：斜侧方低处看整体
-  // x 偏移制造斜视角度（不要正对，斜着看更有空间感）
-  // y 低一些（不要太高俯视，避免模型出现太晚）
-  // z 距离适中，能看到 z 方向延伸的格子间
-  const CAM_START_X = totalWidth * 0.35;      // 斜视 x 偏移
-  const CAM_START_Y = modelSize.y * 1.2;       // 低处：略高于桌面，斜视而非俯视
-  const CAM_START_Z = totalDepth * 0.6;        // 起点 z 距离
-  const LOOKAT_START_Y = modelSize.y * 0.5;   // 起点视线 y（模型中部）
-  const LOOKAT_START_Z = 0;                    // 起点视线 z（场景中心）
+  // === 相机动画：从上方俯视放大 → 逐渐平视 → 向前推进聚焦屏幕 ===
+  // 起点参数：正上方俯视，大 FOV 让 8 个格子间整体缩小入画
+  //   相机在场景中心正上方，lookAt 也在场景中心 → 纯俯视（相机朝正下方看）
+  const CAM_START_X = 0;                       // 正对场景中心（过道中央）
+  const CAM_START_Y = totalDepth * 1;        // 高空俯视：高度 = z 方向跨度 × 1.4
+  const CAM_START_Z = 0;                       // 与场景中心 z 对齐
+  const LOOKAT_START_X = 0;                    // 视线起点 x：场景中心
+  const LOOKAT_START_Y = 0;                    // 视线起点 y：地面（纯俯视）
+  const LOOKAT_START_Z = 0;                    // 视线起点 z：场景中心
 
-  // 终点参数：定格到右排最前列格子间屏幕
-  // 相机站在过道（x=0），与屏幕同 y 同 z，朝 +x 方向看屏幕正面
-  // 屏幕正面朝 -x（朝向过道），相机在 x=0 朝 +x 看正好对着屏幕正面
+  // 终点参数：略微俯视屏幕，更贴近屏幕
+  // 相机站在过道（x=0），lookAt 指向屏幕实际世界坐标
+  // y 抬高到屏幕上方 1.4 倍 → 略微俯视屏幕（能看到桌面+屏幕整体）
+  // z 向屏幕方向拉近 0.15 倍屏幕深度 → 更靠近屏幕
   const CAM_END_X = 0;                         // 过道中央（屏幕正前方）
-  const CAM_END_Y = screenWorldPos.y;          // 与屏幕同高（平视屏幕）
-  const CAM_END_Z = screenWorldPos.z;          // 与屏幕同 z（正对屏幕，无斜视）
+  const CAM_END_Y = screenWorldPos.y * 1;    // 抬高：屏幕高度 × 1.4，略微俯视
+  const CAM_END_Z = screenWorldPos.z - ROTATED_Z_DEPTH * 0.15;  // 向屏幕拉近 0.15 倍深度
+  const LOOKAT_END_X = screenWorldPos.x;       // 屏幕中心 x（相机朝 +x 看）
   const LOOKAT_END_Y = screenWorldPos.y;       // 屏幕中心 y
-  const LOOKAT_END_Z = screenWorldPos.z;       // 屏幕中心 z（与相机同 z，正对屏幕）
+  const LOOKAT_END_Z = screenWorldPos.z;       // 屏幕中心 z
 
-  const FOV_START = 42;
-  const FOV_END = 30;  // 终点小 FOV，让屏幕更聚焦、充满视野
+  const FOV_START = 55;  // 起点大 FOV：俯视时视野广，8 个格子间整体缩小入画
+  const FOV_END = 80;    // 终点小 FOV：推近后屏幕充满视野，放大聚焦
 
   // 相机当前位置（用于 lerp 平滑）
-  // lookPosRef 初始 z = LOOKAT_START_Z（场景中心 0），后续 useFrame 会 lerp 到 LOOKAT_END_Z
   const camPosRef = useRef(new THREE.Vector3(CAM_START_X, CAM_START_Y, CAM_START_Z));
-  const lookPosRef = useRef(new THREE.Vector3(0, LOOKAT_START_Y, LOOKAT_START_Z));
+  const lookPosRef = useRef(new THREE.Vector3(LOOKAT_START_X, LOOKAT_START_Y, LOOKAT_START_Z));
   const fovRef = useRef(FOV_START);
 
   // 每帧：根据 officeScrollProgress 计算目标位置，用 lerp 平滑追随
@@ -2162,19 +2163,24 @@ export function OfficeScene({
     // 用 smootherstep（Ken Perlin）让过渡更丝滑
     const t = p * p * p * (p * (p * 6 - 15) + 10);
 
-    // 计算目标位置（x/y/z 三轴都随 progress 变化，制造"绕到正面推近"的电影感）
+    // 相机位置：x 始终 0（过道），y 从高空降到屏幕高度，z 从中心推进到屏幕前方
     const targetCamX = CAM_START_X + (CAM_END_X - CAM_START_X) * t;
     const targetCamY = CAM_START_Y + (CAM_END_Y - CAM_START_Y) * t;
     const targetCamZ = CAM_START_Z + (CAM_END_Z - CAM_START_Z) * t;
+    // lookAt：x 从场景中心(0) → 屏幕x(71) 是关键！
+    //   这让相机从"朝正下方看(俯视)"逐渐转成"朝+x方向看(平视屏幕)"
+    //   如果 lookAt x 始终 0，相机会一直在 lookAt 正上方 → 永远俯视
+    const targetLookX = LOOKAT_START_X + (LOOKAT_END_X - LOOKAT_START_X) * t;
     const targetLookY = LOOKAT_START_Y + (LOOKAT_END_Y - LOOKAT_START_Y) * t;
-    const targetLookZ = 0 + (LOOKAT_END_Z - 0) * t;
+    const targetLookZ = LOOKAT_START_Z + (LOOKAT_END_Z - LOOKAT_START_Z) * t;
+    // FOV 从大（广角俯视）→ 小（长焦聚焦屏幕）
     const targetFov = FOV_START + (FOV_END - FOV_START) * t;
 
     // 第一帧直接 set 相机到目标位置，避免 mount 时 Canvas 初始位置
     // 与 OfficeScene 计算位置差距过大，导致前几帧相机快速 lerp 移动看不到模型
     if (firstFrameRef.current) {
       camPosRef.current.set(targetCamX, targetCamY, targetCamZ);
-      lookPosRef.current.set(0, targetLookY, targetLookZ);
+      lookPosRef.current.set(targetLookX, targetLookY, targetLookZ);
       fovRef.current = targetFov;
       firstFrameRef.current = false;
     } else {
@@ -2183,42 +2189,104 @@ export function OfficeScene({
       camPosRef.current.x += (targetCamX - camPosRef.current.x) * LERP_FACTOR;
       camPosRef.current.y += (targetCamY - camPosRef.current.y) * LERP_FACTOR;
       camPosRef.current.z += (targetCamZ - camPosRef.current.z) * LERP_FACTOR;
+      lookPosRef.current.x += (targetLookX - lookPosRef.current.x) * LERP_FACTOR;
       lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * LERP_FACTOR;
       lookPosRef.current.z += (targetLookZ - lookPosRef.current.z) * LERP_FACTOR;
       fovRef.current += (targetFov - fovRef.current) * LERP_FACTOR;
     }
 
-    camera.position.copy(camPosRef.current);
+    // 鼠标视差：相机绕 lookAt target 做球坐标微旋转（类似 OrbitControls 的 azimuth/polar）
+    //   不再旋转整个模型，而是相机绕 target 转动，保持 target 不变
+    //   平滑鼠标值，避免高频抖动
+    const mouseTarget = mouseRef.current;
+    mouseSmoothed.current.x += (mouseTarget.x - mouseSmoothed.current.x) * 0.08;
+    mouseSmoothed.current.y += (mouseTarget.y - mouseSmoothed.current.y) * 0.08;
+    // 视差幅度：azimuth ±2.5°，polar ±1.5°（小幅度，仅作视差感）
+    const AZIMUTH = mouseSmoothed.current.x * 0.044;  // 约 2.5°
+    const POLAR_OFFSET = mouseSmoothed.current.y * 0.026;  // 约 1.5°
+
+    // 计算相机相对 target 的球坐标（半径 r、方位角 theta、极角 phi）
+    // 然后用 mouseSmoothed 的 AZIMUTH/POLAR_OFFSET 微调 theta/phi，重新算出相机位置
+    const dx = camPosRef.current.x - lookPosRef.current.x;
+    const dy = camPosRef.current.y - lookPosRef.current.y;
+    const dz = camPosRef.current.z - lookPosRef.current.z;
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // 当前方位角和极角
+    const theta = Math.atan2(dx, dz) + AZIMUTH;       // 绕 Y 轴方位角
+    const phi = Math.acos(Math.max(-1, Math.min(1, dy / Math.max(0.0001, r)))) + POLAR_OFFSET;  // 极角
+    // 重新计算相机位置：target + 球坐标偏移
+    const sinPhi = Math.sin(phi);
+    camera.position.set(
+      lookPosRef.current.x + r * sinPhi * Math.sin(theta),
+      lookPosRef.current.y + r * Math.cos(phi),
+      lookPosRef.current.z + r * sinPhi * Math.cos(theta)
+    );
     camera.lookAt(lookPosRef.current);
     if (camera instanceof THREE.PerspectiveCamera) {
       camera.fov = fovRef.current;
       camera.updateProjectionMatrix();
     }
-
-    // 鼠标视差让模型组轻微旋转（相机由 progress 控制，不受鼠标影响）
-    if (groupRef.current) {
-      const target = mouseRef.current;
-      mouseSmoothed.current.x += (target.x - mouseSmoothed.current.x) * 0.05;
-      mouseSmoothed.current.y += (target.y - mouseSmoothed.current.y) * 0.05;
-      // 视差旋转幅度：±0.18 rad（约 ±10°）
-      groupRef.current.rotation.y = mouseSmoothed.current.x * 0.18;
-      groupRef.current.rotation.x = mouseSmoothed.current.y * -0.08;
-    }
   });
 
   return (
     <>
-      {/* 环境光：稍亮避免画面太暗 */}
-      <ambientLight intensity={0.5} color="#8070a0" />
+      {/* 雾气：米黄色调，远处格子间淡入背景，增加纵深氛围感
+          - 颜色与背景 #f5e6c8 一致，远处自然融入背景
+          - near/far 根据场景尺寸设置，让远处格子间逐渐淡入 */}
+      <fog attach="fog" args={['#f5e6c8', totalDepth * 0.4, totalDepth * 1.2]} />
 
-      {/* Key light：右上前方紫色主光（呼应 About Us section 的紫色 accentColor #b678ff） */}
-      <directionalLight position={[4, 6, 4]} intensity={2.5} color="#d4b8ff" />
+      {/* 环境光：暖米黄调，与背景融合，让暗部保留暖色 */}
+      <ambientLight intensity={0.35} color="#f5e6c8" />
 
-      {/* Fill light：左侧冷色补光，照亮阴影区域 */}
-      <directionalLight position={[-4, 3, 3]} intensity={1.2} color="#88aaff" />
+      {/* Key light：右上前方紫色主光（呼应 About Us section 的紫色 accentColor #b678ff）
+          - 位置按模型尺寸缩放（180×140×43），让光真的照到桌子上
+          - castShadow 开启，让格子间产生真实阴影，增强立体感
+          - shadow camera 范围按场景尺寸设置，覆盖所有 8 个桌子 */}
+      <directionalLight
+        position={[totalWidth * 0.8, modelSize.y * 3, totalDepth * 0.6]}
+        intensity={2.0}
+        color="#d4b8ff"
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-near={1}
+        shadow-camera-far={totalDepth * 4}
+        shadow-camera-left={-totalWidth}
+        shadow-camera-right={totalWidth}
+        shadow-camera-top={totalDepth}
+        shadow-camera-bottom={-totalDepth}
+        shadow-bias={-0.0005}
+      />
 
-      {/* Rim light：后下方暖色轮廓光，让桌子边缘有金色描边 */}
-      <directionalLight position={[0, -1, -5]} intensity={1.5} color="#ffaa66" />
+      {/* Fill light：左侧冷色补光，照亮阴影区域
+          - 强度比 key 低，避免压平阴影 */}
+      <directionalLight
+        position={[-totalWidth * 0.6, modelSize.y * 2, totalDepth * 0.4]}
+        intensity={0.8}
+        color="#88aaff"
+      />
+
+      {/* Rim light：后方暖色轮廓光，让桌子边缘有金色描边，从暗背景中分离 */}
+      <directionalLight
+        position={[-totalWidth * 0.3, modelSize.y * 1.5, -totalDepth * 0.5]}
+        intensity={1.2}
+        color="#ffaa66"
+      />
+
+      {/* 顶灯光斑：每个格子间上方一个暖色 PointLight，模拟吸顶灯
+          - 每个格子间有自己的光斑，增强格子间分区感
+          - 暖色 #ffd89b 模拟办公暖光灯
+          - 距离衰减让光只照亮本格子间，不干扰相邻格子
+          - 强度较低，避免整体过亮 */}
+      {Z_OFFSETS.map((z, i) => (
+        <pointLight
+          key={`overhead-${i}`}
+          position={[0, modelSize.y * 1.3, z * GAP_Z]}
+          intensity={0.8}
+          distance={GAP_X * 1.2}
+          color="#ffd89b"
+        />
+      ))}
 
       {/* 格子间模型组（鼠标视差作用对象）
           - 8 个 deskbox 面对面紧贴排列，地板相连无缝隙：

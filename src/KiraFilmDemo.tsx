@@ -837,6 +837,8 @@ function OfficeDetailPage({
   const contentLayerRef = useRef<HTMLDivElement>(null);
   // office-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
   const officeInnerRef = useRef<HTMLDivElement>(null);
+  // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
+  const officeHeroBlockRef = useRef<HTMLDivElement>(null);
 
   /**
    * office 详情页内部滚动事件处理
@@ -870,6 +872,45 @@ function OfficeDetailPage({
     el.addEventListener('scroll', handleOfficeScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleOfficeScroll);
   }, [handleOfficeScroll]);
+
+  /**
+   * 鼠标视差处理
+   *
+   * 功能：监听全局鼠标移动，写入 CSS 变量 --px/--py/--rx/--ry 到视差变形层，
+   *      驱动 .office-hello-title 做 3D 旋转 + 位移，营造视差感
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 用 rAF 节流，避免高频 mousemove 引起重渲染
+   *  - 位移幅度 6px + 旋转 ±6°（与主页 hero-block 一致）
+   *  - 通过 mouseRef 共享鼠标坐标（同时驱动 3D 相机视差旋转）
+   */
+  useEffect(() => {
+    let raf = 0;
+    const onMove = (e: MouseEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const nx = (e.clientX / window.innerWidth) * 2 - 1;
+        const ny = (e.clientY / window.innerHeight) * 2 - 1;
+        const el = officeHeroBlockRef.current;
+        if (el) {
+          el.style.setProperty('--px', `${nx * 6}px`);
+          el.style.setProperty('--py', `${ny * 6}px`);
+          el.style.setProperty('--rx', `${ny * 6}deg`);
+          el.style.setProperty('--ry', `${nx * 6}deg`);
+        }
+        mouseRef.current.x = nx;
+        mouseRef.current.y = ny;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      cancelAnimationFrame(raf);
+    };
+  }, [mouseRef]);
 
   /**
    * 进入/退出详情页时重置内部滚动状态
@@ -933,9 +974,11 @@ function OfficeDetailPage({
       <div className="contact-canvas-wrapper">
         <Canvas
           gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
-          camera={{ fov: 42, near: 0.1, far: 5000, position: [100, 60, 450] }}
+          camera={{ fov: 55, near: 0.1, far: 5000, position: [0, 1000, 0] }}
+          shadows
           onCreated={({ gl }) => {
-            gl.setClearColor(new THREE.Color('#000000'), 0);
+            // 米黄色背景：暖调办公空间氛围
+            gl.setClearColor(new THREE.Color('#f5e6c8'), 1);
           }}
         >
           <Suspense fallback={null}>
@@ -954,47 +997,49 @@ function OfficeDetailPage({
 
       {/* 内容层：固定全屏，包含 About Us 标题 + 描述卡片
           - pointer-events: none 让滚轮事件穿透到滚动容器
-          - 通过 ref 写入 --office-progress CSS 变量驱动子元素淡入 */}
-      <div ref={contentLayerRef} className="contact-content-layer">
-        {/* 居中 "About Us." 大标题（逐字浮现，呼应 contact 的标题动画） */}
-        <h1 className="contact-hello-title">
-          {'About Us.'.split('').map((ch, i) => (
-            <span
-              key={i}
-              className="contact-hello-char"
-              style={{ transitionDelay: `${0.25 + i * 0.08}s` }}
-            >
-              {ch === ' ' ? '\u00A0' : ch}
-            </span>
-          ))}
-        </h1>
+          - 通过 ref 写入 --office-progress CSS 变量驱动子元素淡入
+          - 内嵌 office-hero-block 包裹标题，写入 --px/--py/--rx/--ry 驱动 3D 视差 */}
+      <div ref={contentLayerRef} className="office-content-layer">
+        {/* 视差变形层：鼠标移动时整体做 3D 旋转 + 位移 */}
+        <div ref={officeHeroBlockRef} className="office-hero-block">
+          {/* 居中 "About Us." 大标题（逐字浮现 + 鼠标视差变形） */}
+          <h1 className="office-hello-title">
+            {'About Us.'.split('').map((ch, i) => (
+              <span
+                key={i}
+                className="office-hello-char"
+                style={{ transitionDelay: `${0.25 + i * 0.08}s` }}
+              >
+                {ch === ' ' ? '\u00A0' : ch}
+              </span>
+            ))}
+          </h1>
+        </div>
 
         {/* 副标题：联系说明（随滚动进度淡入） */}
-        <p className="contact-tagline">
+        <p className="office-tagline">
           Playful, Powerful, Alive.
           <br />
           Serious about business, based in Sweden.
         </p>
 
-        {/* 横向信息卡片：三张（随滚动进度淡入）
-            - 复用 contact-info-card 的样式，避免新增 CSS
-            - 内容描述公司规模/团队/位置 */}
-        <div className="contact-info-row">
-          <div className="contact-info-card">
-            <span className="contact-info-label">Team</span>
-            <span className="contact-info-value">
+        {/* 横向信息卡片：三张（随滚动进度淡入） */}
+        <div className="office-info-row">
+          <div className="office-info-card">
+            <span className="office-info-label">Team</span>
+            <span className="office-info-value">
               12 designers & engineers
             </span>
           </div>
-          <div className="contact-info-card">
-            <span className="contact-info-label">Founded</span>
-            <span className="contact-info-value">
+          <div className="office-info-card">
+            <span className="office-info-label">Founded</span>
+            <span className="office-info-value">
               2018 in Norrköping
             </span>
           </div>
-          <div className="contact-info-card">
-            <span className="contact-info-label">Studio</span>
-            <span className="contact-info-value">
+          <div className="office-info-card">
+            <span className="office-info-label">Studio</span>
+            <span className="office-info-value">
               Laxholmstorget 3
               <br />
               602 21 Norrköping, Sweden
@@ -1003,12 +1048,12 @@ function OfficeDetailPage({
         </div>
 
         {/* 底部 footer：业务邮箱 + 滚回提示 */}
-        <div className="contact-footer">
-          <span className="contact-footer-business">
+        <div className="office-footer">
+          <span className="office-footer-business">
             Careers:{' '}
             <a href="mailto:jobs@shader.se">jobs@shader.se</a>
           </span>
-          <span className="contact-footer-hint">Scroll up to return</span>
+          <span className="office-footer-hint">Scroll up to return</span>
         </div>
       </div>
     </div>
