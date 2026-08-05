@@ -1531,6 +1531,24 @@ function WorkDetailPage({
 
   return (
     <div ref={innerRef} className="work-detail-inner">
+      {/* 色散 + 边缘虚化变形：纯 CSS 实现（避免 SVG filter 的 JSX 解析问题）
+          - 色散：.work-photo-card 上 filter:drop-shadow 实现 R/B 通道偏移
+          - 边缘虚化：.work-photos 上 mask-image 径向渐变让边缘渐隐
+          - 暗角：.work-vignette-overlay 径向渐变 + multiply 混合
+          - 边缘渐隐：.work-edge-fade-overlay 径向渐变覆盖
+          - 与主页面的 FilmPostProcessing shader 效果对应 */}
+
+      {/* 暗角覆盖层：模拟主页面 shader 的 vignette 暗角效果
+          - 径向渐变从透明到黑色，让画面四周渐暗
+          - pointer-events: none 不拦截鼠标，让拖拽穿透到卡片网格
+          - mix-blend-mode: multiply 让暗角与下层内容相乘混合 */}
+      <div className="work-vignette-overlay" aria-hidden="true" />
+
+      {/* 色散边缘渐隐覆盖层：模拟主页面 shader 的 edge mask 效果
+          - 径向渐变从中心透明到边缘黑色，让色散在边缘更明显
+          - pointer-events: none 不拦截鼠标 */}
+      <div className="work-edge-fade-overlay" aria-hidden="true" />
+
       {/* 顶部 header：SELECTED WORK 标识 + 状态指示
           - heroBlockRef 绑定标题区，写入 --px/--py/--rx/--ry 驱动 3D 视差 */}
       <header className="work-header">

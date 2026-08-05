@@ -1525,6 +1525,63 @@ body.camera-debug-mode .scroll-container {
   perspective: 1200px;
 }
 
+/* 暗角覆盖层：模拟主页面 shader 的 vignette 效果
+   - 径向渐变从中心透明到边缘半透明黑色，让画面四周渐暗
+   - pointer-events: none 不拦截鼠标，让拖拽穿透到卡片网格
+   - mix-blend-mode: multiply 让暗角与下层内容相乘混合
+   - z-index 高于卡片网格但低于 header/footer */
+.work-vignette-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  mix-blend-mode: multiply;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 30%,
+    rgba(0, 0, 0, 0.25) 70%,
+    rgba(0, 0, 0, 0.6) 100%
+  );
+}
+
+/* 色散边缘渐隐覆盖层：模拟主页面 shader 的 edge mask 效果
+   - backdrop-filter:blur 对卡片做边缘模糊（配合 mask 只作用于边缘）
+   - 径向渐变背景从中心透明到边缘黑色，让画面边缘渐隐到背景色
+   - mask-image 让中心不模糊、不渐隐，只有边缘才模糊和渐暗
+   - 与暗角叠加，增强边缘虚化感
+   - pointer-events: none 不拦截鼠标 */
+.work-edge-fade-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  /* 边缘模糊：backdrop-filter 对下方卡片做高斯模糊
+     - 配合 mask-image 只在边缘区域生效，中心保持清晰
+     - blur(6px) 模拟镜头边缘的虚化散焦效果 */
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  /* 渐隐背景：径向渐变从透明到暗色，让边缘渐隐到背景 */
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(10, 10, 10, 0.3) 80%,
+    rgba(10, 10, 10, 0.85) 100%
+  );
+  /* mask 限制 backdrop-filter 只在边缘区域生效
+     - 中心透明 → backdrop-filter 不作用（中心保持清晰）
+     - 边缘不透明 → backdrop-filter 生效（边缘模糊） */
+  -webkit-mask-image: radial-gradient(
+    ellipse at center,
+    transparent 50%,
+    #000 85%
+  );
+  mask-image: radial-gradient(
+    ellipse at center,
+    transparent 50%,
+    #000 85%
+  );
+}
+
 .work-detail-inner:active {
   cursor: grabbing;
 }
@@ -1650,6 +1707,22 @@ body.camera-debug-mode .scroll-container {
   transform: scale(var(--scale)) translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
   transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: transform;
+  /* 边缘虚化变形：mask-image 径向渐变让卡片网格边缘渐隐
+     - 中心完全不透明，边缘逐渐透明 → 模拟镜头边缘虚化
+     - 与 .work-vignette-overlay + .work-edge-fade-overlay 叠加增强边缘效果
+     - 性能优于 SVG filter，GPU 加速 mask 合成 */
+  -webkit-mask-image: radial-gradient(
+    ellipse 80% 80% at center,
+    #000 45%,
+    rgba(0, 0, 0, 0.6) 75%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 80% 80% at center,
+    #000 45%,
+    rgba(0, 0, 0, 0.6) 75%,
+    transparent 100%
+  );
 }
 
 .work-photos:active {
@@ -1682,7 +1755,15 @@ body.camera-debug-mode .scroll-container {
   background: #0d0d0d;
   border: 1px solid rgba(252, 249, 243, 0.15);
   flex-shrink: 0;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, filter 0.3s ease;
+  /* 色散效果：drop-shadow 模拟 RGB 通道偏移
+     - R 通道向左偏移（红色阴影），B 通道向右偏移（蓝色阴影）
+     - 与主页面的 FilmPostProcessing shader 色散对应
+     - drop-shadow 跟随卡片 alpha 轮廓，边缘处色散最明显
+     - 中心区域因卡片实心填充几乎无色散，边缘和边框处色散突出 */
+  filter:
+    drop-shadow(2.5px 0 0 rgba(255, 40, 40, 0.45))
+    drop-shadow(-2.5px 0 0 rgba(40, 120, 255, 0.45));
 }
 
 .work-photo-card:hover {
@@ -1690,6 +1771,10 @@ body.camera-debug-mode .scroll-container {
   box-shadow:
     0 0 16px rgba(252, 249, 243, 0.15),
     0 0 32px rgba(252, 249, 243, 0.05);
+  /* hover 时增强色散：R/B 通道偏移加大，模拟镜头对焦时的色散波动 */
+  filter:
+    drop-shadow(4px 0 0 rgba(255, 40, 40, 0.6))
+    drop-shadow(-4px 0 0 rgba(40, 120, 255, 0.6));
 }
 
 /* 卡片顶部扫描线装饰（呼应胶片屏幕风） */
