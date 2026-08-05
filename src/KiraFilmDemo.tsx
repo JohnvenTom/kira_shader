@@ -9,6 +9,7 @@ import {
 } from './components/FilmPostProcessing';
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
+import gsap from 'gsap';
 
 /**
  * 把字符串拆成逐字 span（用于逐字浮现动画）
@@ -466,6 +467,12 @@ export default function KiraFilmDemo() {
            - 初始：相机高处俯视，About Us 居中显示，看不见格子间
            - 滚动后：相机降到桌子水平，露出 8 个面对面排列的格子间 */
           <OfficeDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
+        ) : sectionIndex === 1 ? (
+          /* === Selected Work 详情页：无限滑动展示柜 ===
+           - 移植 ArikaShow 的无限滑动实现
+           - 进入后可鼠标拖拽任意方向滑动卡片矩阵
+           - 卡片超出边界时瞬间回绕到对面，形成无限循环 */
+          <WorkDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
         ) : (
           /* === 默认详情页：项目卡片网格 === */
           <div className="film-detail-inner">
@@ -1056,6 +1063,518 @@ function OfficeDetailPage({
           <span className="office-footer-hint">Scroll up to return</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * WorkDetailPage - SELECTED WORK section 详情页（无限滑动展示柜）
+ *
+ * 功能：
+ *  - 移植 ArikaShow 的无限滑动实现，用 GSAP 驱动卡片网格做无限拖拽浏览
+ *  - 进入后用户可鼠标拖拽（或触摸）任意方向滑动卡片矩阵
+ *  - 卡片超出容器边界时瞬间回绕到对面，形成无限循环错觉
+ *  - 滚轮回退（progress<0.85）时退出回 3D 场景（由外层 overlay 处理）
+ *  - 每次进入详情页（detailOpen false→true）时重新计算布局尺寸
+ *
+ * 参数：
+ *  - mouseRef    鼠标归一化坐标 ref（保持接口一致，本组件不使用 3D 相机视差）
+ *  - detailOpen 外层详情页是否打开（用于在每次进入时重置布局）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 核心算法移植自 ArikaShow/js/slip.js 的 photobox 对象
+ *  - 每张卡片记录初始位置 (x,y) 和累积偏移 (mov_x,mov_y)
+ *  - 边界回绕规则（提前半个卡片尺寸消除跳变）：
+ *      右溢出 → mov_x -= container_width（跳到左边）
+ *      左溢出 → mov_x += container_width（跳到右边）
+ *      下溢出 → mov_y -= container_height（跳到上边）
+ *      上溢出 → mov_y += container_height（跳到下边）
+ *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
+ *  - 容器整体 scale 适配不同屏幕（基准宽度 1440px）
+ *  - 卡片数据循环复用 PROJECTS（7 列 × 4 行 = 28 张）
+ */
+function WorkDetailPage({
+  mouseRef,
+  detailOpen,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  detailOpen: boolean;
+}) {
+  // 无限滑动容器 ref（.work-photos，用于获取尺寸和绑定拖拽事件）
+  const photosRef = useRef<HTMLDivElement>(null);
+  // 详情页根元素 ref（用于绑定 wheel 事件，让外层 overlay 处理退出）
+  const innerRef = useRef<HTMLDivElement>(null);
+  // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
+  const heroBlockRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 卡片位置索引数据结构
+   *
+   * 字段说明：
+   *  - node  卡片 DOM 节点（GSAP 操作目标）
+   *  - x,y   初始 offsetLeft/offsetTop（resize 时记录，回绕判定基准）
+   *  - mov_x,mov_y 累积偏移量（拖拽时累加，回绕时 ±容器尺寸）
+   *  - ani    当前 GSAP 动画引用（新动画前 kill 旧的避免冲突）
+   */
+  type ImgData = {
+    node: HTMLElement;
+    x: number;
+    y: number;
+    mov_x: number;
+    mov_y: number;
+    ani: gsap.core.Tween | null;
+  };
+  const imgDataRef = useRef<ImgData[]>([]);
+
+  /**
+   * 容器/卡片尺寸缓存（resize 时更新，move 时读取）
+   *
+   * 字段说明：
+   *  - containerWidth/Height 容器实际尺寸（回绕判定边界）
+   *  - photoWidth/Height     单张卡片尺寸（提前回绕阈值 = ±半张卡片）
+   *  - scaleNums             当前视口相对基准宽度的缩放比例
+   *  - standardWidth         设计基准宽度 1440px
+   */
+  const dimsRef = useRef({
+    containerWidth: 0,
+    containerHeight: 0,
+    photoWidth: 0,
+    photoHeight: 0,
+    scaleNums: 1,
+    standardWidth: 1440,
+  });
+
+  /**
+   * 拖拽状态（移植 ArikaShow photobox 的拖拽字段）
+   *
+   * 字段说明：
+   *  - ifMovable      是否正在拖动（mousedown 触发，mouseup/mouseleave 取消）
+   *  - mouseX/Y       上一帧鼠标坐标（用于计算本帧位移）
+   *  - dragStartX/Y   mousedown 起始坐标（用于判断是否是拖拽还是点击）
+   *  - hasDragged     是否已确认拖拽（移动超过阈值后置 true）
+   *  - dragThreshold  拖拽确认阈值 5px（避免点击误触）
+   */
+  const dragRef = useRef({
+    ifMovable: false,
+    mouseX: 0,
+    mouseY: 0,
+    dragStartX: 0,
+    dragStartY: 0,
+    hasDragged: false,
+    dragThreshold: 5,
+  });
+
+  /**
+   * 卡片数据：4 行 × 7 列 = 28 张，循环复用 PROJECTS（移植自原版结构）
+   *
+   * 结构说明：
+   *  - 按行分组：外层数组每项是一行，内层数组是行内的 7 张卡片
+   *  - 索引计算：rowIdx * cols + colIdx（与 ArikaShow 的 HTML 结构一致）
+   *  - project 字段循环复用 PROJECTS 数据（4 个项目循环填充 28 张卡片）
+   *  - unit 字段：UNIT_01 ~ UNIT_28 编号（呼应 ArikaShow 的卡片标签）
+   */
+  const cardRows = useMemo(() => {
+    const rows = 4;
+    const cols = 7;
+    return Array.from({ length: rows }, (_, rowIdx) =>
+      Array.from({ length: cols }, (_, colIdx) => {
+        const i = rowIdx * cols + colIdx;
+        const project = PROJECTS[i % PROJECTS.length];
+        return {
+          id: `work-card-${i}`,
+          index: i + 1,
+          unit: `UNIT_${String(i + 1).padStart(2, '0')}`,
+          project,
+        };
+      })
+    );
+  }, []);
+
+  /**
+   * 重新计算布局尺寸并重建位置索引
+   *
+   * 功能：
+   *  - 读取容器和卡片的实际像素尺寸
+   *  - 计算缩放比例 scaleNums = 视口宽度 / 基准宽度 1440
+   *  - 对容器整体应用 scale(scaleNums) 适配不同屏幕
+   *  - 重置所有卡片偏移量为 0（清除残留的 translate）
+   *  - 遍历所有卡片，读取 offsetLeft/offsetTop 重建 img_data 位置索引
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 必须在 DOM 渲染完成后调用（useEffect + detailOpen 触发）
+   *  - resize 时会重置所有动画和偏移，卡片回到初始网格位置
+   *  - offsetLeft/offsetTop 是相对 offsetParent 的坐标，需确保父级有定位
+   */
+  const resize = useCallback(() => {
+    const container = photosRef.current;
+    if (!container) return;
+    const cards = container.querySelectorAll<HTMLElement>('.work-photo-card');
+    if (cards.length === 0) return;
+
+    const dims = dimsRef.current;
+    dims.containerWidth = container.offsetWidth;
+    dims.containerHeight = container.offsetHeight;
+    dims.photoWidth = cards[0].offsetWidth;
+    dims.photoHeight = cards[0].offsetHeight;
+    dims.scaleNums = document.body.offsetWidth / dims.standardWidth;
+    container.style.transform = `scale(${dims.scaleNums})`;
+
+    // 重置所有卡片偏移量并清除动画
+    gsap.to(Array.from(cards), {
+      transform: 'translate(0,0)',
+      duration: 0,
+      ease: 'power4.out',
+    });
+
+    // 重建位置索引数组
+    imgDataRef.current = Array.from(cards).map(card => ({
+      node: card,
+      x: card.offsetLeft,
+      y: card.offsetTop,
+      mov_x: 0,
+      mov_y: 0,
+      ani: null,
+    }));
+  }, []);
+
+  /**
+   * 处理单帧拖拽位移（无限滑动核心算法，移植自 ArikaShow photobox.move）
+   *
+   * 功能：
+   *  - 计算本帧相对上一帧的位移（经缩放补偿除以 scaleNums）
+   *  - 累加到每张卡片的 mov_x/mov_y
+   *  - 当卡片完全离开容器可视区域时，瞬间调整偏移量使其从对面出现（回绕）
+   *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
+   *
+   * 参数：
+   *  - x {number} 当前鼠标屏幕 X 坐标
+   *  - y {number} 当前鼠标屏幕 Y 坐标
+   *
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 边界判定与原版一致：卡片完全离开容器才回绕
+   *      右溢出：img.x + img.mov_x > containerWidth（卡片左边超出容器右边）
+   *      左溢出：img.x + img.mov_x < -photoWidth（卡片右边超出容器左边）
+   *      下溢出：img.y + img.mov_y > containerHeight
+   *      上溢出：img.y + img.mov_y < -photoHeight
+   *  - 不能提前回绕，否则卡片还未离开视口就跳到对面，造成重叠遮挡
+   *  - 新动画前 kill 旧动画，避免 GSAP 动画堆叠冲突
+   *  - 位移需除以 scaleNums 补偿容器整体缩放（缩放后鼠标实际拖动距离变小）
+   */
+  const move = useCallback((x: number, y: number) => {
+    const drag = dragRef.current;
+    if (!drag.ifMovable) return;
+    const dims = dimsRef.current;
+    const distanceX = (x - drag.mouseX) / dims.scaleNums;
+    const distanceY = (y - drag.mouseY) / dims.scaleNums;
+
+    imgDataRef.current.forEach(img => {
+      let duration = 1;
+      img.mov_x += distanceX;
+      // X 轴右溢出：卡片左边超出容器右边 → 跳到左边
+      if (img.x + img.mov_x > dims.containerWidth) {
+        img.mov_x -= dims.containerWidth;
+        duration = 0;
+      }
+      // X 轴左溢出：卡片右边超出容器左边 → 跳到右边
+      if (img.x + img.mov_x < -dims.photoWidth) {
+        img.mov_x += dims.containerWidth;
+        duration = 0;
+      }
+      img.mov_y += distanceY;
+      // Y 轴下溢出：卡片上边超出容器下边 → 跳到上边
+      if (img.y + img.mov_y > dims.containerHeight) {
+        img.mov_y -= dims.containerHeight;
+        duration = 0;
+      }
+      // Y 轴上溢出：卡片下边超出容器上边 → 跳到下边
+      if (img.y + img.mov_y < -dims.photoHeight) {
+        img.mov_y += dims.containerHeight;
+        duration = 0;
+      }
+      // kill 旧动画避免冲突，启动新动画
+      if (img.ani) img.ani.kill();
+      img.ani = gsap.to(img.node, {
+        transform: `translate(${img.mov_x}px,${img.mov_y}px)`,
+        duration,
+        ease: 'power4.out',
+      });
+    });
+    drag.mouseX = x;
+    drag.mouseY = y;
+  }, []);
+
+  /**
+   * 鼠标拖拽事件绑定
+   *
+   * 功能：
+   *  - mousedown：标记可拖动，记录起始坐标
+   *  - mousemove：检测是否确认拖拽（移动超过阈值），执行 move() 位移
+   *  - mouseup/mouseleave：结束拖动，恢复 cursor
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 拖拽阈值 5px，避免点击误触
+   *  - 拖拽时设置 cursor: grabbing 提示用户
+   *  - mousemove 绑定在 document 上，避免鼠标移出容器后丢失追踪
+   */
+  useEffect(() => {
+    const container = photosRef.current;
+    if (!container) return;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // 仅左键
+      // 阻止事件冒泡到 window，避免触发外层 KiraFilmDemo 的
+      // section 左右拖拽切换逻辑（dragOffsetRef 改变会导致背景 section 切换）
+      e.stopPropagation();
+      const drag = dragRef.current;
+      drag.ifMovable = true;
+      drag.hasDragged = false;
+      drag.mouseX = e.clientX;
+      drag.mouseY = e.clientY;
+      drag.dragStartX = e.clientX;
+      drag.dragStartY = e.clientY;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = dragRef.current;
+      if (!drag.ifMovable) return;
+      // 检测是否确认拖拽（移动距离超过阈值）
+      if (!drag.hasDragged) {
+        const dx = e.clientX - drag.dragStartX;
+        const dy = e.clientY - drag.dragStartY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > drag.dragThreshold) {
+          drag.hasDragged = true;
+          document.body.style.cursor = 'grabbing';
+        }
+      }
+      move(e.clientX, e.clientY);
+    };
+
+    const endDrag = () => {
+      const drag = dragRef.current;
+      if (drag.ifMovable) {
+        drag.ifMovable = false;
+        document.body.style.cursor = '';
+      }
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', endDrag);
+    container.addEventListener('mouseleave', endDrag);
+
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', endDrag);
+      container.removeEventListener('mouseleave', endDrag);
+      document.body.style.cursor = '';
+    };
+  }, [move]);
+
+  /**
+   * 触摸拖拽事件绑定（移动端支持）
+   *
+   * 功能：与鼠标拖拽逻辑一致，适配 touchstart/touchmove/touchend
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - touch 事件用 passive 监听，不阻止默认行为（保留页面滚动可能）
+   *  - 读取 touches[0] 的 clientX/clientY
+   */
+  useEffect(() => {
+    const container = photosRef.current;
+    if (!container) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      // 阻止冒泡，与鼠标拖拽一致（避免触发外层 section 切换逻辑）
+      e.stopPropagation();
+      const t = e.touches[0];
+      const drag = dragRef.current;
+      drag.ifMovable = true;
+      drag.hasDragged = false;
+      drag.mouseX = t.clientX;
+      drag.mouseY = t.clientY;
+      drag.dragStartX = t.clientX;
+      drag.dragStartY = t.clientY;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const drag = dragRef.current;
+      if (!drag.ifMovable) return;
+      const t = e.touches[0];
+      if (!drag.hasDragged) {
+        const dx = t.clientX - drag.dragStartX;
+        const dy = t.clientY - drag.dragStartY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > drag.dragThreshold) {
+          drag.hasDragged = true;
+        }
+      }
+      move(t.clientX, t.clientY);
+    };
+
+    const onTouchEnd = () => {
+      dragRef.current.ifMovable = false;
+    };
+
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: true });
+    container.addEventListener('touchend', onTouchEnd);
+
+    return () => {
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [move]);
+
+  /**
+   * 窗口 resize 监听
+   *
+   * 功能：窗口尺寸变化时重新计算布局，重置卡片位置
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  useEffect(() => {
+    const onResize = () => resize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [resize]);
+
+  /**
+   * 进入/退出详情页时重新计算布局
+   *
+   * 功能：监听 detailOpen 变化，每次进入详情页（detailOpen=true）时
+   *      延迟一帧后调用 resize() 重新计算尺寸（确保 DOM 已渲染完成）
+   *
+   * 参数：无（通过闭包读取 detailOpen）
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 用 rAF 延迟一帧，确保 overlay 的 visible 过渡完成后 DOM 尺寸稳定
+   *  - 退出时不需要 resize（下次进入时会重新计算）
+   */
+  useEffect(() => {
+    if (!detailOpen) return;
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => resize());
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailOpen, resize]);
+
+  /**
+   * 鼠标视差处理（标题 3D 变形）
+   *
+   * 功能：监听全局鼠标移动，写入 CSS 变量 --px/--py/--rx/--ry 到视差变形层，
+   *      驱动 .work-hero-title 做 3D 旋转 + 位移，营造视差感
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 用 rAF 节流，避免高频 mousemove 引起重渲染
+   *  - 位移幅度 6px + 旋转 ±6°（与主页 hero-block 一致）
+   *  - 通过 mouseRef 共享鼠标坐标
+   */
+  useEffect(() => {
+    let raf = 0;
+    const onMove = (e: MouseEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const nx = (e.clientX / window.innerWidth) * 2 - 1;
+        const ny = (e.clientY / window.innerHeight) * 2 - 1;
+        const el = heroBlockRef.current;
+        if (el) {
+          el.style.setProperty('--px', `${nx * 6}px`);
+          el.style.setProperty('--py', `${ny * 6}px`);
+          el.style.setProperty('--rx', `${ny * 6}deg`);
+          el.style.setProperty('--ry', `${nx * 6}deg`);
+        }
+        mouseRef.current.x = nx;
+        mouseRef.current.y = ny;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      cancelAnimationFrame(raf);
+    };
+  }, [mouseRef]);
+
+  return (
+    <div ref={innerRef} className="work-detail-inner">
+      {/* 顶部 header：SELECTED WORK 标识 + 状态指示
+          - heroBlockRef 绑定标题区，写入 --px/--py/--rx/--ry 驱动 3D 视差 */}
+      <header className="work-header">
+        <div ref={heroBlockRef} className="work-hero-block">
+          <div className="work-header-title">SELECTED WORK</div>
+          <div className="work-header-subtitle">// 精 选 作 品</div>
+        </div>
+        <div className="work-header-status">
+          <span className="work-status-text">SYS:ONLINE</span>
+          <div className="work-status-dot" />
+        </div>
+      </header>
+
+      {/* 拖拽提示 */}
+      <div className="work-drag-hint">◄ DRAG TO EXPLORE ►</div>
+
+      {/* 无限滑动卡片容器（移植自原版 .photos 结构）
+          - .work-photos: 容器（absolute, column, overflow hidden, scale 由 JS 写入）
+          - .work-photos-row: 行（横向排列 7 张卡片）
+          - .work-photo-card: 单张卡片（GSAP 操作 translate） */}
+      <div ref={photosRef} className="work-photos">
+        {cardRows.map((row, rowIdx) => (
+          <div key={`row-${rowIdx}`} className="work-photos-row">
+            {row.map(card => (
+              <div
+                key={card.id}
+                className="work-photo-card"
+                data-project={card.project.id}
+              >
+                {/* 四角装饰（复古胶片风） */}
+                <span className="work-corner work-corner--tl" />
+                <span className="work-corner work-corner--tr" />
+                <span className="work-corner work-corner--bl" />
+                <span className="work-corner work-corner--br" />
+                {/* 项目缩略图（gif 自动播放） */}
+                <img
+                  src={card.project.thumb}
+                  alt={card.project.name}
+                  draggable={false}
+                />
+                {/* 卡片标签 + 编号 + 项目名 + 年份 */}
+                <span className="work-card-label">{card.unit}</span>
+                <span className="work-card-index">
+                  #{String(card.index).padStart(3, '0')}
+                </span>
+                <span className="work-card-name">{card.project.name}</span>
+                <span className="work-card-year">{card.project.year}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      {/* 底部 footer：版本标识 + 拖拽提示 */}
+      <footer className="work-footer">
+        <span>SELECTED WORK // SHOWCASE</span>
+        <span>DRAG TO NAVIGATE ◄►</span>
+      </footer>
     </div>
   );
 }

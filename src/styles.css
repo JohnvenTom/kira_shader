@@ -1491,3 +1491,337 @@ body.camera-debug-mode .scroll-container {
   text-transform: uppercase;
 }
 
+/* ===================================================================
+   WorkDetailPage - 无限滑动展示柜（SELECTED WORK section 详情页）
+   移植自 ArikaShow/example/无限滑动，复古胶片风格
+   核心结构（与原版一致）：
+     .work-detail-inner   根容器（flex 居中，overflow hidden）
+     .work-photos         无限滑动容器（absolute, column 方向, overflow hidden）
+     .work-photos-row     行（横向排列 7 张卡片，em 尺寸 + 媒体查询响应式）
+     .work-photo-card     单张卡片（em 尺寸，GSAP 操作 translate）
+     .work-footer         底部状态栏
+   响应式方案（移植自原版）：
+     - 所有尺寸用 em 单位，基准 font-size 由媒体查询按窗口宽高比调整
+     - 容器整体再 scale(body宽度/1440) 适配不同分辨率
+   =================================================================== */
+
+/* 根容器：固定全屏，flex 居中网格，overflow 裁切回绕的卡片 */
+.work-detail-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  background: var(--background);
+  cursor: grab;
+  /* 拖拽时禁止选中文本（避免卡片标签/编号/项目名被高亮选中） */
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.work-detail-inner:active {
+  cursor: grabbing;
+}
+
+/* 顶部 header：绝对定位，不拦截鼠标事件（让拖拽穿透到容器） */
+.work-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 48px;
+  z-index: 10;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0.92) 0%, transparent 100%);
+}
+
+/* 视差变形层：包裹标题，写入 --px/--py/--rx/--ry 驱动 3D 旋转 */
+.work-hero-block {
+  --px: 0px;
+  --py: 0px;
+  --rx: 0deg;
+  --ry: 0deg;
+  transform-style: preserve-3d;
+  transform: translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
+  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+.work-header-title {
+  font-family: var(--font-retro);
+  font-size: 22px;
+  font-weight: 700;
+  color: #fcf9f3;
+  letter-spacing: 0.18em;
+  text-shadow:
+    0 0 8px rgba(252, 249, 243, 0.5),
+    0 0 24px rgba(252, 249, 243, 0.2);
+}
+
+.work-header-subtitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(252, 249, 243, 0.45);
+  letter-spacing: 0.4em;
+  margin-top: 4px;
+}
+
+.work-header-status {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.work-status-text {
+  font-family: var(--font-retro);
+  font-size: 12px;
+  color: rgba(252, 249, 243, 0.55);
+  letter-spacing: 0.25em;
+}
+
+.work-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 0;  /* 锐利直角（用户偏好） */
+  background: #4dc4ff;
+  box-shadow: 0 0 8px #4dc4ff, 0 0 16px rgba(77, 196, 255, 0.4);
+  animation: work-status-pulse 2s infinite;
+}
+
+@keyframes work-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* 拖拽提示：居中浮在 header 下方 */
+.work-drag-hint {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(252, 249, 243, 0.35);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  z-index: 10;
+  pointer-events: none;
+  animation: work-hint-blink 3s ease-in-out infinite;
+}
+
+@keyframes work-hint-blink {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.7; }
+}
+
+/* 无限滑动容器（移植自原版 .photos）
+   - position: absolute 居中于父级
+   - flex-direction: column 纵向排列 4 行
+   - overflow hidden 裁切回绕的卡片（从对面出现前不可见）
+   - font-size 作为 em 基准（媒体查询按窗口宽高比调整）
+   - transform: scale(...) 由 JS 写入适配视口宽度 */
+.work-photos {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 1px;  /* em 基准：默认 1px（宽屏） */
+  cursor: grab;
+}
+
+.work-photos:active {
+  cursor: grabbing;
+}
+
+/* 行（移植自原版 .photos_line）
+   - 横向排列 7 张卡片
+   - height 用 em，margin-bottom 用 em
+   - flex-shrink: 0 防止压缩 */
+.work-photos-row {
+  display: flex;
+  flex-direction: row;
+  height: 200em;
+  margin-bottom: 24em;
+  flex-shrink: 0;
+}
+
+/* 单张卡片（移植自原版 .photos_line_photo）
+   - width/height 用 em，margin-right 用 em
+   - flex-shrink: 0 防止压缩
+   - relative 定位（GSAP 操作 translate）
+   - overflow hidden 裁切图片 */
+.work-photo-card {
+  width: 300em;
+  height: 100%;
+  margin-right: 24em;
+  position: relative;
+  overflow: hidden;
+  background: #0d0d0d;
+  border: 1px solid rgba(252, 249, 243, 0.15);
+  flex-shrink: 0;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.work-photo-card:hover {
+  border-color: rgba(252, 249, 243, 0.5);
+  box-shadow:
+    0 0 16px rgba(252, 249, 243, 0.15),
+    0 0 32px rgba(252, 249, 243, 0.05);
+}
+
+/* 卡片顶部扫描线装饰（呼应胶片屏幕风） */
+.work-photo-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(252, 249, 243, 0.6), transparent);
+  opacity: 0.5;
+  z-index: 2;
+}
+
+/* 卡片底部扫描线装饰 */
+.work-photo-card::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(252, 249, 243, 0.3), transparent);
+  opacity: 0.4;
+  z-index: 2;
+}
+
+/* 卡片图片：cover 适配，不拦截事件（避免拖拽时浏览器默认行为） */
+.work-photo-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 四角装饰：锐利直角（用户偏好），呼应主页加载界面的方框风格 */
+.work-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(252, 249, 243, 0.65);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.work-corner--tl { top: 6px; left: 6px; border-right: none; border-bottom: none; }
+.work-corner--tr { top: 6px; right: 6px; border-left: none; border-bottom: none; }
+.work-corner--bl { bottom: 6px; left: 6px; border-right: none; border-top: none; }
+.work-corner--br { bottom: 6px; right: 6px; border-left: none; border-top: none; }
+
+/* 卡片标签：UNIT_XX 居中顶部 */
+.work-card-label {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-retro);
+  font-size: 13px;
+  color: rgba(252, 249, 243, 0.85);
+  letter-spacing: 0.2em;
+  background: rgba(0, 0, 0, 0.65);
+  padding: 2px 12px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 卡片编号：右上角 */
+.work-card-index {
+  position: absolute;
+  top: 10px;
+  right: 24px;
+  font-family: var(--font-retro);
+  font-size: 13px;
+  color: rgba(252, 249, 243, 0.45);
+  letter-spacing: 0.1em;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 卡片项目名：底部 */
+.work-card-name {
+  position: absolute;
+  bottom: 30px;
+  left: 12px;
+  right: 12px;
+  font-family: var(--font-stix);
+  font-size: 15px;
+  font-weight: 700;
+  color: #fcf9f3;
+  pointer-events: none;
+  z-index: 3;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+}
+
+/* 卡片年份：左下角 */
+.work-card-year {
+  position: absolute;
+  bottom: 10px;
+  left: 12px;
+  font-family: var(--font-retro);
+  font-size: 12px;
+  color: rgba(252, 249, 243, 0.55);
+  letter-spacing: 0.15em;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 底部 footer：绝对定位，不拦截鼠标事件 */
+.work-footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 48px;
+  z-index: 10;
+  pointer-events: none;
+  background: linear-gradient(0deg, rgba(10, 10, 10, 0.92) 0%, transparent 100%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(252, 249, 243, 0.35);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+
+/* 响应式：按窗口宽高比调整 em 基准（移植自原版媒体查询）
+   - 默认（宽屏 aspect-ratio > 1.5）: font-size 1px
+   - 中等（aspect-ratio <= 1.5）: font-size 2px（卡片变大填充高度）
+   - 窄屏（aspect-ratio <= 0.8）: font-size 2.8px（卡片更大） */
+@media screen and (max-aspect-ratio: 1.5/1) {
+  .work-photos,
+  .work-photos-row,
+  .work-photo-card {
+    font-size: 2px;
+  }
+}
+
+@media screen and (max-aspect-ratio: 0.8/1) {
+  .work-photos,
+  .work-photos-row,
+  .work-photo-card {
+    font-size: 2.8px;
+  }
+}
+
