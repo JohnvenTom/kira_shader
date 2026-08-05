@@ -1520,6 +1520,9 @@ body.camera-debug-mode .scroll-container {
   -webkit-user-select: none;
   -moz-user-select: none;
   -ms-user-select: none;
+  /* 3D 透视环境：让子元素 .work-hero-block 和 .work-photos 的
+     rotateX/rotateY 有近大远小的立体感（必须在父元素上设置） */
+  perspective: 1200px;
 }
 
 .work-detail-inner:active {
@@ -1626,7 +1629,9 @@ body.camera-debug-mode .scroll-container {
    - flex-direction: column 纵向排列 4 行
    - overflow hidden 裁切回绕的卡片（从对面出现前不可见）
    - font-size 作为 em 基准（媒体查询按窗口宽高比调整）
-   - transform: scale(...) 由 JS 写入适配视口宽度 */
+   - transform 同时包含 scale（JS resize 写入 --scale）和视差变形
+     （JS mousemove 写入 --px/--py/--rx/--ry），用 CSS 变量统一管理
+     避免直接写 style.transform 造成 scale 和视差互相覆盖 */
 .work-photos {
   position: absolute;
   display: flex;
@@ -1634,6 +1639,17 @@ body.camera-debug-mode .scroll-container {
   overflow: hidden;
   font-size: 1px;  /* em 基准：默认 1px（宽屏） */
   cursor: grab;
+  /* 视差变量由 JS mousemove 写入，scale 变量由 JS resize 写入 */
+  --px: 0px;
+  --py: 0px;
+  --rx: 0deg;
+  --ry: 0deg;
+  --scale: 1;
+  transform-style: preserve-3d;
+  /* scale + 视差位移 + 3D 旋转组合（CSS 变量变化时自动重算） */
+  transform: scale(var(--scale)) translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
 }
 
 .work-photos:active {

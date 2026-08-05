@@ -1222,7 +1222,9 @@ function WorkDetailPage({
     dims.photoWidth = cards[0].offsetWidth;
     dims.photoHeight = cards[0].offsetHeight;
     dims.scaleNums = document.body.offsetWidth / dims.standardWidth;
-    container.style.transform = `scale(${dims.scaleNums})`;
+    // 用 CSS 变量设置 scale，避免直接写 style.transform 覆盖视差变量
+    // （CSS 中 .work-photos 的 transform 同时包含 scale 和视差变形）
+    container.style.setProperty('--scale', String(dims.scaleNums));
 
     // 重置所有卡片偏移量并清除动画
     gsap.to(Array.from(cards), {
@@ -1477,17 +1479,20 @@ function WorkDetailPage({
   }, [detailOpen, resize]);
 
   /**
-   * 鼠标视差处理（标题 3D 变形）
+   * 鼠标视差处理（标题 + 卡片网格 3D 变形）
    *
-   * 功能：监听全局鼠标移动，写入 CSS 变量 --px/--py/--rx/--ry 到视差变形层，
-   *      驱动 .work-hero-title 做 3D 旋转 + 位移，营造视差感
+   * 功能：监听全局鼠标移动，同时驱动两层视差：
+   *   1. 标题层（.work-hero-block）：写入 --px/--py 位移 6px + --rx/--ry 旋转 ±6°
+   *   2. 卡片网格层（.work-photos）：写入 --px/--py 位移 14px + --rx/--ry 旋转 ±4°
+   *      幅度比标题更大，让卡片网格整体跟着鼠标倾斜，增强空间纵深感
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
    *  - 用 rAF 节流，避免高频 mousemove 引起重渲染
-   *  - 位移幅度 6px + 旋转 ±6°（与主页 hero-block 一致）
+   *  - 卡片网格的视差变量与 scale 变量在 CSS transform 中组合（不会互相覆盖）
+   *  - 旋转方向：鼠标在右上 → 网格向右倾斜（rotateY 正值）+ 向上仰（rotateX 负值）
    *  - 通过 mouseRef 共享鼠标坐标
    */
   useEffect(() => {
@@ -1497,12 +1502,21 @@ function WorkDetailPage({
       raf = requestAnimationFrame(() => {
         const nx = (e.clientX / window.innerWidth) * 2 - 1;
         const ny = (e.clientY / window.innerHeight) * 2 - 1;
-        const el = heroBlockRef.current;
-        if (el) {
-          el.style.setProperty('--px', `${nx * 6}px`);
-          el.style.setProperty('--py', `${ny * 6}px`);
-          el.style.setProperty('--rx', `${ny * 6}deg`);
-          el.style.setProperty('--ry', `${nx * 6}deg`);
+        // 标题层视差：6px 位移 + 6deg 旋转
+        const heroEl = heroBlockRef.current;
+        if (heroEl) {
+          heroEl.style.setProperty('--px', `${nx * 6}px`);
+          heroEl.style.setProperty('--py', `${ny * 6}px`);
+          heroEl.style.setProperty('--rx', `${ny * 6}deg`);
+          heroEl.style.setProperty('--ry', `${nx * 6}deg`);
+        }
+        // 卡片网格层视差：14px 位移 + 4deg 旋转（幅度更大，增强空间感）
+        const photosEl = photosRef.current;
+        if (photosEl) {
+          photosEl.style.setProperty('--px', `${nx * 14}px`);
+          photosEl.style.setProperty('--py', `${ny * 14}px`);
+          photosEl.style.setProperty('--rx', `${-ny * 4}deg`);
+          photosEl.style.setProperty('--ry', `${nx * 4}deg`);
         }
         mouseRef.current.x = nx;
         mouseRef.current.y = ny;
