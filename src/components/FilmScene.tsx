@@ -2235,8 +2235,8 @@ export function OfficeScene({
           - near/far 根据场景尺寸设置，让远处格子间逐渐淡入 */}
       <fog attach="fog" args={['#f5e6c8', totalDepth * 0.4, totalDepth * 1.2]} />
 
-      {/* 环境光：暖米黄调，与背景融合，让暗部保留暖色 */}
-      <ambientLight intensity={0.35} color="#f5e6c8" />
+      {/* 环境光：暖米黄调，与背景融合，让暗部保留暖色（压低避免整体过亮） */}
+      <ambientLight intensity={0.15} color="#f5e6c8" />
 
       {/* Key light：右上前方紫色主光（呼应 About Us section 的紫色 accentColor #b678ff）
           - 位置按模型尺寸缩放（180×140×43），让光真的照到桌子上
@@ -2244,7 +2244,7 @@ export function OfficeScene({
           - shadow camera 范围按场景尺寸设置，覆盖所有 8 个桌子 */}
       <directionalLight
         position={[totalWidth * 0.8, modelSize.y * 3, totalDepth * 0.6]}
-        intensity={2.0}
+        intensity={1.1}
         color="#d4b8ff"
         castShadow
         shadow-mapSize-width={2048}
@@ -2262,14 +2262,14 @@ export function OfficeScene({
           - 强度比 key 低，避免压平阴影 */}
       <directionalLight
         position={[-totalWidth * 0.6, modelSize.y * 2, totalDepth * 0.4]}
-        intensity={0.8}
+        intensity={0.45}
         color="#88aaff"
       />
 
       {/* Rim light：后方暖色轮廓光，让桌子边缘有金色描边，从暗背景中分离 */}
       <directionalLight
         position={[-totalWidth * 0.3, modelSize.y * 1.5, -totalDepth * 0.5]}
-        intensity={1.2}
+        intensity={0.7}
         color="#ffaa66"
       />
 
@@ -2282,7 +2282,7 @@ export function OfficeScene({
         <pointLight
           key={`overhead-${i}`}
           position={[0, modelSize.y * 1.3, z * GAP_Z]}
-          intensity={0.8}
+          intensity={0.4}
           distance={GAP_X * 1.2}
           color="#ffd89b"
         />
