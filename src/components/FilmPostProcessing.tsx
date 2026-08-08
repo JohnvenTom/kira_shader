@@ -213,10 +213,11 @@ const FilmShader = {
       // === 1. 桶形畸变 ===
       vec2 distortedUV = barrelDistort(uv, uLensDistortion, uLensDistortionBorder);
 
-      // UV 越界 → 黑色（避免采样到画面外杂讯）
+      // UV 越界 → 透明（避免采样到画面外杂讯）
+      // 注意：必须输出 alpha=0，否则透明背景会变成不透明黑色，遮挡下层 Canvas
       if (distortedUV.x < 0.0 || distortedUV.x > 1.0 ||
           distortedUV.y < 0.0 || distortedUV.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
       }
 
@@ -236,9 +237,19 @@ const FilmShader = {
       float r = texture2D(tDiffuse, distortedUV + vec2(0.0, -caOffset)).r;
       float g = texture2D(tDiffuse, distortedUV).g;
       float b = texture2D(tDiffuse, distortedUV + vec2(0.0, caOffset)).b;
-      vec4 shiftedColor = vec4(r, g, b, 1.0);
+      // 保留输入纹理的 alpha，让透明背景保持透明（用于叠加在纸张 Canvas 上层）
+      float inputAlpha = texture2D(tDiffuse, distortedUV).a;
+      vec4 shiftedColor = vec4(r, g, b, inputAlpha);
       vec4 originalColor = texture2D(tDiffuse, distortedUV);
       vec4 color = mix(originalColor, shiftedColor, edgeMask);
+
+      // 透明背景保护：如果输入 alpha 接近 0，说明该像素是透明背景（无碎纸机模型），
+      // 直接输出透明，跳过所有后续效果（bloom/motionblur 已把 alpha 污染为 1）
+      // 这样下层纸张 Canvas 可见
+      if (inputAlpha < 0.01) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+        return;
+      }
 
       // === 3. 调色 ===
       // 3a. pow 伽马
@@ -333,6 +344,13 @@ interface FilmPostProcessingProps {
   params: FilmFXParams;
   /** 是否启用后处理 */
   enabled?: boolean;
+  /**
+   * 透明模式：用于叠加在另一个 Canvas 上层的场景（如碎纸机）
+   * - 跳过 UnrealBloomPass 和 MotionBlurPass（它们会污染 alpha 通道）
+   * - 只保留镜头畸变 + 色散 + 暗角 + 颗粒
+   * - 透明背景保持透明，露出下层 Canvas
+   */
+  transparent?: boolean;
 }
 
 /**
@@ -358,7 +376,7 @@ interface FilmPostProcessingProps {
  *  - Bloom 动态闪烁：1.5 × base + 0.03 × base × (4 sin 波) + bloomBoost
  *  - MotionBlur 帧率独立：以 120fps 为基准，dt 大于基准时减弱，小于时增强
  */
-export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessingProps) {
+export function FilmPostProcessing({ params, enabled = true, transparent = false }: FilmPostProcessingProps) {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const filmPassRef = useRef<ShaderPass | null>(null);
@@ -374,6 +392,9 @@ export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessin
 
   // 创建 EffectComposer + 各 Pass
   useMemo(() => {
+    // eslint-disable-next-line no-console
+    console.log('[FilmPostProcessing] useMemo executing, transparent=', transparent, 'hasGl=', !!gl, 'hasScene=', !!scene, 'hasCamera=', !!camera);
+    try {
     // ping-pong RT（HalfFloatType 保证 HDR 精度）
     const rtOptions = {
       depthBuffer: false,
@@ -393,23 +414,26 @@ export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessin
     const c = new EffectComposer(gl);
     c.addPass(new RenderPass(scene, camera));
 
-    // Bloom：让屏幕 emissive 自发光部分扩散彩色光晕
-    // 顺序：Bloom 必须在色散/畸变前，否则色差会把光晕也拆开
-    const bloom = new UnrealBloomPass(
-      new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
-      params.bloomIntensity,
-      params.bloomRadius,
-      params.bloomThreshold
-    );
-    c.addPass(bloom);
-    bloomRef.current = bloom;
+    // Bloom 和 MotionBlur 会污染 alpha 通道（假设不透明场景），
+    // 透明模式（叠加 Canvas）下跳过它们，只保留镜头畸变 + 色散 + 暗角 + 颗粒
+    if (!transparent) {
+      // Bloom（参考 shader.se 的胶片过曝感）
+      const bloom = new UnrealBloomPass(
+        new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
+        params.bloomIntensity,
+        params.bloomRadius,
+        params.bloomThreshold
+      );
+      c.addPass(bloom);
+      bloomRef.current = bloom;
 
-    // MotionBlur（ping-pong）
-    const motionPass = new ShaderPass(MotionBlurShader);
-    motionPass.uniforms.tPrevious.value = prevRTRef.current.texture;
-    motionPass.uniforms.uStrength.value = params.motionBlur;
-    c.addPass(motionPass);
-    motionPassRef.current = motionPass;
+      // MotionBlur（ping-pong）
+      const motionPass = new ShaderPass(MotionBlurShader);
+      motionPass.uniforms.tPrevious.value = prevRTRef.current.texture;
+      motionPass.uniforms.uStrength.value = params.motionBlur;
+      c.addPass(motionPass);
+      motionPassRef.current = motionPass;
+    }
 
     // Film shader：畸变 + 色差 + 调色 + 颗粒 + 暗角
     const filmPass = new ShaderPass(FilmShader);
@@ -418,7 +442,13 @@ export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessin
     filmPassRef.current = filmPass;
 
     composerRef.current = c;
-  }, [gl, scene, camera]);
+    // eslint-disable-next-line no-console
+    console.log('[FilmPostProcessing] EffectComposer created successfully, transparent=', transparent);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[FilmPostProcessing] useMemo ERROR:', err);
+    }
+  }, [gl, scene, camera, transparent]);
 
   // 同步 size 变化
   useEffect(() => {
@@ -476,7 +506,11 @@ export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessin
 
   // 每帧渲染
   useFrame((state, delta) => {
-    if (!enabled || !composerRef.current) return;
+    if (!enabled || !composerRef.current) {
+      // eslint-disable-next-line no-console
+      console.log('[FilmPostProcessing] SKIP render: enabled=', enabled, 'hasComposer=', !!composerRef.current);
+      return;
+    }
 
     const time = state.clock.elapsedTime;
 
@@ -520,6 +554,18 @@ export function FilmPostProcessing({ params, enabled = true }: FilmPostProcessin
 
     // 渲染
     composerRef.current.render();
+
+    // === DEBUG: 在 composer.render() 后立即 readPixels 检查渲染结果 ===
+    // 只在 transparent 模式下检查（粉碎机 Canvas）
+    if (transparent) {
+      const dbgFrame = (state as any).clock.elapsedTime;
+      if (Math.floor(dbgFrame * 2) % 2 === 0) {
+        const px = new Uint8Array(4);
+        gl.readPixels(Math.floor(gl.domElement.width / 2), Math.floor(gl.domElement.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        // eslint-disable-next-line no-console
+        console.log('[FilmPostProcessing] post-render center pixel:', px[0], px[1], px[2], px[3]);
+      }
+    }
 
     // ping-pong：把当前渲染结果拷贝到 prevRT，下一帧用作 tPrevious
     // 注意：composer.render() 后 gl 的当前 RT 已是屏幕，需要 blit 到 prevRT

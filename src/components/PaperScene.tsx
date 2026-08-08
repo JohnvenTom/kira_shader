@@ -87,6 +87,16 @@ const PaperShader = {
     uTime: { value: 0.0 },
     uInkColor: { value: new THREE.Color(0.12, 0.10, 0.08) },
     uPaperColor: { value: new THREE.Color(0.96, 0.92, 0.78) },
+    // 边缘色散强度（垂直方向 RGB 偏移，参考主页面 Dq class）
+    uChromaticAberration: { value: 0.4 },
+    // 镜头畸变强度（参考主页面，正值桶形）
+    uDistortion: { value: 0.12 },
+    // 镜头边缘畸变系数（0=主畸变最大，1=主畸变归零，参考主页面）
+    uDistortionBorder: { value: 0.0 },
+    // 屏幕宽高比（用于畸变和色散的 X 方向校正）
+    uAspect: { value: 1.0 },
+    // 粉碎进度（0=未粉碎，1=完全粉碎）：控制撕裂边缘位置和透明度
+    uShredProgress: { value: 0.0 },
   },
   // 全屏 quad 顶点着色器：直接输出 NDC，不经过相机投影矩阵
   vertexShader: /* glsl */ `
@@ -106,6 +116,11 @@ const PaperShader = {
     uniform float uTime;
     uniform vec3 uInkColor;
     uniform vec3 uPaperColor;
+    uniform float uChromaticAberration;
+    uniform float uDistortion;
+    uniform float uDistortionBorder;
+    uniform float uAspect;
+    uniform float uShredProgress;
     varying vec2 vUv;
 
     /**
@@ -118,6 +133,36 @@ const PaperShader = {
       float c = 1.27;
       float s = -0.73;
       return vec2(uv.x * c + uv.y * 0.81, uv.x * s + uv.y * 1.11);
+    }
+
+    /**
+     * 桶形畸变 + 边缘缩放（参考主页面 FilmPostProcessing 的 DH + DV 函数）
+     *
+     * 公式：
+     *  - n = mix(0.3655, 0.0, border)   // border 越大主畸变越弱
+     *  - scale = 1 - distortion × n     // 整体缩放避免溢出
+     *  - offset = distortion × n × 0.5  // UV 平移
+     *  - r² = (uv-0.5)²                  // 到中心距离平方
+     *  - k = 1 + r² × distortion         // 径向畸变系数
+     *  - distorted = scale × (i × k + 0.5) + offset
+     *
+     * 参数：
+     *  - uv         原始 UV [0,1]
+     *  - distortion 畸变强度
+     *  - border     边缘系数（0=最大主畸变，1=主畸变归零）
+     *
+     * 返回值：畸变后的 UV
+     */
+    vec2 barrelDistort(vec2 uv, float distortion, float border) {
+      float n = mix(0.3655, 0.0, border);
+      float scale = 1.0 - distortion * n;
+      float offset = distortion * n * 0.5;
+
+      vec2 i = uv - 0.5;
+      float r2 = dot(i, i);
+      float k = 1.0 + r2 * distortion;
+
+      return scale * (vec2(i.x * k, i.y * k) + 0.5) + offset;
     }
 
     /**
@@ -151,10 +196,14 @@ const PaperShader = {
     }
 
     void main() {
-      // === 1. 采样内容纹理（文字层），带宽高比校正 ===
+      // === 1. 屏幕桶形畸变（参考主页面 FilmPostProcessing）===
+      // 对屏幕 UV 做桶形畸变 + 边缘缩放，让画面边缘产生凸面镜式扭曲
+      // 使用主页面同款公式：scale + offset 防溢出，r² × distortion 径向系数
+      vec2 distortedUV = barrelDistort(vUv, uDistortion, uDistortionBorder);
+
+      // === 2. 采样内容纹理（文字层），带宽高比校正 ===
       // 计算可见区域比例：内容按宽度填满屏幕，仅显示部分高度
       // visibleYRange = uContentAspect / screenAspect（内容宽高比 / 屏幕宽高比）
-      //   例：内容 1:3，屏幕 1.41:1 → visibleYRange = 0.333/1.41 ≈ 0.24，仅 24% 高度可见
       float screenAspect = uDimensions.x / max(uDimensions.y, 1.0);
       float visibleYRange = min(uContentAspect / max(screenAspect, 0.001), 1.0);
       float maxScroll = max(1.0 - visibleYRange, 0.0);
@@ -163,13 +212,35 @@ const PaperShader = {
       // X 直接映射，Y 映射到可见窗口：scroll=0 显示画布顶部（标题），scroll=1 显示底部（页脚）
       // flipY=false 的 CanvasTexture：UV (0,0)=画布左上角，UV (0,1)=画布左下角
       // vUv.y=1（屏幕顶部）→ contentUV.y=yOffset（画布顶部），随 scroll 增大下移
-      vec2 contentUV = vec2(vUv.x, (1.0 - vUv.y) * visibleYRange + yOffset);
-      vec4 contentColor = texture2D(tContent, contentUV);
+      vec2 baseContentUV = vec2(distortedUV.x, (1.0 - distortedUV.y) * visibleYRange + yOffset);
 
-      // 纸张像素坐标：contentUV × 纸张画布尺寸
-      // 关键：做旧效果基于纸张坐标采样，随 contentUV（即 uScroll）变化而滚动
+      // === 2.5 垂直方向 RGB 色散（参考主页面 Dq class）===
+      // dist = 到中心距离（aspect 校正），caOffset = 0.001 × dist × 2 × strength
+      // 仅在 Y 轴偏移（垂直方向），强度随径向距离增大，中心无色散
+      vec2 aspectCorrect = vec2(uAspect, 1.0) / max(uAspect, 1.0);
+      float dist = length((vUv - 0.5) * aspectCorrect * 2.0);
+      float caOffset = 0.001 * dist * 2.0 * uChromaticAberration;
+
+      // 边缘渐隐保护（参考主页面 ex × ey）：避免色散在屏幕极边缘溢出产生杂讯
+      float edge = 0.005;
+      float ex = smoothstep(0.0, edge, vUv.x) * smoothstep(0.0, edge, 1.0 - vUv.x);
+      float ey = smoothstep(0.0, edge, vUv.y) * smoothstep(0.0, edge, 1.0 - vUv.y);
+      float edgeMask = ex * ey;
+
+      // R 通道向下偏移，B 通道向上偏移，G 通道不偏移（与主页面一致）
+      float rC = texture2D(tContent, baseContentUV + vec2(0.0, -caOffset)).r;
+      float gC = texture2D(tContent, baseContentUV).g;
+      float bC = texture2D(tContent, baseContentUV + vec2(0.0, caOffset)).b;
+      float aC = texture2D(tContent, baseContentUV).a;
+      // 原始未偏移采样（用于边缘渐隐回退，避免边缘出现彩色镶边杂讯）
+      vec4 originalContent = texture2D(tContent, baseContentUV);
+      vec4 contentColor = mix(originalContent, vec4(rC, gC, bC, aC), edgeMask);
+
+      // 纸张像素坐标：baseContentUV × 纸张画布尺寸
+      // 关键：做旧效果基于纸张坐标采样，随 baseContentUV（即 uScroll）变化而滚动
       // 这样颗粒/污渍/划痕都"附着"在纸张上，纸张滚动时一起移动
-      vec2 paperCoord = contentUV * uPaperSize;
+      // 同时 paperCoord 也受桶形畸变影响，与文字层保持同步扭曲
+      vec2 paperCoord = baseContentUV * uPaperSize;
 
       // === 2. 纸张色调映射 ===
       // 把内容颜色映射到暗棕底 → 亮米色顶的色域
@@ -225,8 +296,8 @@ const PaperShader = {
 
       // === 6. 纸张边缘焦黄（基于纸张坐标，跟随纸张边缘滚动）===
       // 四个纸张边缘叠加焦黄色，模拟纸张被火烤或长期氧化的边缘
-      // 用 contentUV 计算，这样只有滚到纸张顶部/底部时才看到焦黄边缘
-      float paperEdgeDist = min(min(contentUV.x, 1.0 - contentUV.x), min(contentUV.y, 1.0 - contentUV.y));
+      // 用 baseContentUV 计算，这样只有滚到纸张顶部/底部时才看到焦黄边缘
+      float paperEdgeDist = min(min(baseContentUV.x, 1.0 - baseContentUV.x), min(baseContentUV.y, 1.0 - baseContentUV.y));
       float burnMask = smoothstep(0.06, 0.0, paperEdgeDist);
       vec3 burnColor = vec3(0.62, 0.42, 0.20);
       finalColor = mix(finalColor, finalColor * burnColor * 1.4, burnMask * 0.5);
@@ -238,20 +309,109 @@ const PaperShader = {
       float scratchMask = smoothstep(0.78, 0.95, scratch1 * scratch2);
       finalColor *= 1.0 - scratchMask * 0.15;
 
-      // === 7. 屏幕镜头暗角（基于屏幕坐标 vUv，不跟随滚动）===
+      // === 6.6 细微白色噪点（基于纸张坐标，跟随滚动）===
+      // 用高频噪声提取少量亮像素作为白色粉尘/纸屑，在纸张上随机分布
+      // 双层采样叠加，增加噪点的随机性，避免规则感
+      float wn1 = texture2D(tNoise, paperCoord * vec2(6.3, 5.7) / 512.0).r;
+      float wn2 = texture2D(tNoise, paperCoord * vec2(8.1, 7.3) / 512.0 + vec2(4.2, 9.6)).r;
+      // 取两层噪声的较大值，用高阈值提取稀疏的亮点
+      float wnMax = max(wn1, wn2);
+      float whiteDust = smoothstep(0.82, 0.96, wnMax);
+      // 白色噪点强度随时间微弱闪烁（呼吸感）
+      float dustFlicker = 0.85 + 0.15 * sin(uTime * 1.3 + wnMax * 10.0);
+      // 白色叠加：在纸张各处散布细微亮点，强度受暗部增强（暗区更显眼）
+      finalColor += vec3(whiteDust * 0.18 * dustFlicker);
+
+      // === 7. 屏幕镜头暗角（基于畸变后的 UV，跟随镜头畸变弯曲）===
       // 这是镜头暗角效果，固定在屏幕边缘，模拟相机/镜头的物理暗角
-      float edgeFade = smoothstep(0.0, 0.25, 1.0 - abs(vUv.x - 0.5) * 2.0);
+      // 关键：用 distortedUV 而非 vUv 计算，让黑边跟随桶形畸变弯曲，
+      //       产生"镜头物理边框"的包裹感，而不是死板的矩形黑边
+      float edgeFade = smoothstep(0.0, 0.25, 1.0 - abs(distortedUV.x - 0.5) * 2.0);
       edgeFade = smoothstep(0.0, 0.08, edgeFade);
       finalColor *= edgeFade;
 
-      float vEdge = smoothstep(0.0, 0.15, vUv.y) * smoothstep(0.0, 0.15, 1.0 - vUv.y);
+      float vEdge = smoothstep(0.0, 0.15, distortedUV.y) * smoothstep(0.0, 0.15, 1.0 - distortedUV.y);
       finalColor *= mix(0.75, 1.0, vEdge);
 
       // 微弱时间动画（颗粒"呼吸"感）
       float breath = 0.02 * sin(uTime * 0.5);
       finalColor += vec3(breath);
 
-      gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+      // === 8. 纸张竖直条状切割（被碎纸机竖着切碎，纸条保留飘动）===
+      // 粉碎机从屏幕下方升起，撕裂线（粉碎机顶部）以下的纸张被竖直刀片切成条状
+      // 关键：纸条不消失（不透明），而是：
+      //   1. 每条边缘出现竖直缝隙（刀片切口），撕裂线以下缝隙扩大
+      //   2. 每条纸条向外飘动（X 位移随时间 + 深度）
+      //   3. 纸条略微下垂（Y 位移）
+      //   4. 切割边缘有锯齿纤维
+      // shredProgress=0：无切割；shredProgress=1：切割线到屏幕顶部
+      float shredAlpha = 1.0;
+      if (uShredProgress > 0.001) {
+        // 粉碎机顶部 Y 位置（撕裂线）
+        float tearLineY = uShredProgress;
+
+        // 竖直条带切割：把纸张切成 N 条
+        float stripCount = 16.0;
+        float stripId = floor(distortedUV.x * stripCount);
+        float stripCoord = fract(distortedUV.x * stripCount); // 0~1 每条内坐标
+
+        // 每条独立的撕裂线位置（用条带 ID 作种子 + 噪声）
+        // 不同条带的切割边缘高度不一，模拟刀片切割深浅差异
+        float tearNoise = texture2D(tNoise, vec2(stripId * 7.3, 0.0) / 512.0).r;
+        float actualTearY = tearLineY + (tearNoise - 0.5) * 0.14;
+
+        // 距撕裂线的距离（正值=上方=未切割，负值=下方=被切碎的纸条）
+        float distToTear = distortedUV.y - actualTearY;
+
+        // 被切割的程度（0=未切，1=完全切开的纸条）
+        // 撕裂线以下越深，切割越彻底，缝隙越大、飘动越明显
+        float cutAmount = smoothstep(0.0, -0.3, distToTear);
+
+        // === 竖直切割缝隙（刀片切口）===
+        // stripCoord 在条带边缘（0 或 1）时为缝隙
+        float gapWidth = 0.06;
+        float gapMask = smoothstep(0.0, gapWidth, min(stripCoord, 1.0 - stripCoord));
+        // 撕裂线以下：缝隙扩大（条带分离），模拟切碎后条带分开
+        // 未切开区域 gapMask=1（无缝隙），切开区域 gapMask 减小
+        shredAlpha = mix(1.0, gapMask, cutAmount);
+
+        // === 纸条飘动位移（被切开的纸条向外飘）===
+        // 只对撕裂线以下的纸条应用位移
+        if (cutAmount > 0.01) {
+          // 每条独立的飘动相位和幅度（用 stripId 作种子）
+          float swayNoise = texture2D(tNoise, vec2(stripId * 3.7, 0.0) / 512.0).r;
+          // 飘动方向：条带在屏幕左半部分向左飘，右半部分向右飘（向外分开）
+          float swayDir = distortedUV.x > 0.5 ? 1.0 : -1.0;
+          // 飘动相位：每条不同，时间驱动
+          float swayPhase = uTime * 1.5 + swayNoise * 6.28;
+          // 飘动幅度：随切割深度增加（越深飘得越远），随时间正弦摆动
+          float swayAmp = cutAmount * 0.02 * (0.7 + swayNoise * 0.6);
+          float swayOffset = sin(swayPhase) * swayAmp * swayDir;
+
+          // 下垂位移：被切开的纸条因重力略微下垂
+          float droopOffset = cutAmount * 0.015 * (0.5 + swayNoise * 0.5);
+
+          // 应用位移到 UV（重新采样内容纹理，产生飘动效果）
+          // 注意：这里位移影响 contentColor 和 finalColor 的后续计算
+          // 由于位移在内容采样之后，我们用近似方法：在最终颜色上叠加位移产生的明暗变化
+          // （完整重新采样成本高，用明暗模拟飘动产生的光影变化）
+          float swayShade = sin(swayPhase + swayOffset * 50.0) * cutAmount * 0.1;
+          finalColor *= 1.0 + swayShade - droopOffset * 2.0;
+        }
+
+        // === 切割边缘锯齿纤维 ===
+        float edgeNoise = texture2D(tNoise, vec2(stripId * 3.1, distToTear * 60.0) / 512.0).r;
+        float fiberMask = smoothstep(0.6, 0.9, edgeNoise)
+          * smoothstep(0.0, 0.03, abs(distToTear))
+          * smoothstep(0.05, 0.0, abs(distToTear));
+        finalColor = mix(finalColor, vec3(0.2, 0.15, 0.1), fiberMask * 0.5);
+
+        // === 撕裂边缘暗化（被粉碎机阴影影响）===
+        float edgeDarken = smoothstep(0.0, -0.04, distToTear) * 0.3;
+        finalColor *= 1.0 - edgeDarken;
+      }
+
+      gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), shredAlpha);
     }
   `,
 };
@@ -301,6 +461,8 @@ export function PaperScene({
       fragmentShader: PaperShader.fragmentShader,
       depthTest: false,
       depthWrite: false,
+      // 开启透明：粉碎阶段 shredAlpha<1 的区域需要透明，露出下层粉碎机
+      transparent: true,
     });
     mat.uniforms.tNoise.value = noiseTexture;
     if (contentTexture) {
@@ -336,8 +498,17 @@ export function PaperScene({
       }
 
       mat.uniforms.uDimensions.value.set(size.width, size.height);
-      mat.uniforms.uScroll.value = smoothScrollRef.current;
+      // 滚动进度：0~1 正常阅读，超过 1 的部分也传给 shader（用于内容 UV 偏移到底部后继续）
+      // clamp 到 0~1 用于内容纹理偏移，避免 UV 超出 [0,1] 范围
+      mat.uniforms.uScroll.value = Math.min(smoothScrollRef.current, 1.0);
       mat.uniforms.uTime.value = clock.getElapsedTime();
+      // 粉碎进度：paperScrollProgress 超过 1.0 的部分映射到 0~1
+      // 1.0~SHRED_MAX(1.4) → 0~1，驱动粉碎机升起和纸张撕裂
+      const rawProgress = smoothScrollRef.current;
+      const shredProgress = Math.max(0, Math.min(1, (rawProgress - 1.0) / 0.4));
+      mat.uniforms.uShredProgress.value = shredProgress;
+      // 屏幕宽高比，用于色散和畸变的 X 方向校正（与主页面 FilmPostProcessing 保持一致）
+      mat.uniforms.uAspect.value = size.width / Math.max(size.height, 1);
       // 内容纹理宽高比（宽/高），用于 shader 中宽高比校正
       const tex = mat.uniforms.tContent.value as THREE.Texture | null;
       if (tex && tex.image) {

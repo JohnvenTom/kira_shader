@@ -10,6 +10,7 @@ import {
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
+import { ShredderSceneSync } from './components/ShredderScene';
 import gsap from 'gsap';
 
 /**
@@ -1653,7 +1654,7 @@ function createPaperContentTexture(): THREE.CanvasTexture {
 
   // === 顶部：编号标签（右上角，小字等宽体） ===
   ctx.fillStyle = '#000000';
-  ctx.font = '500 15px "Courier New", monospace';
+  ctx.font = '500 13px "Courier New", monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.fillText('№ 01 — STUDIO MANIFESTO', rightX, y);
@@ -1661,38 +1662,38 @@ function createPaperContentTexture(): THREE.CanvasTexture {
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(rightX, y + 10);
-  ctx.lineTo(rightX + 170, y + 10);
+  ctx.moveTo(rightX, y + 8);
+  ctx.lineTo(rightX + 150, y + 8);
   ctx.stroke();
 
   y = 380;
 
   // === 主标题（左对齐，大字号，两行错落） ===
-  ctx.font = 'bold 64px Georgia, "Times New Roman", serif';
+  ctx.font = 'bold 52px Georgia, "Times New Roman", serif';
   ctx.textBaseline = 'alphabetic';
   // 第一行
   ctx.fillText('Creative', leftX, y);
-  y += 76;
+  y += 62;
   // 第二行：右缩进制造错落感（非对称）
-  ctx.fillText('Studio.', leftX + 48, y);
-  y += 70;
+  ctx.fillText('Studio.', leftX + 40, y);
+  y += 58;
 
   // === 副标题（左对齐，细体斜体） ===
-  ctx.font = 'italic 28px Georgia, "Times New Roman", serif';
-  y = wrapText('Plugged into the Future.', leftX, y, contentW, 36);
-  y += 24;
+  ctx.font = 'italic 22px Georgia, "Times New Roman", serif';
+  y = wrapText('Plugged into the Future.', leftX, y, contentW, 30);
+  y += 20;
 
   // === 分隔线（仅左侧短粗线，非居中） ===
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(leftX, y);
-  ctx.lineTo(leftX + 100, y);
+  ctx.lineTo(leftX + 84, y);
   ctx.stroke();
-  y += 70;
+  y += 56;
 
   // === 正文段落（左对齐，自动换行确保不超出右边界） ===
-  ctx.font = '24px Georgia, "Times New Roman", serif';
+  ctx.font = '19px Georgia, "Times New Roman", serif';
   const paragraphs = [
     'We are a creative technology studio crafting interactive 3D experiences and AI-driven solutions for the modern web.',
     '',
@@ -1702,61 +1703,61 @@ function createPaperContentTexture(): THREE.CanvasTexture {
   ];
   for (const line of paragraphs) {
     if (line === '') {
-      y += 24;
+      y += 20;
       continue;
     }
-    y = wrapText(line, leftX, y, contentW, 38);
+    y = wrapText(line, leftX, y, contentW, 30);
   }
 
-  y += 40;
+  y += 32;
 
   // === 中段引用块（右缩进，斜体，左侧粗竖线装饰，自动换行） ===
   const quoteY = y;
-  ctx.font = 'italic 26px Georgia, "Times New Roman", serif';
+  ctx.font = 'italic 21px Georgia, "Times New Roman", serif';
   const quoteEndY = wrapText(
     '"Serious about business, playful by design."',
     rightX,
     quoteY,
     quoteW,
-    34
+    28
   );
   // 引用块左侧粗竖线（高度跟随文字实际行数）
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.moveTo(rightX - 20, quoteY - 22);
-  ctx.lineTo(rightX - 20, quoteEndY - 14);
+  ctx.moveTo(rightX - 18, quoteY - 18);
+  ctx.lineTo(rightX - 18, quoteEndY - 12);
   ctx.stroke();
-  y = quoteEndY + 80;
+  y = quoteEndY + 64;
 
   // === 三栏数据条（非对称：宽窄宽） ===
-  y += 24;
+  y += 20;
   const stats = [
     { num: '08', label: 'YEARS', x: leftX },
-    { num: '120+', label: 'PROJECTS', x: leftX + 145 },
-    { num: '∞', label: 'SHADERS', x: leftX + 310 },
+    { num: '120+', label: 'PROJECTS', x: leftX + 125 },
+    { num: '∞', label: 'SHADERS', x: leftX + 270 },
   ];
   ctx.textBaseline = 'alphabetic';
   for (const s of stats) {
-    ctx.font = 'bold 42px Georgia, "Times New Roman", serif';
+    ctx.font = 'bold 34px Georgia, "Times New Roman", serif';
     ctx.fillText(s.num, s.x, y);
-    ctx.font = '500 14px "Courier New", monospace';
-    ctx.fillText(s.label, s.x, y + 24);
+    ctx.font = '500 12px "Courier New", monospace';
+    ctx.fillText(s.label, s.x, y + 20);
   }
-  y += 110;
+  y += 90;
 
   // === 次级标题（右对齐，制造视觉反转） ===
-  ctx.font = 'bold 36px Georgia, "Times New Roman", serif';
+  ctx.font = 'bold 30px Georgia, "Times New Roman", serif';
   ctx.textAlign = 'right';
   ctx.fillText('Based in Sweden.', RIGHT_LIMIT, y);
-  y += 46;
-  ctx.font = 'italic 22px Georgia, "Times New Roman", serif';
+  y += 38;
+  ctx.font = 'italic 18px Georgia, "Times New Roman", serif';
   ctx.fillText('Working worldwide.', RIGHT_LIMIT, y);
-  y += 56;
+  y += 46;
 
   // === 正文续（左对齐，自动换行） ===
   ctx.textAlign = 'left';
-  ctx.font = '24px Georgia, "Times New Roman", serif';
+  ctx.font = '19px Georgia, "Times New Roman", serif';
   const more = [
     'We believe the web should feel alive — tactile, responsive, and rich with detail. Every pixel is an opportunity to delight.',
     '',
@@ -1766,49 +1767,49 @@ function createPaperContentTexture(): THREE.CanvasTexture {
   ];
   for (const line of more) {
     if (line === '') {
-      y += 24;
+      y += 20;
       continue;
     }
-    y = wrapText(line, leftX, y, contentW, 38);
+    y = wrapText(line, leftX, y, contentW, 30);
   }
 
-  y += 48;
+  y += 40;
 
   // === 装饰几何块（非对称：左下角实心方块 + 右侧空心圆） ===
   ctx.fillStyle = '#000000';
-  ctx.fillRect(leftX, y, 48, 48);
+  ctx.fillRect(leftX, y, 40, 40);
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(RIGHT_LIMIT - 48, y + 24, 28, 0, Math.PI * 2);
+  ctx.arc(RIGHT_LIMIT - 40, y + 20, 24, 0, Math.PI * 2);
   ctx.stroke();
-  y += 96;
+  y += 80;
 
   // === 正文续（自动换行） ===
-  ctx.font = '24px Georgia, "Times New Roman", serif';
+  ctx.font = '19px Georgia, "Times New Roman", serif';
   y = wrapText(
     'Get in touch — let’s build something that feels like the future, today.',
     leftX,
     y,
     contentW,
-    38
+    30
   );
 
   // === 底部：联系信息 + 滚回提示（左右分布，非对称） ===
-  const footerY = H - 150;
+  const footerY = H - 130;
 
   // 左侧：联系邮箱
-  ctx.font = '500 17px "Courier New", monospace';
+  ctx.font = '500 14px "Courier New", monospace';
   ctx.fillText('hello@shader.se', leftX, footerY);
-  ctx.font = 'italic 15px Georgia, "Times New Roman", serif';
-  ctx.fillText('Norrköping, Sweden', leftX, footerY + 28);
+  ctx.font = 'italic 13px Georgia, "Times New Roman", serif';
+  ctx.fillText('Norrköping, Sweden', leftX, footerY + 24);
 
   // 右侧：滚回提示 + 编号（右对齐到 RIGHT_LIMIT）
   ctx.textAlign = 'right';
-  ctx.font = '500 15px "Courier New", monospace';
+  ctx.font = '500 13px "Courier New", monospace';
   ctx.fillText('↑ SCROLL UP TO RETURN', RIGHT_LIMIT, footerY);
-  ctx.font = 'bold 26px Georgia, "Times New Roman", serif';
-  ctx.fillText('01 / 04', RIGHT_LIMIT, footerY + 36);
+  ctx.font = 'bold 22px Georgia, "Times New Roman", serif';
+  ctx.fillText('01 / 04', RIGHT_LIMIT, footerY + 30);
   ctx.textAlign = 'left';
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -1848,32 +1849,49 @@ function PaperDetailPage({
 }) {
   // paper 详情页内部独立滚动容器 ref
   const paperScrollRef = useRef<HTMLDivElement>(null);
-  // paper 详情页内部滚动进度 0~1（驱动内容纹理 UV 偏移）
+  // paper 详情页内部滚动进度（0~1 正常阅读，1~SHRED_MAX 粉碎阶段，驱动内容 UV 偏移 + 粉碎机升起）
   const paperScrollProgress = useRef(0);
+  // 粉碎阶段最大进度（超过 1.0 后进入粉碎，1.0~SHRED_MAX 粉碎机从底部升起到顶部）
+  const SHRED_MAX = 1.4;
   // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
   const atTopRef = useRef(true);
   // paper-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
   const paperInnerRef = useRef<HTMLDivElement>(null);
+  // 粉碎阶段累积的额外 progress（超过 1 的部分，由 wheel 事件累加）
+  const overflowProgressRef = useRef(0);
 
   // 内容纹理（Canvas 2D 绘制的文字，只创建一次）
   const contentTexture = useMemo(() => createPaperContentTexture(), []);
 
+  // 碎纸机 Canvas 的后处理参数（镜头畸变 + 边缘模糊 + 暗角，与主页面一致）
+  const shredderFilmParams = useMemo<FilmFXParams>(() => ({ ...DEFAULT_FILM_PARAMS }), []);
+
   /**
    * paper 详情页内部滚动事件处理
    *
-   * 功能：读取 paperScrollRef 的 scrollTop，计算 0~1 的进度，
-   *      写入 paperScrollProgress.current（驱动着色器内容 UV 偏移）
+   * 功能：读取 paperScrollRef 的 scrollTop，计算 0~SHRED_MAX 的进度，
+   *      写入 paperScrollProgress.current：
+   *        - 0~1：正常阅读阶段，驱动内容纹理 UV 偏移（文字滚动）
+   *        - 1~SHRED_MAX：粉碎阶段，驱动粉碎机升起 + 纸张被撕碎 mask
+   *      滚到顶且继续上滑时允许冒泡到外层退出详情页
    *
    * 参数：无
    * 返回值：无
+   *
+   * 注意事项：
+   *  - scroll 事件在浏览器中是异步触发的（当前事件循环结束后下一帧触发），
+   *    而 wheel handler 中已经设置了 paperScrollProgress.current = 1.0 + overflow。
+   *    如果这里不加 overflow，会把 wheel handler 设置的粉碎进度覆盖回 1.0，
+   *    导致粉碎机永远不升起。因此这里也读取 overflowProgressRef 保持一致。
    */
   const handlePaperScroll = useCallback(() => {
     const el = paperScrollRef.current;
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
     const progress = max > 0 ? el.scrollTop / max : 0;
-    const clamped = Math.max(0, Math.min(1, progress));
-    paperScrollProgress.current = clamped;
+    // 最终 progress = scrollTop/max + overflow（粉碎阶段累积的额外进度）
+    const finalProgress = Math.max(0, Math.min(SHRED_MAX, progress + overflowProgressRef.current));
+    paperScrollProgress.current = finalProgress;
     atTopRef.current = el.scrollTop <= 0;
   }, []);
 
@@ -1903,6 +1921,7 @@ function PaperDetailPage({
     const raf = requestAnimationFrame(() => {
       el.scrollTop = 0;
       paperScrollProgress.current = 0;
+      overflowProgressRef.current = 0;
       atTopRef.current = true;
     });
     return () => cancelAnimationFrame(raf);
@@ -1912,8 +1931,11 @@ function PaperDetailPage({
    * paper 详情页根元素 wheel 事件拦截
    *
    * 功能：在 paper-detail-inner 根元素上拦截 wheel 事件，手动滚动
-   *      paper-scroll-container。已滚到顶且继续上滑时允许冒泡到 overlay，
-   *      让外层 wheel 转发逻辑触发退出详情页。
+   *      paper-scroll-container。
+   *      - 正常阶段（progress 0~1）：滚轮直接驱动 scrollTop
+   *      - 粉碎阶段（progress 1~SHRED_MAX）：浏览器 scrollTop 已达 max 无法继续，
+   *        用 overflowProgressRef 累加超出的 deltaY，映射成 progress 超过 1
+   *      - 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出
    *
    * 参数：无
    * 返回值：无
@@ -1924,6 +1946,26 @@ function PaperDetailPage({
     const onWheel = (e: WheelEvent) => {
       const scrollEl = paperScrollRef.current;
       if (!scrollEl) return;
+      const max = scrollEl.scrollHeight - scrollEl.clientHeight;
+
+      // 粉碎阶段（overflow > 0）：滚轮完全控制 overflow，不动 scrollTop
+      // 这样往上滚一格只减少 overflow（回退一格），不会直接重置粉碎机位置
+      if (overflowProgressRef.current > 0.001) {
+        e.preventDefault();
+        e.stopPropagation();
+        // 缩放因子：3 次滚轮 ≈ 0.1 粉碎进度
+        const shredDelta = e.deltaY / max / 3.0;
+        let newOverflow = overflowProgressRef.current + shredDelta;
+        newOverflow = Math.max(0, Math.min(SHRED_MAX - 1.0, newOverflow));
+        overflowProgressRef.current = newOverflow;
+        // 保持 scrollTop 在底部，防止浏览器自动滚动离开底部
+        scrollEl.scrollTop = max;
+        const finalProgress = Math.min(SHRED_MAX, 1.0 + newOverflow);
+        paperScrollProgress.current = finalProgress;
+        return;
+      }
+
+      // 正常阶段（overflow == 0）
       // 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出
       if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
         return;
@@ -1931,16 +1973,31 @@ function PaperDetailPage({
       e.preventDefault();
       e.stopPropagation();
       scrollEl.scrollTop += e.deltaY;
+
+      // 检查是否进入粉碎阶段（用 0.999 容差避免浮点精度问题）
+      const newProgress = max > 0 ? scrollEl.scrollTop / max : 0;
+      if (newProgress >= 0.999) {
+        // 进入粉碎阶段：累积 deltaY 到 overflow
+        const shredDelta = e.deltaY / max / 3.0;
+        overflowProgressRef.current = Math.max(0, overflowProgressRef.current + shredDelta);
+        overflowProgressRef.current = Math.min(SHRED_MAX - 1.0, overflowProgressRef.current);
+      }
+      const finalProgress = Math.min(SHRED_MAX, newProgress + overflowProgressRef.current);
+      paperScrollProgress.current = Math.max(0, finalProgress);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
+  // 粉碎进度 ref（0~1，从 paperScrollProgress 派生，超过 1 的部分映射到 0~1）
+  // 通过 useFrame 在 ShredderScene 内部每帧更新，这里只做 ref 容器
+  const shredProgressRef = useRef(0);
+
   return (
     <div ref={paperInnerRef} className="contact-detail-inner">
-      {/* 3D Canvas：独立 WebGL 上下文渲染做旧纸张着色器
+      {/* 第 1 层 Canvas：做旧纸张着色器
           - 顶点着色器直接输出 NDC，不依赖相机投影
-          - alpha:true 让背景透明（纸张本身不透明，由着色器控制） */}
+          - alpha:true 让背景透明（纸张粉碎区域透明，露出下层粉碎机） */}
       <div className="contact-canvas-wrapper">
         <Canvas
           gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
@@ -1955,6 +2012,30 @@ function PaperDetailPage({
               contentTexture={contentTexture}
             />
           </Suspense>
+        </Canvas>
+      </div>
+
+      {/* 第 2 层 Canvas：粉碎机 3D 模型 + 粒子（叠加在纸张上层）
+          - 透视相机，渲染 shredder.glb 模型
+          - 透明背景，仅在粉碎阶段（progress>1）可见
+          - shredProgressRef 通过 useFrame 同步 paperScrollProgress 的粉碎部分
+          - 复用 FilmPostProcessing 实现镜头畸变 + 边缘模糊 + 暗角 */}
+      <div className="shredder-canvas-wrapper">
+        <Canvas
+          gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }}
+          camera={{ fov: 45, near: 0.1, far: 100, position: [0, 0, 14] }}
+          shadows
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#000000'), 0);
+          }}
+        >
+          <Suspense fallback={null}>
+            <ShredderSceneSync
+              paperScrollProgress={paperScrollProgress}
+              shredProgressRef={shredProgressRef}
+            />
+          </Suspense>
+          <FilmPostProcessing params={shredderFilmParams} transparent />
         </Canvas>
       </div>
 

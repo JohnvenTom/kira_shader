@@ -1025,6 +1025,29 @@ body.camera-debug-mode .scroll-container {
   height: 100% !important;
 }
 
+/* 粉碎机 Canvas 容器：叠加在纸张 Canvas 上层
+   - z-10 在 contact-canvas-wrapper(z-0) 之上
+   - pointer-events: none 不接收交互，让滚轮穿透
+   - 透明背景，仅在粉碎阶段可见（由 shader 控制） */
+.shredder-canvas-wrapper {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.shredder-canvas-wrapper * {
+  pointer-events: none !important;
+}
+
+.shredder-canvas-wrapper canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* 内容层：固定全屏，包含 Hello 标题 + 联系信息
    - z-40 在滚动容器之上，但不接收滚轮事件（pointer-events: none）
    - 单独子元素（链接）用 pointer-events: auto 才能交互
