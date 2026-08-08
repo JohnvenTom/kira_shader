@@ -2230,21 +2230,21 @@ export function OfficeScene({
 
   return (
     <>
-      {/* 雾气：米黄色调，远处格子间淡入背景，增加纵深氛围感
-          - 颜色与背景 #f5e6c8 一致，远处自然融入背景
+      {/* 雾气：黑色调，远处格子间淡入纯黑背景，增加纵深神秘感
+          - 颜色与背景 #000000 一致，远处自然融入黑暗
           - near/far 根据场景尺寸设置，让远处格子间逐渐淡入 */}
-      <fog attach="fog" args={['#f5e6c8', totalDepth * 0.4, totalDepth * 1.2]} />
+      <fog attach="fog" args={['#000000', totalDepth * 0.4, totalDepth * 1.2]} />
 
-      {/* 环境光：暖米黄调，与背景融合，让暗部保留暖色（压低避免整体过亮） */}
-      <ambientLight intensity={0.15} color="#f5e6c8" />
+      {/* 环境光：极低强度，仅保留暗部轮廓（锐利灯光需低环境光，否则阴影被冲淡） */}
+      <ambientLight intensity={0.08} color="#f5e6c8" />
 
       {/* Key light：右上前方紫色主光（呼应 About Us section 的紫色 accentColor #b678ff）
-          - 位置按模型尺寸缩放（180×140×43），让光真的照到桌子上
-          - castShadow 开启，让格子间产生真实阴影，增强立体感
+          - 高强度锐利定向光，像舞台聚光灯
+          - castShadow 开启，让格子间产生深锐阴影
           - shadow camera 范围按场景尺寸设置，覆盖所有 8 个桌子 */}
       <directionalLight
         position={[totalWidth * 0.8, modelSize.y * 3, totalDepth * 0.6]}
-        intensity={1.1}
+        intensity={2.5}
         color="#d4b8ff"
         castShadow
         shadow-mapSize-width={2048}
@@ -2258,32 +2258,32 @@ export function OfficeScene({
         shadow-bias={-0.0005}
       />
 
-      {/* Fill light：左侧冷色补光，照亮阴影区域
-          - 强度比 key 低，避免压平阴影 */}
+      {/* Fill light：左侧冷色补光，仅照亮阴影区域边缘
+          - 强度比 key 低很多，保留高对比 */}
       <directionalLight
         position={[-totalWidth * 0.6, modelSize.y * 2, totalDepth * 0.4]}
-        intensity={0.45}
+        intensity={0.5}
         color="#88aaff"
       />
 
-      {/* Rim light：后方暖色轮廓光，让桌子边缘有金色描边，从暗背景中分离 */}
+      {/* Rim light：后方暖色轮廓光，在纯黑背景中描出桌子边缘金边 */}
       <directionalLight
         position={[-totalWidth * 0.3, modelSize.y * 1.5, -totalDepth * 0.5]}
-        intensity={0.7}
+        intensity={1.5}
         color="#ffaa66"
       />
 
-      {/* 顶灯光斑：每个格子间上方一个暖色 PointLight，模拟吸顶灯
+      {/* 顶灯光斑：每个格子间上方一个锐利聚光，模拟吸顶射灯
           - 每个格子间有自己的光斑，增强格子间分区感
           - 暖色 #ffd89b 模拟办公暖光灯
           - 距离衰减让光只照亮本格子间，不干扰相邻格子
-          - 强度较低，避免整体过亮 */}
+          - 较高强度 + 窄 distance 让光斑锐利聚焦 */}
       {Z_OFFSETS.map((z, i) => (
         <pointLight
           key={`overhead-${i}`}
           position={[0, modelSize.y * 1.3, z * GAP_Z]}
-          intensity={0.4}
-          distance={GAP_X * 1.2}
+          intensity={2.5}
+          distance={GAP_X * 0.9}
           color="#ffd89b"
         />
       ))}

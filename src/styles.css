@@ -1926,3 +1926,22 @@ body.camera-debug-mode .scroll-container {
   }
 }
 
+/* ============================================================
+   PaperDetailPage 专用样式（section0 做旧纸张详情页）
+   - paper-mode 类加在 .film-detail-overlay 上
+   - 纸张着色器铺满全屏，overlay 背景设为纯黑避免淡入时透出 3D 场景
+   - 复用 contact- 前缀的滚动容器和 canvas-wrapper 结构
+   ============================================================ */
+
+/* paper-mode：纯黑背景，无模糊（纸张着色器自身不透明，不需要 backdrop-filter） */
+.film-detail-overlay.paper-mode {
+  background: #000000;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* paper-mode 下 canvas-wrapper 确保铺满全屏（着色器输出不透明纸张） */
+.film-detail-overlay.paper-mode .contact-canvas-wrapper {
+  z-index: 1;
+}
+

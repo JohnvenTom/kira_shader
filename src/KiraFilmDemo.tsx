@@ -9,6 +9,7 @@ import {
 } from './components/FilmPostProcessing';
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
+import { PaperScene } from './components/PaperScene';
 import gsap from 'gsap';
 
 /**
@@ -453,7 +454,7 @@ export default function KiraFilmDemo() {
           - 滚轮回退（progress<0.85）时淡出，丝滑回到 3D 场景 */}
       <div
         ref={detailOverlayRef}
-        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''}`}
+        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
       >
         {sectionIndex === 3 ? (
           /* === Contact 详情页：shader.se/#contact 风格 ===
@@ -474,54 +475,11 @@ export default function KiraFilmDemo() {
            - 卡片超出边界时瞬间回绕到对面，形成无限循环 */
           <WorkDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
         ) : (
-          /* === 默认详情页：项目卡片网格 === */
-          <div className="film-detail-inner">
-            {/* 顶部：section 标识 + 标题 */}
-            <div className="film-detail-header">
-              <span
-                className="film-detail-index"
-                style={{ color: currentSection.accentColor }}
-              >
-                0{sectionIndex + 1} / 0{SECTIONS.length}
-              </span>
-              <h2 className="film-detail-title">{currentSection.title}</h2>
-              <p
-                className="film-detail-subtitle"
-                style={{ color: currentSection.accentColor }}
-              >
-                {currentSection.subtitle}
-              </p>
-              <p className="film-detail-desc">{currentSection.description}</p>
-            </div>
-
-            {/* 中部：项目卡片网格（展示 PROJECTS 数据） */}
-            <div className="film-detail-grid">
-              {PROJECTS.map((p, i) => (
-                <div
-                  key={p.id}
-                  className="film-detail-card"
-                  style={{
-                    // 卡片淡入延迟，逐个出现
-                    transitionDelay: `${0.15 + i * 0.08}s`,
-                  }}
-                >
-                  <div className="film-detail-card-thumb">
-                    <img src={p.thumb} alt={p.name} />
-                  </div>
-                  <div className="film-detail-card-info">
-                    <span className="film-detail-card-year">{p.year}</span>
-                    <h3 className="film-detail-card-name">{p.name}</h3>
-                    <p className="film-detail-card-tagline">{p.tagline}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* 底部：提示滚回 */}
-            <div className="film-detail-footer">
-              <span>Scroll up to return</span>
-            </div>
-          </div>
+          /* === 默认详情页（section0）：做旧纸张页面 ===
+           - Canvas 2D 绘制文字纹理 → PaperScene 着色器处理成做旧纸张质感
+           - 独立滚动容器驱动内容纹理 UV 偏移（文字在纸张上滚动）
+           - 滚轮回退到顶后继续上滑 → 退出详情页回 3D 场景 */
+          <PaperDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
         )}
       </div>
     </>
@@ -984,8 +942,8 @@ function OfficeDetailPage({
           camera={{ fov: 55, near: 0.1, far: 5000, position: [0, 1000, 0] }}
           shadows
           onCreated={({ gl }) => {
-            // 米黄色背景：暖调办公空间氛围
-            gl.setClearColor(new THREE.Color('#f5e6c8'), 1);
+            // 纯黑背景：高对比戏剧化场景，让锐利灯光突出格子间轮廓
+            gl.setClearColor(new THREE.Color('#000000'), 1);
           }}
         >
           <Suspense fallback={null}>
@@ -1607,6 +1565,403 @@ function WorkDetailPage({
         <span>SELECTED WORK // SHOWCASE</span>
         <span>DRAG TO NAVIGATE ◄►</span>
       </footer>
+    </div>
+  );
+}
+
+/**
+ * 在 Canvas 2D 上绘制做旧纸张的文字内容（现代非对称排版）
+ *
+ * 功能：创建一张高分辨率 canvas，用现代杂志式非对称布局绘制 studio 介绍文字，
+ *      作为 PaperScene 着色器的内容纹理源（黑字白底 → 着色器映射为墨水/纸张色）。
+ *
+ * 参数：无
+ * 返回值：THREE.CanvasTexture — 已设 flipY=false 的文字纹理
+ *
+ * 注意事项：
+ *  - canvas 尺寸 1024×3072（宽:高 = 1:3），足够容纳多段文字并支持滚动
+ *  - 文字用黑色绘制在白底上，着色器会把白色映射为纸张色、黑色映射为墨水色
+ *  - flipY=false 配合着色器中的 1.0-vUv.y 翻转，确保文字方向正确
+ *  - 字体用 Georgia 衬线体（系统可靠可用），标题加粗、正文常规
+ *  - 排版采用非对称布局：左对齐主内容 + 右侧标注/编号，错落分布避免对称感
+ */
+function createPaperContentTexture(): THREE.CanvasTexture {
+  const W = 1024;
+  const H = 3072;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  // 白色背景（着色器映射为纸张亮色）
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // 右边界（所有文字的右极限，留充足右边距）
+  const RIGHT_LIMIT = Math.round(W * 0.80);
+  // 左右栏位基准（非对称：主内容偏左，标注偏右，两侧留白充足）
+  const leftX = Math.round(W * 0.20);   // 主内容左对齐起点（左留白 20%）
+  const rightX = Math.round(W * 0.58);  // 右侧标注/编号起点
+  // 主内容可用宽度（从 leftX 到 RIGHT_LIMIT）
+  const contentW = RIGHT_LIMIT - leftX;
+  // 引用块可用宽度（从 rightX 到 RIGHT_LIMIT）
+  const quoteW = RIGHT_LIMIT - rightX;
+
+  /**
+   * 自动换行绘制（按词断行，确保不超出右边界）
+   *
+   * 功能：用 measureText 测量每个单词宽度，超出 maxWidth 时自动换行，
+   *      返回绘制后的 y 坐标（含最后一行行高）
+   *
+   * 参数：
+   *  - text      {string} 要绘制的文本（按空格分词）
+   *  - x         {number} 起始 x 坐标
+   *  - y         {number} 起始 y 坐标（基线）
+   *  - maxWidth  {number} 最大宽度（超出则换行）
+   *  - lineH     {number} 行高
+   *
+   * 返回值：number — 绘制完成后的 y 坐标
+   */
+  const wrapText = (
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    lineH: number
+  ): number => {
+    const words = text.split(' ');
+    let line = '';
+    let curY = y;
+    for (const word of words) {
+      const test = line ? line + ' ' + word : word;
+      if (ctx.measureText(test).width > maxWidth && line) {
+        ctx.fillText(line, x, curY);
+        curY += lineH;
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    if (line) {
+      ctx.fillText(line, x, curY);
+      curY += lineH;
+    }
+    return curY;
+  };
+
+  let y = 200;
+
+  // === 顶部：编号标签（右上角，小字等宽体） ===
+  ctx.fillStyle = '#000000';
+  ctx.font = '500 15px "Courier New", monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('№ 01 — STUDIO MANIFESTO', rightX, y);
+  // 编号下方短横线
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(rightX, y + 10);
+  ctx.lineTo(rightX + 170, y + 10);
+  ctx.stroke();
+
+  y = 380;
+
+  // === 主标题（左对齐，大字号，两行错落） ===
+  ctx.font = 'bold 64px Georgia, "Times New Roman", serif';
+  ctx.textBaseline = 'alphabetic';
+  // 第一行
+  ctx.fillText('Creative', leftX, y);
+  y += 76;
+  // 第二行：右缩进制造错落感（非对称）
+  ctx.fillText('Studio.', leftX + 48, y);
+  y += 70;
+
+  // === 副标题（左对齐，细体斜体） ===
+  ctx.font = 'italic 28px Georgia, "Times New Roman", serif';
+  y = wrapText('Plugged into the Future.', leftX, y, contentW, 36);
+  y += 24;
+
+  // === 分隔线（仅左侧短粗线，非居中） ===
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(leftX, y);
+  ctx.lineTo(leftX + 100, y);
+  ctx.stroke();
+  y += 70;
+
+  // === 正文段落（左对齐，自动换行确保不超出右边界） ===
+  ctx.font = '24px Georgia, "Times New Roman", serif';
+  const paragraphs = [
+    'We are a creative technology studio crafting interactive 3D experiences and AI-driven solutions for the modern web.',
+    '',
+    'Our team blends design sensibility with engineering rigor to build immersive products that feel alive — real-time graphics, shader artistry, and thoughtful interaction design in concert.',
+    '',
+    'From WebGL showrooms to augmented reality experiences, we help brands plug into the future of digital interaction.',
+  ];
+  for (const line of paragraphs) {
+    if (line === '') {
+      y += 24;
+      continue;
+    }
+    y = wrapText(line, leftX, y, contentW, 38);
+  }
+
+  y += 40;
+
+  // === 中段引用块（右缩进，斜体，左侧粗竖线装饰，自动换行） ===
+  const quoteY = y;
+  ctx.font = 'italic 26px Georgia, "Times New Roman", serif';
+  const quoteEndY = wrapText(
+    '"Serious about business, playful by design."',
+    rightX,
+    quoteY,
+    quoteW,
+    34
+  );
+  // 引用块左侧粗竖线（高度跟随文字实际行数）
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(rightX - 20, quoteY - 22);
+  ctx.lineTo(rightX - 20, quoteEndY - 14);
+  ctx.stroke();
+  y = quoteEndY + 80;
+
+  // === 三栏数据条（非对称：宽窄宽） ===
+  y += 24;
+  const stats = [
+    { num: '08', label: 'YEARS', x: leftX },
+    { num: '120+', label: 'PROJECTS', x: leftX + 145 },
+    { num: '∞', label: 'SHADERS', x: leftX + 310 },
+  ];
+  ctx.textBaseline = 'alphabetic';
+  for (const s of stats) {
+    ctx.font = 'bold 42px Georgia, "Times New Roman", serif';
+    ctx.fillText(s.num, s.x, y);
+    ctx.font = '500 14px "Courier New", monospace';
+    ctx.fillText(s.label, s.x, y + 24);
+  }
+  y += 110;
+
+  // === 次级标题（右对齐，制造视觉反转） ===
+  ctx.font = 'bold 36px Georgia, "Times New Roman", serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('Based in Sweden.', RIGHT_LIMIT, y);
+  y += 46;
+  ctx.font = 'italic 22px Georgia, "Times New Roman", serif';
+  ctx.fillText('Working worldwide.', RIGHT_LIMIT, y);
+  y += 56;
+
+  // === 正文续（左对齐，自动换行） ===
+  ctx.textAlign = 'left';
+  ctx.font = '24px Georgia, "Times New Roman", serif';
+  const more = [
+    'We believe the web should feel alive — tactile, responsive, and rich with detail. Every pixel is an opportunity to delight.',
+    '',
+    'Our toolbox spans WebGL, WebGPU, GLSL/WGSL shaders, real-time post-processing, and bespoke interaction systems.',
+    '',
+    'No templates. No shortcuts. Just craft.',
+  ];
+  for (const line of more) {
+    if (line === '') {
+      y += 24;
+      continue;
+    }
+    y = wrapText(line, leftX, y, contentW, 38);
+  }
+
+  y += 48;
+
+  // === 装饰几何块（非对称：左下角实心方块 + 右侧空心圆） ===
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(leftX, y, 48, 48);
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(RIGHT_LIMIT - 48, y + 24, 28, 0, Math.PI * 2);
+  ctx.stroke();
+  y += 96;
+
+  // === 正文续（自动换行） ===
+  ctx.font = '24px Georgia, "Times New Roman", serif';
+  y = wrapText(
+    'Get in touch — let’s build something that feels like the future, today.',
+    leftX,
+    y,
+    contentW,
+    38
+  );
+
+  // === 底部：联系信息 + 滚回提示（左右分布，非对称） ===
+  const footerY = H - 150;
+
+  // 左侧：联系邮箱
+  ctx.font = '500 17px "Courier New", monospace';
+  ctx.fillText('hello@shader.se', leftX, footerY);
+  ctx.font = 'italic 15px Georgia, "Times New Roman", serif';
+  ctx.fillText('Norrköping, Sweden', leftX, footerY + 28);
+
+  // 右侧：滚回提示 + 编号（右对齐到 RIGHT_LIMIT）
+  ctx.textAlign = 'right';
+  ctx.font = '500 15px "Courier New", monospace';
+  ctx.fillText('↑ SCROLL UP TO RETURN', RIGHT_LIMIT, footerY);
+  ctx.font = 'bold 26px Georgia, "Times New Roman", serif';
+  ctx.fillText('01 / 04', RIGHT_LIMIT, footerY + 36);
+  ctx.textAlign = 'left';
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.flipY = false;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * PaperDetailPage - section0 详情页（做旧纸张文字展示）
+ *
+ * 功能：
+ *  - 独立 3D Canvas 渲染 PaperScene（全屏正交平面 + 做旧纸张着色器）
+ *  - Canvas 2D 绘制的文字纹理作为内容源，着色器处理成做旧纸张质感
+ *  - 独立滚动容器驱动 paperScrollProgress（控制内容纹理 UV 偏移 → 文字滚动）
+ *  - 滚轮回退到顶部后继续上滑 → 允许冒泡到外层退出详情页
+ *  - 每次进入详情页时重置滚动状态
+ *
+ * 参数：
+ *  - mouseRef    鼠标归一化坐标 ref（保持接口一致，本组件不使用）
+ *  - detailOpen  外层详情页是否打开（用于在每次进入时重置滚动状态）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 复用 contact- 前缀的滚动容器和 wheel 拦截机制
+ *  - 内容纹理只创建一次（useMemo），全生命周期复用
+ *  - 纸张效果完全由 PaperScene 的 GLSL 着色器实现
+ */
+function PaperDetailPage({
+  detailOpen,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  detailOpen: boolean;
+}) {
+  // paper 详情页内部独立滚动容器 ref
+  const paperScrollRef = useRef<HTMLDivElement>(null);
+  // paper 详情页内部滚动进度 0~1（驱动内容纹理 UV 偏移）
+  const paperScrollProgress = useRef(0);
+  // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
+  const atTopRef = useRef(true);
+  // paper-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
+  const paperInnerRef = useRef<HTMLDivElement>(null);
+
+  // 内容纹理（Canvas 2D 绘制的文字，只创建一次）
+  const contentTexture = useMemo(() => createPaperContentTexture(), []);
+
+  /**
+   * paper 详情页内部滚动事件处理
+   *
+   * 功能：读取 paperScrollRef 的 scrollTop，计算 0~1 的进度，
+   *      写入 paperScrollProgress.current（驱动着色器内容 UV 偏移）
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  const handlePaperScroll = useCallback(() => {
+    const el = paperScrollRef.current;
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    const progress = max > 0 ? el.scrollTop / max : 0;
+    const clamped = Math.max(0, Math.min(1, progress));
+    paperScrollProgress.current = clamped;
+    atTopRef.current = el.scrollTop <= 0;
+  }, []);
+
+  // 绑定滚动监听
+  useEffect(() => {
+    const el = paperScrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    paperScrollProgress.current = 0;
+    el.addEventListener('scroll', handlePaperScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handlePaperScroll);
+  }, [handlePaperScroll]);
+
+  /**
+   * 进入/退出详情页时重置内部滚动状态
+   *
+   * 功能：监听 detailOpen 变化，每次进入详情页时重置 scrollTop 和 progress，
+   *      避免上次退出时残留的 scrollTop 导致下次进入时文字直接滚到底部
+   *
+   * 参数：无（通过闭包读取 detailOpen）
+   * 返回值：无
+   */
+  useEffect(() => {
+    if (!detailOpen) return;
+    const el = paperScrollRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = 0;
+      paperScrollProgress.current = 0;
+      atTopRef.current = true;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailOpen]);
+
+  /**
+   * paper 详情页根元素 wheel 事件拦截
+   *
+   * 功能：在 paper-detail-inner 根元素上拦截 wheel 事件，手动滚动
+   *      paper-scroll-container。已滚到顶且继续上滑时允许冒泡到 overlay，
+   *      让外层 wheel 转发逻辑触发退出详情页。
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  useEffect(() => {
+    const el = paperInnerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const scrollEl = paperScrollRef.current;
+      if (!scrollEl) return;
+      // 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出
+      if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      scrollEl.scrollTop += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  return (
+    <div ref={paperInnerRef} className="contact-detail-inner">
+      {/* 3D Canvas：独立 WebGL 上下文渲染做旧纸张着色器
+          - 顶点着色器直接输出 NDC，不依赖相机投影
+          - alpha:true 让背景透明（纸张本身不透明，由着色器控制） */}
+      <div className="contact-canvas-wrapper">
+        <Canvas
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+          camera={{ position: [0, 0, 1] }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#000000'), 0);
+          }}
+        >
+          <Suspense fallback={null}>
+            <PaperScene
+              paperScrollProgress={paperScrollProgress}
+              contentTexture={contentTexture}
+            />
+          </Suspense>
+        </Canvas>
+      </div>
+
+      {/* 独立滚动容器：撑出滚动空间让用户能滚动驱动文字偏移 */}
+      <div ref={paperScrollRef} className="contact-scroll-container">
+        <div className="contact-scroll-placeholder" />
+      </div>
     </div>
   );
 }
