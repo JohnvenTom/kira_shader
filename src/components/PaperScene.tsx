@@ -95,8 +95,6 @@ const PaperShader = {
     uDistortionBorder: { value: 0.0 },
     // 屏幕宽高比（用于畸变和色散的 X 方向校正）
     uAspect: { value: 1.0 },
-    // 粉碎进度（0=未粉碎，1=完全粉碎）：控制撕裂边缘位置和透明度
-    uShredProgress: { value: 0.0 },
   },
   // 全屏 quad 顶点着色器：直接输出 NDC，不经过相机投影矩阵
   vertexShader: /* glsl */ `
@@ -120,7 +118,6 @@ const PaperShader = {
     uniform float uDistortion;
     uniform float uDistortionBorder;
     uniform float uAspect;
-    uniform float uShredProgress;
     varying vec2 vUv;
 
     /**
@@ -337,81 +334,9 @@ const PaperShader = {
       float breath = 0.02 * sin(uTime * 0.5);
       finalColor += vec3(breath);
 
-      // === 8. 纸张竖直条状切割（被碎纸机竖着切碎，纸条保留飘动）===
-      // 粉碎机从屏幕下方升起，撕裂线（粉碎机顶部）以下的纸张被竖直刀片切成条状
-      // 关键：纸条不消失（不透明），而是：
-      //   1. 每条边缘出现竖直缝隙（刀片切口），撕裂线以下缝隙扩大
-      //   2. 每条纸条向外飘动（X 位移随时间 + 深度）
-      //   3. 纸条略微下垂（Y 位移）
-      //   4. 切割边缘有锯齿纤维
-      // shredProgress=0：无切割；shredProgress=1：切割线到屏幕顶部
-      float shredAlpha = 1.0;
-      if (uShredProgress > 0.001) {
-        // 粉碎机顶部 Y 位置（撕裂线）
-        float tearLineY = uShredProgress;
-
-        // 竖直条带切割：把纸张切成 N 条
-        float stripCount = 16.0;
-        float stripId = floor(distortedUV.x * stripCount);
-        float stripCoord = fract(distortedUV.x * stripCount); // 0~1 每条内坐标
-
-        // 每条独立的撕裂线位置（用条带 ID 作种子 + 噪声）
-        // 不同条带的切割边缘高度不一，模拟刀片切割深浅差异
-        float tearNoise = texture2D(tNoise, vec2(stripId * 7.3, 0.0) / 512.0).r;
-        float actualTearY = tearLineY + (tearNoise - 0.5) * 0.14;
-
-        // 距撕裂线的距离（正值=上方=未切割，负值=下方=被切碎的纸条）
-        float distToTear = distortedUV.y - actualTearY;
-
-        // 被切割的程度（0=未切，1=完全切开的纸条）
-        // 撕裂线以下越深，切割越彻底，缝隙越大、飘动越明显
-        float cutAmount = smoothstep(0.0, -0.3, distToTear);
-
-        // === 竖直切割缝隙（刀片切口）===
-        // stripCoord 在条带边缘（0 或 1）时为缝隙
-        float gapWidth = 0.06;
-        float gapMask = smoothstep(0.0, gapWidth, min(stripCoord, 1.0 - stripCoord));
-        // 撕裂线以下：缝隙扩大（条带分离），模拟切碎后条带分开
-        // 未切开区域 gapMask=1（无缝隙），切开区域 gapMask 减小
-        shredAlpha = mix(1.0, gapMask, cutAmount);
-
-        // === 纸条飘动位移（被切开的纸条向外飘）===
-        // 只对撕裂线以下的纸条应用位移
-        if (cutAmount > 0.01) {
-          // 每条独立的飘动相位和幅度（用 stripId 作种子）
-          float swayNoise = texture2D(tNoise, vec2(stripId * 3.7, 0.0) / 512.0).r;
-          // 飘动方向：条带在屏幕左半部分向左飘，右半部分向右飘（向外分开）
-          float swayDir = distortedUV.x > 0.5 ? 1.0 : -1.0;
-          // 飘动相位：每条不同，时间驱动
-          float swayPhase = uTime * 1.5 + swayNoise * 6.28;
-          // 飘动幅度：随切割深度增加（越深飘得越远），随时间正弦摆动
-          float swayAmp = cutAmount * 0.02 * (0.7 + swayNoise * 0.6);
-          float swayOffset = sin(swayPhase) * swayAmp * swayDir;
-
-          // 下垂位移：被切开的纸条因重力略微下垂
-          float droopOffset = cutAmount * 0.015 * (0.5 + swayNoise * 0.5);
-
-          // 应用位移到 UV（重新采样内容纹理，产生飘动效果）
-          // 注意：这里位移影响 contentColor 和 finalColor 的后续计算
-          // 由于位移在内容采样之后，我们用近似方法：在最终颜色上叠加位移产生的明暗变化
-          // （完整重新采样成本高，用明暗模拟飘动产生的光影变化）
-          float swayShade = sin(swayPhase + swayOffset * 50.0) * cutAmount * 0.1;
-          finalColor *= 1.0 + swayShade - droopOffset * 2.0;
-        }
-
-        // === 切割边缘锯齿纤维 ===
-        float edgeNoise = texture2D(tNoise, vec2(stripId * 3.1, distToTear * 60.0) / 512.0).r;
-        float fiberMask = smoothstep(0.6, 0.9, edgeNoise)
-          * smoothstep(0.0, 0.03, abs(distToTear))
-          * smoothstep(0.05, 0.0, abs(distToTear));
-        finalColor = mix(finalColor, vec3(0.2, 0.15, 0.1), fiberMask * 0.5);
-
-        // === 撕裂边缘暗化（被粉碎机阴影影响）===
-        float edgeDarken = smoothstep(0.0, -0.04, distToTear) * 0.3;
-        finalColor *= 1.0 - edgeDarken;
-      }
-
-      gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), shredAlpha);
+      // === 8. 输出 ===
+      // 纸张整体不透明（碎纸机功能已移除，保留做旧纸张的完整展示）
+      gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
   `,
 };
@@ -461,8 +386,6 @@ export function PaperScene({
       fragmentShader: PaperShader.fragmentShader,
       depthTest: false,
       depthWrite: false,
-      // 开启透明：粉碎阶段 shredAlpha<1 的区域需要透明，露出下层粉碎机
-      transparent: true,
     });
     mat.uniforms.tNoise.value = noiseTexture;
     if (contentTexture) {
@@ -477,9 +400,9 @@ export function PaperScene({
     if (!mesh) return;
     const mat = mesh.material as THREE.ShaderMaterial;
     if (mat && mat.uniforms) {
-      // lerp 插值：每帧把当前值向目标值趋近（因子 0.12 ≈ 8 帧达到 60%）
-      // 这样离散的 wheel 跳变被插值成连续平滑的滚动，产生惯性丝滑感
-      // 因子越大跟随越紧（越接近原始离散），越小越柔顺（延迟越大）
+      // lerp 插值：每帧把当前值向目标值趋近（因子 0.06 ≈ 16 帧达到 60%）
+      // 这样离散的 wheel 跳变被插值成连续平滑的滚动，产生阻尼缓和的阅读手感：
+      // 因子越小惯性越足、文字滚动越"沉"，避免滚一格文字跳一大段
       const target = paperScrollProgress.current;
       // 当 target 与当前值差距过大（>0.3），说明外部重置了滚动（如进入/退出详情页），
       // 立即 snap 到 target，避免从旧值缓慢插值产生明显延迟
@@ -489,7 +412,7 @@ export function PaperScene({
         smoothScrollRef.current = THREE.MathUtils.lerp(
           smoothScrollRef.current,
           target,
-          0.12
+          0.06
         );
         // 到达目标后清零避免无限插值浮点残留
         if (Math.abs(smoothScrollRef.current - target) < 0.0005) {
@@ -498,15 +421,9 @@ export function PaperScene({
       }
 
       mat.uniforms.uDimensions.value.set(size.width, size.height);
-      // 滚动进度：0~1 正常阅读，超过 1 的部分也传给 shader（用于内容 UV 偏移到底部后继续）
-      // clamp 到 0~1 用于内容纹理偏移，避免 UV 超出 [0,1] 范围
-      mat.uniforms.uScroll.value = Math.min(smoothScrollRef.current, 1.0);
+      // 滚动进度：0~1，驱动内容纹理 UV 偏移（文字在纸张上滚动阅读）
+      mat.uniforms.uScroll.value = smoothScrollRef.current;
       mat.uniforms.uTime.value = clock.getElapsedTime();
-      // 粉碎进度：paperScrollProgress 超过 1.0 的部分映射到 0~1
-      // 1.0~SHRED_MAX(1.4) → 0~1，驱动粉碎机升起和纸张撕裂
-      const rawProgress = smoothScrollRef.current;
-      const shredProgress = Math.max(0, Math.min(1, (rawProgress - 1.0) / 0.4));
-      mat.uniforms.uShredProgress.value = shredProgress;
       // 屏幕宽高比，用于色散和畸变的 X 方向校正（与主页面 FilmPostProcessing 保持一致）
       mat.uniforms.uAspect.value = size.width / Math.max(size.height, 1);
       // 内容纹理宽高比（宽/高），用于 shader 中宽高比校正

@@ -10,7 +10,6 @@ import {
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
-import { ShredderSceneSync } from './components/ShredderScene';
 import gsap from 'gsap';
 
 /**
@@ -1580,15 +1579,16 @@ function WorkDetailPage({
  * 返回值：THREE.CanvasTexture — 已设 flipY=false 的文字纹理
  *
  * 注意事项：
- *  - canvas 尺寸 1024×3072（宽:高 = 1:3），足够容纳多段文字并支持滚动
+ *  - canvas 尺寸 1400×4200（宽:高 = 1:3），足够容纳多段文字并支持滚动；
+ *    分辨率较 1024 加宽约 37%，让文字在屏幕上显示更小更精致
  *  - 文字用黑色绘制在白底上，着色器会把白色映射为纸张色、黑色映射为墨水色
  *  - flipY=false 配合着色器中的 1.0-vUv.y 翻转，确保文字方向正确
  *  - 字体用 Georgia 衬线体（系统可靠可用），标题加粗、正文常规
  *  - 排版采用非对称布局：左对齐主内容 + 右侧标注/编号，错落分布避免对称感
  */
 function createPaperContentTexture(): THREE.CanvasTexture {
-  const W = 1024;
-  const H = 3072;
+  const W = 1400;
+  const H = 4200;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -1849,49 +1849,33 @@ function PaperDetailPage({
 }) {
   // paper 详情页内部独立滚动容器 ref
   const paperScrollRef = useRef<HTMLDivElement>(null);
-  // paper 详情页内部滚动进度（0~1 正常阅读，1~SHRED_MAX 粉碎阶段，驱动内容 UV 偏移 + 粉碎机升起）
+  // paper 详情页内部滚动进度（0~1，驱动内容纹理 UV 偏移 → 文字在纸张上滚动阅读）
   const paperScrollProgress = useRef(0);
-  // 粉碎阶段最大进度（超过 1.0 后进入粉碎，1.0~SHRED_MAX 粉碎机从底部升起到顶部）
-  const SHRED_MAX = 1.4;
   // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
   const atTopRef = useRef(true);
   // paper-detail-inner 根元素 ref（用于绑定 wheel 事件，拦截滚轮）
   const paperInnerRef = useRef<HTMLDivElement>(null);
-  // 粉碎阶段累积的额外 progress（超过 1 的部分，由 wheel 事件累加）
-  const overflowProgressRef = useRef(0);
 
   // 内容纹理（Canvas 2D 绘制的文字，只创建一次）
   const contentTexture = useMemo(() => createPaperContentTexture(), []);
 
-  // 碎纸机 Canvas 的后处理参数（镜头畸变 + 边缘模糊 + 暗角，与主页面一致）
-  const shredderFilmParams = useMemo<FilmFXParams>(() => ({ ...DEFAULT_FILM_PARAMS }), []);
-
   /**
    * paper 详情页内部滚动事件处理
    *
-   * 功能：读取 paperScrollRef 的 scrollTop，计算 0~SHRED_MAX 的进度，
-   *      写入 paperScrollProgress.current：
-   *        - 0~1：正常阅读阶段，驱动内容纹理 UV 偏移（文字滚动）
-   *        - 1~SHRED_MAX：粉碎阶段，驱动粉碎机升起 + 纸张被撕碎 mask
-   *      滚到顶且继续上滑时允许冒泡到外层退出详情页
+   * 功能：读取 paperScrollRef 的 scrollTop，计算 0~1 的进度，
+   *      写入 paperScrollProgress.current（驱动内容纹理 UV 偏移，文字滚动）。
+   *      滚到顶且继续上滑时允许冒泡到外层退出详情页。
    *
    * 参数：无
    * 返回值：无
-   *
-   * 注意事项：
-   *  - scroll 事件在浏览器中是异步触发的（当前事件循环结束后下一帧触发），
-   *    而 wheel handler 中已经设置了 paperScrollProgress.current = 1.0 + overflow。
-   *    如果这里不加 overflow，会把 wheel handler 设置的粉碎进度覆盖回 1.0，
-   *    导致粉碎机永远不升起。因此这里也读取 overflowProgressRef 保持一致。
    */
   const handlePaperScroll = useCallback(() => {
     const el = paperScrollRef.current;
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
     const progress = max > 0 ? el.scrollTop / max : 0;
-    // 最终 progress = scrollTop/max + overflow（粉碎阶段累积的额外进度）
-    const finalProgress = Math.max(0, Math.min(SHRED_MAX, progress + overflowProgressRef.current));
-    paperScrollProgress.current = finalProgress;
+    const clamped = Math.max(0, Math.min(1, progress));
+    paperScrollProgress.current = clamped;
     atTopRef.current = el.scrollTop <= 0;
   }, []);
 
@@ -1921,7 +1905,6 @@ function PaperDetailPage({
     const raf = requestAnimationFrame(() => {
       el.scrollTop = 0;
       paperScrollProgress.current = 0;
-      overflowProgressRef.current = 0;
       atTopRef.current = true;
     });
     return () => cancelAnimationFrame(raf);
@@ -1931,11 +1914,8 @@ function PaperDetailPage({
    * paper 详情页根元素 wheel 事件拦截
    *
    * 功能：在 paper-detail-inner 根元素上拦截 wheel 事件，手动滚动
-   *      paper-scroll-container。
-   *      - 正常阶段（progress 0~1）：滚轮直接驱动 scrollTop
-   *      - 粉碎阶段（progress 1~SHRED_MAX）：浏览器 scrollTop 已达 max 无法继续，
-   *        用 overflowProgressRef 累加超出的 deltaY，映射成 progress 超过 1
-   *      - 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出
+   *      paper-scroll-container（驱动文字在纸张上滚动阅读）。
+   *      已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出详情页。
    *
    * 参数：无
    * 返回值：无
@@ -1946,26 +1926,6 @@ function PaperDetailPage({
     const onWheel = (e: WheelEvent) => {
       const scrollEl = paperScrollRef.current;
       if (!scrollEl) return;
-      const max = scrollEl.scrollHeight - scrollEl.clientHeight;
-
-      // 粉碎阶段（overflow > 0）：滚轮完全控制 overflow，不动 scrollTop
-      // 这样往上滚一格只减少 overflow（回退一格），不会直接重置粉碎机位置
-      if (overflowProgressRef.current > 0.001) {
-        e.preventDefault();
-        e.stopPropagation();
-        // 缩放因子：3 次滚轮 ≈ 0.1 粉碎进度
-        const shredDelta = e.deltaY / max / 3.0;
-        let newOverflow = overflowProgressRef.current + shredDelta;
-        newOverflow = Math.max(0, Math.min(SHRED_MAX - 1.0, newOverflow));
-        overflowProgressRef.current = newOverflow;
-        // 保持 scrollTop 在底部，防止浏览器自动滚动离开底部
-        scrollEl.scrollTop = max;
-        const finalProgress = Math.min(SHRED_MAX, 1.0 + newOverflow);
-        paperScrollProgress.current = finalProgress;
-        return;
-      }
-
-      // 正常阶段（overflow == 0）
       // 已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出
       if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
         return;
@@ -1973,31 +1933,16 @@ function PaperDetailPage({
       e.preventDefault();
       e.stopPropagation();
       scrollEl.scrollTop += e.deltaY;
-
-      // 检查是否进入粉碎阶段（用 0.999 容差避免浮点精度问题）
-      const newProgress = max > 0 ? scrollEl.scrollTop / max : 0;
-      if (newProgress >= 0.999) {
-        // 进入粉碎阶段：累积 deltaY 到 overflow
-        const shredDelta = e.deltaY / max / 3.0;
-        overflowProgressRef.current = Math.max(0, overflowProgressRef.current + shredDelta);
-        overflowProgressRef.current = Math.min(SHRED_MAX - 1.0, overflowProgressRef.current);
-      }
-      const finalProgress = Math.min(SHRED_MAX, newProgress + overflowProgressRef.current);
-      paperScrollProgress.current = Math.max(0, finalProgress);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // 粉碎进度 ref（0~1，从 paperScrollProgress 派生，超过 1 的部分映射到 0~1）
-  // 通过 useFrame 在 ShredderScene 内部每帧更新，这里只做 ref 容器
-  const shredProgressRef = useRef(0);
-
   return (
     <div ref={paperInnerRef} className="contact-detail-inner">
-      {/* 第 1 层 Canvas：做旧纸张着色器
+      {/* 全屏 Canvas：做旧纸张着色器
           - 顶点着色器直接输出 NDC，不依赖相机投影
-          - alpha:true 让背景透明（纸张粉碎区域透明，露出下层粉碎机） */}
+          - alpha:true 让背景透明（露出底层电影场景） */}
       <div className="contact-canvas-wrapper">
         <Canvas
           gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
@@ -2012,30 +1957,6 @@ function PaperDetailPage({
               contentTexture={contentTexture}
             />
           </Suspense>
-        </Canvas>
-      </div>
-
-      {/* 第 2 层 Canvas：粉碎机 3D 模型 + 粒子（叠加在纸张上层）
-          - 透视相机，渲染 shredder.glb 模型
-          - 透明背景，仅在粉碎阶段（progress>1）可见
-          - shredProgressRef 通过 useFrame 同步 paperScrollProgress 的粉碎部分
-          - 复用 FilmPostProcessing 实现镜头畸变 + 边缘模糊 + 暗角 */}
-      <div className="shredder-canvas-wrapper">
-        <Canvas
-          gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }}
-          camera={{ fov: 45, near: 0.1, far: 100, position: [0, 0, 14] }}
-          shadows
-          onCreated={({ gl }) => {
-            gl.setClearColor(new THREE.Color('#000000'), 0);
-          }}
-        >
-          <Suspense fallback={null}>
-            <ShredderSceneSync
-              paperScrollProgress={paperScrollProgress}
-              shredProgressRef={shredProgressRef}
-            />
-          </Suspense>
-          <FilmPostProcessing params={shredderFilmParams} transparent />
         </Canvas>
       </div>
 

@@ -243,9 +243,9 @@ const FilmShader = {
       vec4 originalColor = texture2D(tDiffuse, distortedUV);
       vec4 color = mix(originalColor, shiftedColor, edgeMask);
 
-      // 透明背景保护：如果输入 alpha 接近 0，说明该像素是透明背景（无碎纸机模型），
-      // 直接输出透明，跳过所有后续效果（bloom/motionblur 已把 alpha 污染为 1）
-      // 这样下层纸张 Canvas 可见
+      // 透明背景保护：如果输入 alpha 接近 0，说明该像素是透明背景
+      // （shader 输出的透明区域），直接输出透明，跳过所有后续效果
+      // （bloom/motionblur 已把 alpha 污染为 1），保证下层 Canvas 可见
       if (inputAlpha < 0.01) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
@@ -345,7 +345,7 @@ interface FilmPostProcessingProps {
   /** 是否启用后处理 */
   enabled?: boolean;
   /**
-   * 透明模式：用于叠加在另一个 Canvas 上层的场景（如碎纸机）
+   * 透明模式：用于叠加在另一个 Canvas 上层的场景
    * - 跳过 UnrealBloomPass 和 MotionBlurPass（它们会污染 alpha 通道）
    * - 只保留镜头畸变 + 色散 + 暗角 + 颗粒
    * - 透明背景保持透明，露出下层 Canvas
