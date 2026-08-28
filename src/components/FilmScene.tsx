@@ -51,6 +51,12 @@ export const SECTIONS: SectionContent[] = [
     accentColor: '#7dffae',
     description: 'hello@shader.se · Norrköping, Sweden',
   },
+  {
+    title: 'BLACK HOLE',
+    subtitle: 'Ray-Marched Reality',
+    accentColor: '#ffcc4d',
+    description: 'Gravitational lensing · Accretion disk · Bloom',
+  },
 ];
 
 /**
@@ -2419,9 +2425,12 @@ export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionCh
     // dragOffset = 0 → sectionIndex = 0
     // dragOffset = -4 → sectionIndex = 1
     // dragOffset = -8 → sectionIndex = 2
-    // dragOffset = -12 → sectionIndex = 3
+    // ... 依次类推，最后一个 section 在 dragOffset = -(SECTIONS.length-1)*4
     // 用 Math.round 让偏移超过半帧时切换
-    const newSectionIndex = Math.max(0, Math.min(3, Math.round(-smoothed / 4)));
+    const newSectionIndex = Math.max(
+      0,
+      Math.min(SECTIONS.length - 1, Math.round(-smoothed / 4))
+    );
     if (newSectionIndex !== sectionIndex) {
       setSectionIndex(newSectionIndex);
     }
@@ -2438,8 +2447,8 @@ export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionCh
     // 注意：之前用 -(i+1)*4（即 -4/-8/-12）作为触发点，正好是 section 1/2/3 的
     //       中心位置，导致切换到这些 section 后 flash 一直是 1，文字永远消失、屏幕过亮
     let flash = 0;
-    for (let i = 0; i < 3; i++) {
-      const midPoint = -(i + 0.5) * 4; // i=0: -2, i=1: -6, i=2: -10
+    for (let i = 0; i < SECTIONS.length - 1; i++) {
+      const midPoint = -(i + 0.5) * 4; // i=0: -2, i=1: -6, i=2: -10, ...
       const distToMid = Math.abs(smoothed - midPoint);
       if (distToMid < 2.0) {
         const f = 1 - smoothstep(0, 2.0, distToMid);

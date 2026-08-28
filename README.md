@@ -12,11 +12,12 @@
 
 - 🖥️ **双模式路由**：`http://localhost:5173`（默认电脑场景）/ `http://localhost:5173/#film`（胶片多场景），hash 变化自动重挂载对应 Demo。
 - 🎬 **滚动驱动相机**：向下滚动时相机沿屏幕法线"推入屏幕内部"，末端白色闪光掩盖切换，进入 `#film` 后丝滑衔接。
-- 🎞️ **35mm 电影胶片场景**：4 个 Section 依次水平排列，相机贴地推轨（dolly），鼠标横向拖拽即可在 Section 间滑动切换，支持触摸。
+- 🎞️ **35mm 电影胶片场景**：5 个 Section 依次水平排列，相机贴地推轨（dolly），鼠标横向拖拽即可在 Section 间滑动切换，支持触摸。
 - 📺 **GIF 动态屏幕**：使用 `gifuct-js` 自行解析 4 个 GIF，每帧合成后写入 `CanvasTexture` 作为屏幕 `emissiveMap`，并让 `RectAreaLight` 实时采样 GIF 帧的平均颜色照亮周围环境（红屏照红光、蓝屏照蓝光）。
 - ✨ **自定义 GLSL 后处理**：桶形鱼眼畸变 + 垂直方向色散 + 暗角 Vignette + 圆角矩形 SDF 遮罩 + 边缘羽化模糊 + UnrealBloom 辉光，全部在 `EffectComposer` 中实时渲染。
 - 🌫️ **氛围粒子系统**：前后双层飘动烟雾（Sprite + 双频正弦扰动 + 透明度呼吸）与自发光尘埃粒子（`toneMapped=false` + AdditiveBlending）。
-- 📄 **四个形态各异的详情页**：做旧纸张（GLSL Shader）、无限滑动作品柜（GSAP）、格子间办公场景、电话机联系页——各自拥有独立的 3D Canvas 与滚动驱动相机。
+- 📄 **五个形态各异的详情页**：做旧纸张（GLSL Shader）、无限滑动作品柜（GSAP）、格子间办公场景、电话机联系页、实时光线步进黑洞（GLSL3 Ray March）——各自拥有独立的 3D Canvas 与滚动驱动相机。
+- 🕳️ **实时光线步进黑洞**：移植自 C++/WebAssembly 独立项目的 `blackhole_main.frag`——引力透镜弯曲光线路径、体积噪声吸积盘（颜色贴图映射）、星云立方体天空盒背景，叠加 Bloom 辉光，悬停鼠标沿轨道环绕。
 - 🖱️ **鼠标视差**：文字层 CSS 变量视差 + 3D 相机小角度跟随旋转，双通道响应。
 - 🔤 **逐字浮现动画**：标题按字符拆分，配合递增 `transitionDelay` 逐字蹦出，滚动时逐字飞出消失。
 - 🖼️ **复古加载屏**：`boot_screen.png` 全屏背景 + 10 格粗边框进度条（符合复古计算机风格）。
@@ -31,7 +32,7 @@
 
 ![首页 - 电脑场景](screenshots/01-home-hero.png)
 
-### 胶片场景（#film）—— 四 Section
+### 胶片场景（#film）—— 五 Section
 
 访问 `/#film` 进入整体滚动叙事。每个 Section 拥有独立主色调与屏幕发光颜色。
 
@@ -41,6 +42,7 @@
 | 02 | SELECTED WORK · Browse our projects | `#4dc4ff` 蓝 |
 | 03 | ABOUT US · Playful, Powerful, Alive | `#b678ff` 紫 |
 | 04 | CONTACT · Let's interface | `#7dffae` 绿 |
+| 05 | BLACK HOLE · Ray-Marched Reality | `#ffcc4d` 金 |
 
 ![01 - Creative Studio](screenshots/02-film-creative-studio.png)
 
@@ -53,6 +55,10 @@
 ### 详情页（滚动到底进入）
 
 每个 Section 滚到最底（progress > 0.92）会丝滑进入对应详情页；滚回顶部即可退出。
+
+**BLACK HOLE 详情页** —— 移植自独立 C++/WebAssembly 项目的实时光线步进黑洞：引力透镜弯曲光线、体积噪声吸积盘（颜色贴图映射）、星云立方体天空盒背景，叠加 Bloom 辉光；悬停鼠标沿轨道环绕，滚动平滑拉近镜头，模拟向事件视界坠落。
+
+![Black Hole 详情页 - 光线步进黑洞](screenshots/12-blackhole.png)
 
 **CONTACT 详情页** —— 相机从高空俯视"Hello."，向下滚动相机降至电话机水平，露出联系信息卡片（鱼眼 + 色散后处理随进度增强）。
 
@@ -102,7 +108,7 @@ kira_shader/
 ├── src/
 │   ├── main.tsx                # 入口：按 URL hash 路由 App / KiraFilmDemo
 │   ├── App.tsx                 # #home：电脑场景三层架构 + 滚动推入相机
-│   ├── KiraFilmDemo.tsx        # #film：四 Section 滚动叙事 + 4 详情页调度
+│   ├── KiraFilmDemo.tsx        # #film：五 Section 滚动叙事 + 5 详情页调度
 │   ├── styles.css              # 全部 UI 样式（加载屏/导航/胶片/详情页）
 │   ├── assets/
 │   │   ├── screen/             # 4 个屏幕 GIF（Vite 打包 hash）
@@ -113,6 +119,7 @@ kira_shader/
 │       ├── FilmScene.tsx       # 胶片场景（FilmStrip/屏幕/尘埃/拖动切换）
 │       ├── FilmPostProcessing.tsx / ContactPostProcessing.tsx
 │       ├── PaperScene.tsx      # 做旧纸张 GLSL 着色器（滚动内容纹理偏移）
+│       ├── BlackholeScene.tsx  # 实时光线步进黑洞 GLSL3 着色器（引力透镜+吸积盘）
 │       ├── LoadingScreen.tsx   # 10 格复古进度条加载屏
 │       └── NavBar.tsx          # 顶部导航
 └── screenshots/                # 本文档使用的运行截图
@@ -200,7 +207,7 @@ z-40  WebGL Canvas（.canvas-wrapper，3D 内容，pointer-events: none）
 - Section 索引由 `dragOffsetRef` 决定（`Math.round(-offset / 4)`），鼠标水平拖拽（阈值 5px、防误触）更新偏移，松手吸附到最近帧；滚动仅驱动相机 Z 轴推近；
 - 切换瞬间屏幕白闪（flash 强度由距过渡中点距离计算），掩盖相机水平移动与内容跳变。
 
-### 7. 四种详情页形态
+### 7. 五种详情页形态
 
 | 详情页 | 技术方案 |
 | --- | --- |
@@ -208,6 +215,7 @@ z-40  WebGL Canvas（.canvas-wrapper，3D 内容，pointer-events: none）
 | 无限滑动作品柜 | 移植 ArikaShow `photobox`：28 张卡片 GSAP 拖拽，越界瞬间 `mov_x/mov_y ±容器尺寸` 回绕形成无限循环，基准宽度 1440px 整体缩放适配 |
 | 格子间办公 | 8 个面对面格子间（bank/trophy 等 GLB），纯黑背景 + 锐利聚光灯，独立滚动容器驱动相机从高空俯视降落至桌面 |
 | 电话机联系 | `ContactScene` 独立 Canvas，滚动驱动相机从 y=18 降至电话机水平，`ContactPostProcessing` 鱼眼/色散随进度增强 |
+| 光线步进黑洞 | 移植 `blackhole_main.frag`（GLSL3）：300 步 ray march + 角动量守恒近似引力透镜 + Simplex 3D 噪声吸积盘（color_map 颜色映射）+ 星云立方体天空盒 + **ACES Filmic tonemapping**（Narkowicz 曲线），`FilmPostProcessing` Bloom 辉光；滚动平滑缩放 fovScale 拉近镜头 |
 
 每个详情页都用独立滚动容器 + wheel 拦截（`passive:false` + `preventDefault`）闭环滚动状态，滚到顶继续上滑才冒泡退出，并带滞回阈值避免边界抖动。
 
@@ -225,7 +233,9 @@ z-40  WebGL Canvas（.canvas-wrapper，3D 内容，pointer-events: none）
 | `ComputerScene.tsx` | `SCREEN_CONFIG` | 屏幕位置/尺寸/朝向 / emissive 强度 / RectAreaLight 参数 |
 | `ComputerScene.tsx` | `DEBUG` | 置 `true` 启用 OrbitControls 自检相机（发布前务必设回 `false`） |
 | `App.tsx` | `postFXParams` | 首页后处理参数（色散/鱼眼/暗角/Bloom） |
-| `FilmScene.tsx` | `SECTIONS / PROJECTS` | 四个 Section 的文案、主色与作品数据 |
+| `FilmScene.tsx` | `SECTIONS / PROJECTS` | 五个 Section 的文案、主色与作品数据 |
+| `BlackholeScene.tsx` | `BLACKHOLE_FRAG` + uniforms | 黑洞着色器主体；`adisk*` 系吸积盘参数（亮度/密度/噪声 LOD/旋转）、`gravatationalLensing/renderBlackHole` 开关、`fovScale` 基础视场 |
+| `BlackholeDetailPage` | `blackholeFilmParams` | 黑洞页 Bloom：强度 0.3 / 阈值 0.85 / 半径 0.4（精致光晕，避免吸积盘过曝） |
 
 ---
 

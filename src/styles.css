@@ -1945,3 +1945,180 @@ body.camera-debug-mode .scroll-container {
   z-index: 1;
 }
 
+/* ============================================================
+   BlackholeDetailPage 专用样式（section4 实时光线步进黑洞详情页）
+   - blackhole-mode 类加在 .film-detail-overlay 上
+   - 黑洞 Canvas 自带深空星云背景（不透明），overlay 背景设为纯黑
+   - 标题金色发光逐字浮现，说明卡片随滚动进度（--blackhole-progress）淡入
+   - 复用 contact- 前缀的滚动容器和 canvas-wrapper 结构
+   ============================================================ */
+
+/* blackhole-mode：纯黑背景（黑洞渲染自带星云，不需要 backdrop-filter） */
+.film-detail-overlay.blackhole-mode {
+  background: #000000;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 黑洞详情页内容层：固定全屏，标题/说明叠加在黑洞画面上
+   - z-40 在滚动容器之上，pointer-events: none 让滚轮穿透
+   - --blackhole-progress 由 JS 写入，驱动说明淡入 */
+.blackhole-content-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 6vw 32px;
+  pointer-events: none;
+  --blackhole-progress: 0;
+}
+
+/* 详情页关闭时所有后代不接收事件，避免滚轮被拦截（同 contact 逻辑） */
+.blackhole-content-layer * {
+  pointer-events: none !important;
+}
+
+/* 详情页打开后可交互元素恢复事件（信息卡片、链接） */
+.film-detail-overlay.visible .blackhole-info-card,
+.film-detail-overlay.visible .blackhole-footer {
+  pointer-events: auto !important;
+}
+
+/* 黑洞标题区：右上角排版式（编辑杂志风）
+   - 右上对齐小号标题，不再居中大金字
+   - 编号标签（金色小字宽字距）+ 标题 + 细分隔线 + 斜体副标题
+   - .visible 时整体淡入下移；滚动（--blackhole-progress）时淡出上移，
+     让出画面给黑洞特写 */
+.blackhole-header {
+  position: absolute;
+  top: 9%;
+  right: 5vw;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  text-align: right;
+  pointer-events: none;
+  /* 进入淡入（.visible 触发）：初始不可见 */
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 1s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 1s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+.film-detail-overlay.visible .blackhole-header {
+  /* 滚动后淡出上移（progress 0→1 时 opacity 递减、上移） */
+  opacity: clamp(0, calc(1 - var(--blackhole-progress) * 1.5), 1);
+  transform: translateY(calc(18px - var(--blackhole-progress) * 26px));
+}
+
+/* 编号标签：金色小字，宽字距（HUD/编辑标签感） */
+.blackhole-kicker {
+  font-family: var(--font-stix);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.46em;
+  color: #ffcc4d;
+  text-transform: uppercase;
+}
+
+/* 标题：小号粗衬线，暖白 + 极弱暖光（取代原来的巨型发光） */
+.blackhole-title {
+  font-family: var(--font-stix);
+  font-size: clamp(24px, 3.4vw, 48px);
+  font-weight: 700;
+  color: #f5ecd7;
+  margin: 0;
+  line-height: 1.02;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 18px rgba(255, 204, 77, 0.22);
+}
+
+/* 细分隔线：向右渐隐的金色线 */
+.blackhole-rule {
+  width: 130px;
+  height: 1px;
+  background: linear-gradient(to left, rgba(255, 204, 77, 0.85), rgba(255, 204, 77, 0));
+}
+
+/* 副标题：右上对齐细斜体 */
+.blackhole-subtitle {
+  font-family: var(--font-stix);
+  font-size: clamp(12px, 1.3vw, 16px);
+  font-style: italic;
+  color: rgba(245, 236, 215, 0.65);
+  letter-spacing: 0.18em;
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* 说明信息行：三张卡片（随滚动进度从底部淡入上移） */
+.blackhole-info {
+  position: absolute;
+  bottom: 12%;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: clamp(16px, 4vw, 64px);
+  padding: 0 6vw;
+  opacity: clamp(0, calc(var(--blackhole-progress) * 2.5 - 0.7), 1);
+  transform: translateY(calc((1 - var(--blackhole-progress)) * 60px));
+}
+
+.blackhole-info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 26px;
+  border: 1px solid rgba(255, 214, 140, 0.35);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+  min-width: 200px;
+  text-align: left;
+}
+
+.blackhole-info-label {
+  font-family: var(--font-stix);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: #ffcc4d;
+  text-transform: uppercase;
+}
+
+.blackhole-info-value {
+  font-family: var(--font-stix);
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(255, 240, 210, 0.8);
+}
+
+/* 底部提示行 */
+.blackhole-footer {
+  position: absolute;
+  bottom: 28px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 4vw;
+  opacity: clamp(0, calc(var(--blackhole-progress) * 2.5 - 0.8), 1);
+}
+
+.blackhole-footer-hint {
+  font-family: var(--font-stix);
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  color: rgba(255, 224, 160, 0.6);
+  text-transform: uppercase;
+}
+

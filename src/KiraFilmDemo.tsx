@@ -10,6 +10,7 @@ import {
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
+import { BlackholeScene } from './components/BlackholeScene';
 import gsap from 'gsap';
 
 /**
@@ -36,8 +37,7 @@ import gsap from 'gsap';
 function splitTextToChars(
   text: string,
   baseDelay: number,
-  step: number,
-  visible: boolean
+  step: number
 ): ReactNode[] {
   return Array.from(text).map((ch, i) => (
     <span
@@ -110,7 +110,7 @@ export default function KiraFilmDemo() {
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
   // 鼠标拖动偏移（世界坐标 x，负值表示胶片向左移动）
-  // 范围 0 ~ -12（section 0 在 x=0，section 3 在 x=-12）
+  // 范围 0 ~ -(SECTIONS.length-1)*4（section 0 在 x=0，最后一个 section 在 x=-(N-1)*4）
   const dragOffsetRef = useRef(0);
 
   // 后处理参数（参考 shader.se 的胶片质感）
@@ -320,8 +320,8 @@ export default function KiraFilmDemo() {
       }
       // 更新 dragOffset
       let newOffset = startOffset + deltaX * DRAG_SCALE;
-      // 限制范围 [-12, 0]
-      newOffset = Math.max(-12, Math.min(0, newOffset));
+      // 限制范围 [-(SECTIONS.length-1)*4, 0]
+      newOffset = Math.max(-(SECTIONS.length - 1) * 4, Math.min(0, newOffset));
       dragOffsetRef.current = newOffset;
     };
 
@@ -333,7 +333,7 @@ export default function KiraFilmDemo() {
       // 吸附到最近的帧（-i*4，i = round(-offset / 4)）
       const currentOffset = dragOffsetRef.current;
       const nearestFrame = Math.round(-currentOffset / 4);
-      const clampedFrame = Math.max(0, Math.min(3, nearestFrame));
+      const clampedFrame = Math.max(0, Math.min(SECTIONS.length - 1, nearestFrame));
       dragOffsetRef.current = -clampedFrame * 4;
     };
 
@@ -404,7 +404,7 @@ export default function KiraFilmDemo() {
           <h1 className={`hero-title film-hero-title ${textVisible ? 'visible' : ''}`}>
             {currentSection.title.split(' ').map((word, wi, arr) => (
               <span className="hero-line" key={wi}>
-                {splitTextToChars(word, wi * 200, 30, textVisible)}
+                {splitTextToChars(word, wi * 200, 30)}
                 {wi < arr.length - 1 && <span className="hero-char" style={{ display: 'inline-block' }}>{'\u00A0'}</span>}
               </span>
             ))}
@@ -454,9 +454,14 @@ export default function KiraFilmDemo() {
           - 滚轮回退（progress<0.85）时淡出，丝滑回到 3D 场景 */}
       <div
         ref={detailOverlayRef}
-        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
+        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 4 ? 'blackhole-mode' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
       >
-        {sectionIndex === 3 ? (
+        {sectionIndex === 4 ? (
+          /* === Black Hole 详情页：实时光线步进黑洞 ===
+           - 移植 refactorWeb 的 blackhole_main.frag（引力透镜 + 吸积盘 + 星云）
+           - 独立滚动容器：滚动拉近镜头 + 说明淡入，滚回顶部上滑退出 */
+          <BlackholeDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
+        ) : sectionIndex === 3 ? (
           /* === Contact 详情页：shader.se/#contact 风格 ===
            - 独立滚动容器驱动相机下降动画
            - 初始：相机高处俯视，Hello 居中显示，看不见电话机
@@ -1963,6 +1968,218 @@ function PaperDetailPage({
       {/* 独立滚动容器：撑出滚动空间让用户能滚动驱动文字偏移 */}
       <div ref={paperScrollRef} className="contact-scroll-container">
         <div className="contact-scroll-placeholder" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * BlackholeDetailPage - BLACK HOLE section 详情页（实时光线步进黑洞）
+ *
+ * 功能：
+ *  - 全屏 WebGL2 Canvas 渲染移植的黑洞 shader（引力透镜 + 吸积盘 + 星云天空盒）
+ *  - 独立滚动容器驱动内部滚动进度（与外层 scroll-container 解耦）：
+ *      - 滚动时 fovScale 平滑缩小（镜头拉近，模拟向黑洞坠落）+ 说明文字淡入
+ *  - 鼠标控制：悬停时相机沿轨道跟随鼠标，静止后平滑退回自动绕飞
+ *  - 滚轮回退到顶部后继续上滑 → 退出详情页回 3D 场景
+ *  - 每次进入详情页（detailOpen false→true）时重置内部滚动状态
+ *
+ * 参数：
+ *  - mouseRef    鼠标归一化坐标 ref（0~1），传给 BlackholeScene 驱动相机轨道
+ *  - detailOpen 外层详情页是否打开（用于在每次进入时重置滚动状态）
+ *
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 300 步光线步进对 GPU 压力大，Canvas 设 dpr=0.55 保证流畅
+ *  - 黑洞 shader 背景为深空（自带星云），Canvas 不透明（无需 alpha）
+ *  - 复用 FilmPostProcessing 的 bloom（阈值 0.7 只辉光吸积盘/星云亮区）+ 暗角 + 颗粒
+ */
+function BlackholeDetailPage({
+  mouseRef,
+  detailOpen,
+}: {
+  mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  detailOpen: boolean;
+}) {
+  // 黑洞详情页内部独立滚动容器 ref
+  const blackholeScrollRef = useRef<HTMLDivElement>(null);
+  // 内部滚动进度 0~1（驱动镜头拉近 + 说明淡入）
+  const blackholeScrollProgress = useRef(0);
+  // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
+  const atTopRef = useRef(true);
+  // 内容层 ref（写入 CSS 变量 --blackhole-progress 驱动说明淡入）
+  const contentLayerRef = useRef<HTMLDivElement>(null);
+  // blackhole-detail-inner 根元素 ref（绑定 wheel 事件拦截）
+  const blackholeInnerRef = useRef<HTMLDivElement>(null);
+  // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主，
+  // 若沿用默认 bloom（threshold 0.9 / radius 0.3）会让吸积盘辉光过强过糊。
+  // 这里提高阈值（0.85）只让最亮的吸积盘中心参与辉光、收紧半径（0.4）缩小扩散，
+  // 并降低强度（0.3），让辉光呈"精致的光晕"而非整片过曝。
+  const blackholeFilmParams = useMemo<FilmFXParams>(
+    () => ({
+      ...DEFAULT_FILM_PARAMS,
+      bloomIntensity: 0.3,
+      bloomThreshold: 0.85,
+      bloomRadius: 0.4,
+    }),
+    []
+  );
+
+  /**
+   * 黑洞详情页内部滚动事件处理
+   *
+   * 功能：读取 blackholeScrollRef 的 scrollTop，计算 0~1 的进度
+   *      1. 写入 blackholeScrollProgress.current（驱动镜头拉近，由 useFrame 读取）
+   *      2. 写入内容层 CSS 变量 --blackhole-progress（驱动说明文字淡入）
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  const handleBlackholeScroll = useCallback(() => {
+    const el = blackholeScrollRef.current;
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    const progress = max > 0 ? el.scrollTop / max : 0;
+    const clamped = Math.max(0, Math.min(1, progress));
+    blackholeScrollProgress.current = clamped;
+    atTopRef.current = el.scrollTop <= 0;
+    if (contentLayerRef.current) {
+      contentLayerRef.current.style.setProperty('--blackhole-progress', String(clamped));
+    }
+  }, []);
+
+  // 绑定滚动监听
+  useEffect(() => {
+    const el = blackholeScrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    blackholeScrollProgress.current = 0;
+    el.addEventListener('scroll', handleBlackholeScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleBlackholeScroll);
+  }, [handleBlackholeScroll]);
+
+  /**
+   * 进入/退出详情页时重置内部滚动状态
+   *
+   * 功能：监听 detailOpen 变化，每次进入详情页（detailOpen=true）时
+   *      重置滚动容器的 scrollTop 与滚动进度。
+   *
+   * 参数：无（通过闭包读取 detailOpen）
+   * 返回值：无
+   */
+  useEffect(() => {
+    if (!detailOpen) return;
+    const el = blackholeScrollRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = 0;
+      blackholeScrollProgress.current = 0;
+      atTopRef.current = true;
+      if (contentLayerRef.current) {
+        contentLayerRef.current.style.setProperty('--blackhole-progress', '0');
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [detailOpen]);
+
+  /**
+   * 黑洞详情页根元素 wheel 事件拦截
+   *
+   * 功能：在根元素上拦截 wheel 事件，手动滚动滚动容器。
+   *      已滚到顶且继续上滑 → 允许冒泡到 overlay，让外层退出详情页。
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  useEffect(() => {
+    const el = blackholeInnerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const scrollEl = blackholeScrollRef.current;
+      if (!scrollEl) return;
+      if (scrollEl.scrollTop <= 0 && e.deltaY < 0) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      scrollEl.scrollTop += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  return (
+    <div ref={blackholeInnerRef} className="contact-detail-inner">
+      {/* 全屏 Canvas：实时光线步进黑洞
+          - dpr=0.55 控制分辨率（300 步 ray march 很重），保证流畅
+          - 不透明背景（黑洞自带深空星云）
+          - 复用 FilmPostProcessing 提供 bloom + 暗角 + 颗粒 */}
+      <div className="contact-canvas-wrapper">
+        <Canvas
+          dpr={0.55}
+          gl={{ antialias: false, powerPreference: 'high-performance' }}
+          camera={{ fov: 45, near: 0.1, far: 100, position: [0, 0, 1] }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#000000'), 1);
+          }}
+        >
+          <Suspense fallback={null}>
+            <BlackholeScene
+              mouseRef={mouseRef}
+              zoomProgressRef={blackholeScrollProgress}
+            />
+          </Suspense>
+          <FilmPostProcessing params={blackholeFilmParams} />
+        </Canvas>
+      </div>
+
+      {/* 独立滚动容器：撑出滚动空间让用户能滚动驱动镜头拉近 */}
+      <div ref={blackholeScrollRef} className="contact-scroll-container">
+        <div className="contact-scroll-placeholder" />
+      </div>
+
+      {/* 内容层：固定全屏，包含右上角标题 + 说明 + 滚回提示 */}
+      <div ref={contentLayerRef} className="blackhole-content-layer">
+        {/* 右上角排版式标题：小号、右对齐、编号标签 + 细分隔线 + 斜体副标题
+            - 不再居中大金字，改为编辑排版风（呼应整站电影感）
+            - 随滚动（--blackhole-progress）淡出上移，让出画面给黑洞特写 */}
+        <div className="blackhole-header">
+          <span className="blackhole-kicker">05 — REAL-TIME SHADER</span>
+          <h1 className="blackhole-title">BLACK HOLE</h1>
+          <div className="blackhole-rule" />
+          <p className="blackhole-subtitle">Ray-Marched Reality · GLSL3</p>
+        </div>
+
+        {/* 说明信息（随滚动进度淡入） */}
+        <div className="blackhole-info">
+          <div className="blackhole-info-card">
+            <span className="blackhole-info-label">Gravitational Lensing</span>
+            <span className="blackhole-info-value">
+              Light rays bend around the event horizon
+            </span>
+          </div>
+          <div className="blackhole-info-card">
+            <span className="blackhole-info-label">Accretion Disk</span>
+            <span className="blackhole-info-value">
+              Volumetric noise field · color-mapped plasma
+            </span>
+          </div>
+          <div className="blackhole-info-card">
+            <span className="blackhole-info-label">Skybox Nebula</span>
+            <span className="blackhole-info-value">
+              6-face cube map · sampled as background
+            </span>
+          </div>
+        </div>
+
+        {/* 底部提示：鼠标控制 + 滚回 */}
+        <div className="blackhole-footer">
+          <span className="blackhole-footer-hint">
+            HOVER TO ORBIT · SCROLL TO APPROACH
+          </span>
+          <span className="contact-footer-hint">Scroll up to return</span>
+        </div>
       </div>
     </div>
   );
