@@ -340,7 +340,10 @@ const BLACKHOLE_FRAG = /* glsl */ `
     }
 
     dir = rotateVector(dir, vec3(0.0, 1.0, 0.0), time);
-    color += texture(galaxy, dir).rgb * alpha;
+    // skybox_nebula_dark 是暗版星云（六面平均亮度仅 4~17/255），
+    // 原始值进 ACES 后几乎不可见。提高倍率让背景星云层次显现，
+    // 亮点（吸附在吸积盘上的星云亮斑）则提得更高形成星点。
+    color += texture(galaxy, dir).rgb * 5.0 * alpha;
     return color;
   }
 

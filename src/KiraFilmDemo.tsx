@@ -2114,12 +2114,13 @@ function BlackholeDetailPage({
   return (
     <div ref={blackholeInnerRef} className="contact-detail-inner">
       {/* 全屏 Canvas：实时光线步进黑洞
-          - dpr=0.55 控制分辨率（300 步 ray march 很重），保证流畅
+          - dpr=1.0 全分辨率渲染（300 步 ray march 较重，高端 GPU 无压力；
+            低端集显若掉帧可降回 0.8）
           - 不透明背景（黑洞自带深空星云）
           - 复用 FilmPostProcessing 提供 bloom + 暗角 + 颗粒 */}
       <div className="contact-canvas-wrapper">
         <Canvas
-          dpr={0.55}
+          dpr={1.0}
           gl={{ antialias: false, powerPreference: 'high-performance' }}
           camera={{ fov: 45, near: 0.1, far: 100, position: [0, 0, 1] }}
           onCreated={({ gl }) => {
