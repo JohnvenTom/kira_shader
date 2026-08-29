@@ -388,7 +388,14 @@ const BLACKHOLE_FRAG = /* glsl */ `
     vec3 color = traceColor(pos, dir);
     // ACES Filmic tonemapping：把线性 HDR 压缩到 [0,1] LDR，
     // 避免吸积盘亮区过曝、星云暗背景被后续 sRGB 编码提亮成灰
-    fragColor.rgb = aces(color);
+    color = aces(color);
+    // === 鲜艳度增强 ===
+    // ACES 曲线会压低暗部并略微降饱和，这里补回：轻微曝光 + 饱和度提升，
+    // 让吸积盘的橙金、星云的蓝紫更浓烈
+    color *= 1.12;
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(vec3(luma), color, 1.4);
+    fragColor.rgb = clamp(color, 0.0, 1.0);
     fragColor.a = 1.0;
   }
 `;
@@ -453,7 +460,10 @@ export function BlackholeScene({
 
   // 加载立方体星云天空盒（顺序：px,nx,py,ny,pz,nz = right,left,top,bottom,front,back）
   // 与吸积盘颜色贴图：用 loader.load() 同步返回纹理对象（图片异步上传，
-  // 数据就绪后 Three.js 自动上传 GPU），避免 useLoader 的泛型推断问题
+  // 数据就绪后 Three.js 自动上传 GPU），避免 useLoader 的泛型推断问题。
+  // 注意：colorSpace 保持 LinearSRGBColorSpace（默认）——与原项目 stb_image
+  // 加载贴图直接当线性值用一致。若设 SRGBColorSpace，GPU 会做 sRGB→线性解码，
+  // 暗部像素（星云 0.1）被压到线性 0.006，导致背景几乎全黑。
   const { galaxy, colorMap } = useMemo(() => {
     const cubeLoader = new THREE.CubeTextureLoader();
     const galaxyTex = cubeLoader.load([
@@ -464,11 +474,9 @@ export function BlackholeScene({
       '/asset/textures/blackhole/skybox_nebula_dark/front.png',
       '/asset/textures/blackhole/skybox_nebula_dark/back.png',
     ]);
-    galaxyTex.colorSpace = THREE.SRGBColorSpace;
     const mapTex = new THREE.TextureLoader().load(
       '/asset/textures/blackhole/color_map.png'
     );
-    mapTex.colorSpace = THREE.SRGBColorSpace;
     return { galaxy: galaxyTex, colorMap: mapTex };
   }, []);
 

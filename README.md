@@ -215,7 +215,7 @@ z-40  WebGL Canvas（.canvas-wrapper，3D 内容，pointer-events: none）
 | 无限滑动作品柜 | 移植 ArikaShow `photobox`：28 张卡片 GSAP 拖拽，越界瞬间 `mov_x/mov_y ±容器尺寸` 回绕形成无限循环，基准宽度 1440px 整体缩放适配 |
 | 格子间办公 | 8 个面对面格子间（bank/trophy 等 GLB），纯黑背景 + 锐利聚光灯，独立滚动容器驱动相机从高空俯视降落至桌面 |
 | 电话机联系 | `ContactScene` 独立 Canvas，滚动驱动相机从 y=18 降至电话机水平，`ContactPostProcessing` 鱼眼/色散随进度增强 |
-| 光线步进黑洞 | 移植 `blackhole_main.frag`（GLSL3）：300 步 ray march + 角动量守恒近似引力透镜 + Simplex 3D 噪声吸积盘（color_map 颜色映射）+ 星云立方体天空盒 + **ACES Filmic tonemapping**（Narkowicz 曲线），`FilmPostProcessing` Bloom 辉光；滚动平滑缩放 fovScale 拉近镜头 |
+| 光线步进黑洞 | 移植 `blackhole_main.frag`（GLSL3）：300 步 ray march + 角动量守恒近似引力透镜 + Simplex 3D 噪声吸积盘（color_map 颜色映射）+ 星云立方体天空盒 + **ACES Filmic tonemapping + 饱和度/曝光增强**，`FilmPostProcessing` Bloom 辉光；滚动平滑缩放 fovScale 拉近镜头 |
 
 每个详情页都用独立滚动容器 + wheel 拦截（`passive:false` + `preventDefault`）闭环滚动状态，滚到顶继续上滑才冒泡退出，并带滞回阈值避免边界抖动。
 

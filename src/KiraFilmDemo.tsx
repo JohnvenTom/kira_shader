@@ -2016,12 +2016,14 @@ function BlackholeDetailPage({
   // 若沿用默认 bloom（threshold 0.9 / radius 0.3）会让吸积盘辉光过强过糊。
   // 这里提高阈值（0.85）只让最亮的吸积盘中心参与辉光、收紧半径（0.4）缩小扩散，
   // 并降低强度（0.3），让辉光呈"精致的光晕"而非整片过曝。
+  // sepiaIntensity 降到 0.05：sepia 会把颜色压成棕灰，去掉它让吸积盘更鲜艳。
   const blackholeFilmParams = useMemo<FilmFXParams>(
     () => ({
       ...DEFAULT_FILM_PARAMS,
       bloomIntensity: 0.3,
       bloomThreshold: 0.85,
       bloomRadius: 0.4,
+      sepiaIntensity: 0.05,
     }),
     []
   );
@@ -2128,6 +2130,7 @@ function BlackholeDetailPage({
             <BlackholeScene
               mouseRef={mouseRef}
               zoomProgressRef={blackholeScrollProgress}
+              adiskLit={0.9}
             />
           </Suspense>
           <FilmPostProcessing params={blackholeFilmParams} />
