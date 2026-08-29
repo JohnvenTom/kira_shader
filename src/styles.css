@@ -2058,6 +2058,24 @@ body.camera-debug-mode .scroll-container {
   white-space: nowrap;
 }
 
+/* 常驻小字提示：提醒用户点击左键切换视角模式
+   - 顶部中央，低透明度、宽字距
+   - 初始可见（opacity 0.65），滚动拉近后淡出让位给黑洞特写 */
+.blackhole-click-hint {
+  position: absolute;
+  top: 9%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-stix);
+  font-size: 11px;
+  letter-spacing: 0.38em;
+  color: rgba(255, 224, 160, 0.8);
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: clamp(0, calc(0.7 - var(--blackhole-progress) * 1.0), 0.7);
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.9);
+}
+
 /* 说明信息行：三张卡片（随滚动进度从底部淡入上移） */
 .blackhole-info {
   position: absolute;

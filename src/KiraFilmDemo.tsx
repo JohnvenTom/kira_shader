@@ -2012,6 +2012,9 @@ function BlackholeDetailPage({
   const contentLayerRef = useRef<HTMLDivElement>(null);
   // blackhole-detail-inner 根元素 ref（绑定 wheel 事件拦截）
   const blackholeInnerRef = useRef<HTMLDivElement>(null);
+  // 视角模式（'auto' 自动轨道 / 'orbit' 鼠标控制）：点击左键在两者间切换
+  const blackholeModeRef = useRef<'auto' | 'orbit'>('auto');
+  const [blackholeMode, setBlackholeMode] = useState<'auto' | 'orbit'>('auto');
   // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主，
   // 若沿用默认 bloom（threshold 0.9 / radius 0.3）会让吸积盘辉光过强过糊。
   // 这里提高阈值（0.85）只让最亮的吸积盘中心参与辉光、收紧半径（0.4）缩小扩散，
@@ -2132,6 +2135,8 @@ function BlackholeDetailPage({
               mouseRef={mouseRef}
               zoomProgressRef={blackholeScrollProgress}
               adiskLit={0.9}
+              modeRef={blackholeModeRef}
+              onModeChange={setBlackholeMode}
             />
           </Suspense>
           <FilmPostProcessing params={blackholeFilmParams} />
@@ -2153,6 +2158,11 @@ function BlackholeDetailPage({
           <h1 className="blackhole-title">BLACK HOLE</h1>
           <div className="blackhole-rule" />
           <p className="blackhole-subtitle">Ray-Marched Reality · GLSL3</p>
+        </div>
+
+        {/* 常驻小字提示：提醒用户点击左键切换视角模式（滚动后淡出让位） */}
+        <div className="blackhole-click-hint">
+          LEFT CLICK · SWITCH VIEW MODE
         </div>
 
         {/* 说明信息（随滚动进度淡入） */}
@@ -2177,10 +2187,13 @@ function BlackholeDetailPage({
           </div>
         </div>
 
-        {/* 底部提示：鼠标控制 + 滚回 */}
+        {/* 底部提示：当前视角模式 + 点击切换提示 + 滚回 */}
         <div className="blackhole-footer">
           <span className="blackhole-footer-hint">
-            HOVER TO ORBIT · SCROLL TO APPROACH
+            {blackholeMode === 'orbit'
+              ? 'ORBIT VIEW · CLICK LEFT TO AUTO'
+              : 'AUTO VIEW · CLICK LEFT TO ORBIT'}{' '}
+            · SCROLL TO APPROACH
           </span>
           <span className="contact-footer-hint">Scroll up to return</span>
         </div>

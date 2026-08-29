@@ -413,10 +413,14 @@ const BLACKHOLE_VERT = /* glsl */ `
 `;
 
 interface BlackholeSceneProps {
-  /** 鼠标归一化坐标 ref（0~1，相对窗口），驱动相机轨道（mouseControl 模式） */
+  /** 鼠标归一化坐标 ref（0~1，相对窗口），驱动相机轨道（orbit 模式） */
   mouseRef?: React.MutableRefObject<{ x: number; y: number }>;
-  /** 是否启用鼠标控制（默认 true，鼠标移动时接管相机；静止后平滑退回自动轨道） */
+  /** 是否启用鼠标控制（默认 true；false 时强制自动轨道，点击也不切换） */
   mouseControl?: boolean;
+  /** 视角模式 ref（'auto' 自动轨道 / 'orbit' 鼠标控制），点击左键在两者间切换 */
+  modeRef?: React.MutableRefObject<'auto' | 'orbit'>;
+  /** 模式切换回调（用于 HUD 提示文字更新） */
+  onModeChange?: (mode: 'auto' | 'orbit') => void;
   /** 吸积盘亮度倍率（默认 0.25，随详情页滚动可增强） */
   adiskLit?: number;
   /** 滚动缩放进度 ref（0~1），滚动时平滑拉近镜头（fovScale 缩小 → 画面放大） */
@@ -429,14 +433,20 @@ interface BlackholeSceneProps {
  * 功能：
  *  - 全屏四边形 + GLSL3 ShaderMaterial 执行 300 步光线步进黑洞渲染
  *  - 加载立方体星云天空盒（galaxy）与吸积盘颜色贴图（colorMap）
- *  - 鼠标控制：移动鼠标时相机沿大圆弧轨道跟随（mouseControl 平滑插值）
- *  - 静止时自动恢复时间驱动的轨道绕飞，保证画面持续有动态
+ *  - 两种视角模式（点击鼠标左键切换）：
+ *      - auto ：时间驱动的自动轨道绕飞，画面持续有动态
+ *      - orbit：鼠标控制相机沿大圆弧轨道跟随（带阻尼平滑）
+ *  - 鼠标坐标做低通滤波（阻尼系数 0.045），相机跟随"有惯性延迟"而非硬跟手，
+ *    让镜头运动更高级、更沉
  *  - 每帧更新 time / resolution / mouse / 各渲染参数 uniform
  *
  * 参数：
  *  - mouseRef       外部鼠标归一化坐标 ref（可选，不传则内部自行监听）
  *  - mouseControl   是否启用鼠标控制（默认 true）
+ *  - modeRef        视角模式 ref（外部可读，用于 HUD）
+ *  - onModeChange   模式切换回调
  *  - adiskLit       吸积盘亮度倍率
+ *  - zoomProgressRef 滚动缩放进度 ref
  *
  * 返回值：React.ReactElement（R3F 场景内容，需放入 <Canvas>）
  *
@@ -450,16 +460,21 @@ interface BlackholeSceneProps {
 export function BlackholeScene({
   mouseRef,
   mouseControl = true,
+  modeRef,
+  onModeChange,
   adiskLit = 0.25,
   zoomProgressRef,
 }: BlackholeSceneProps) {
   const { size, gl } = useThree();
   // 内部鼠标位置（像素坐标，shader 直接用它除以 resolution）
   const pixelMouseRef = useRef({ x: 0, y: 0 });
-  // 鼠标移动时间戳（用于判断是否静止 → 平滑切回自动轨道）
-  const lastMoveRef = useRef(-10);
-  // mouseControl uniform 平滑值（0 自动轨道 / 1 鼠标控制）
+  // 视角模式（'auto' | 'orbit'），默认自动轨道；点击左键切换
+  const internalModeRef = useRef<'auto' | 'orbit'>('auto');
+  const activeModeRef = (modeRef ?? internalModeRef) as React.MutableRefObject<'auto' | 'orbit'>;
+  // mouseControl uniform 平滑值（0 自动轨道 / 1 鼠标控制，lerp 过渡避免突兀跳变）
   const controlSmoothRef = useRef(0);
+  // 鼠标坐标低通滤波（阻尼）：相机跟随鼠标有惯性延迟
+  const smoothMouseRef = useRef({ x: 0, y: 0 });
 
   // 加载立方体星云天空盒（顺序：px,nx,py,ny,pz,nz = right,left,top,bottom,front,back）
   // 与吸积盘颜色贴图：用 loader.load() 同步返回纹理对象（图片异步上传，
@@ -520,16 +535,27 @@ export function BlackholeScene({
     [galaxy, colorMap, adiskLit]
   );
 
-  // 鼠标监听：更新像素坐标与移动时间戳
+  // 鼠标监听：更新像素坐标；左键点击切换视角模式（auto ↔ orbit）
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       pixelMouseRef.current.x = e.clientX;
       pixelMouseRef.current.y = e.clientY;
-      lastMoveRef.current = performance.now();
+    };
+    const onDown = (e: MouseEvent) => {
+      // 仅左键触发切换
+      if (e.button !== 0) return;
+      if (!mouseControl) return;
+      const next = activeModeRef.current === 'orbit' ? 'auto' : 'orbit';
+      activeModeRef.current = next;
+      onModeChange?.(next);
     };
     window.addEventListener('pointermove', onMove);
-    return () => window.removeEventListener('pointermove', onMove);
-  }, []);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [mouseControl, activeModeRef, onModeChange]);
 
   // 每帧更新 uniforms
   useFrame(({ clock }) => {
@@ -545,27 +571,35 @@ export function BlackholeScene({
     const dh = gl.domElement.height || Math.max(size.height, 1);
     u.resolution.value.set(dw, dh);
 
-    // 鼠标控制平滑插值：有鼠标移动 → 平滑切到 1；静止 2.5s 后平滑退回 0（自动轨道）
-    const target = mouseControl && performance.now() - lastMoveRef.current < 2500 ? 1 : 0;
+    // 视角模式 → mouseControl uniform（lerp 平滑过渡，切换时无突兀跳变）
+    const target = activeModeRef.current === 'orbit' ? 1 : 0;
     controlSmoothRef.current = THREE.MathUtils.lerp(controlSmoothRef.current, target, 0.04);
     u.mouseControl.value = controlSmoothRef.current;
 
-    // 鼠标坐标（统一转成 drawing buffer 物理像素，shader 内 mouse/resolution 即 0~1）
+    // 鼠标坐标：目标值（统一转成 drawing buffer 物理像素，shader 内 mouse/resolution 即 0~1）
+    let targetMX: number;
+    let targetMY: number;
     if (mouseRef) {
       // mouseRef 为 -1~1 归一化（屏幕中心 = 0）：映射回 0~1 再乘物理分辨率
-      u.mouseX.value = ((mouseRef.current.x + 1) / 2) * dw;
-      u.mouseY.value = ((mouseRef.current.y + 1) / 2) * dh;
+      targetMX = ((mouseRef.current.x + 1) / 2) * dw;
+      targetMY = ((mouseRef.current.y + 1) / 2) * dh;
     } else {
       // 内部监听：clientX/clientY 为 CSS 像素，按窗口比例映射到物理分辨率
-      u.mouseX.value = (pixelMouseRef.current.x / Math.max(window.innerWidth, 1)) * dw;
-      u.mouseY.value = (pixelMouseRef.current.y / Math.max(window.innerHeight, 1)) * dh;
+      targetMX = (pixelMouseRef.current.x / Math.max(window.innerWidth, 1)) * dw;
+      targetMY = (pixelMouseRef.current.y / Math.max(window.innerHeight, 1)) * dh;
     }
+    // 低通滤波（强阻尼）：系数 0.045 → 相机跟随鼠标有惯性延迟，
+    // 不"硬跟手"而是优雅地追向目标，镜头运动更高级
+    smoothMouseRef.current.x = THREE.MathUtils.lerp(smoothMouseRef.current.x, targetMX, 0.045);
+    smoothMouseRef.current.y = THREE.MathUtils.lerp(smoothMouseRef.current.y, targetMY, 0.045);
+    u.mouseX.value = smoothMouseRef.current.x;
+    u.mouseY.value = smoothMouseRef.current.y;
 
-    // 滚动缩放：progress 0→1 时 fovScale 从 1 平滑缩到 0.4（画面拉近约 2.5 倍），
-    // 模拟"向黑洞坠落"的推进感
+    // 滚动缩放：progress 0→1 时 fovScale 从 1 平滑升到 2.2（视野扩大约 2.2 倍），
+    // 模拟"滚轮向下、镜头拉远"——黑洞变小、四周星云视野更开阔
     if (zoomProgressRef) {
       const zoom = Math.max(0, Math.min(1, zoomProgressRef.current));
-      u.fovScale.value = THREE.MathUtils.lerp(u.fovScale.value, 1.0 - 0.6 * zoom, 0.06);
+      u.fovScale.value = THREE.MathUtils.lerp(u.fovScale.value, 1.0 + 1.2 * zoom, 0.06);
     }
   });
 
