@@ -2016,17 +2016,18 @@ function BlackholeDetailPage({
   const blackholeModeRef = useRef<'auto' | 'orbit'>('auto');
   const [blackholeMode, setBlackholeMode] = useState<'auto' | 'orbit'>('auto');
   // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主，
-  // 若沿用默认 bloom（threshold 0.9 / radius 0.3）会让吸积盘辉光过强过糊。
-  // 这里提高阈值（0.85）只让最亮的吸积盘中心参与辉光、收紧半径（0.4）缩小扩散，
-  // 并降低强度（0.3），让辉光呈"精致的光晕"而非整片过曝。
-  // sepiaIntensity 降到 0.05：sepia 会把颜色压成棕灰，去掉它让吸积盘更鲜艳。
+  // bloom 已关闭（bloomIntensity 0 / threshold 0.99）：画面只保留吸积盘本体亮度，
+  // 不叠加辉光，配合暗背景呈现干净锐利的高画质观感。
+  // sepiaIntensity 置 0：去掉棕褐调色，吸积盘颜色更鲜艳。
+  // noiseIntensity 置 0：去掉胶片颗粒，画面更干净清晰（高画质）。
   const blackholeFilmParams = useMemo<FilmFXParams>(
     () => ({
       ...DEFAULT_FILM_PARAMS,
       bloomIntensity: 0.3,
-      bloomThreshold: 0.85,
-      bloomRadius: 0.4,
-      sepiaIntensity: 0.05,
+      bloomThreshold: 0.5,
+      bloomRadius: 0.99,
+      sepiaIntensity: 0,
+      noiseIntensity: 0,
     }),
     []
   );
@@ -2134,7 +2135,7 @@ function BlackholeDetailPage({
             <BlackholeScene
               mouseRef={mouseRef}
               zoomProgressRef={blackholeScrollProgress}
-              adiskLit={0.9}
+              adiskLit={0.6}
               modeRef={blackholeModeRef}
               onModeChange={setBlackholeMode}
             />

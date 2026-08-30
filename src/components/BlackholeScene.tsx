@@ -261,7 +261,10 @@ const BLACKHOLE_FRAG = /* glsl */ `
 
   void adiskColor(vec3 pos, inout vec3 color, inout float alpha) {
     float innerRadius = 2.6;
-    float outerRadius = 12.0;
+    // 外半径从 12.0 扩到 16.0：吸积盘宽度加大（盘带更宽更舒展）。
+    // 注意：外半径增大后同等位置的归一化密度会升高（整体变亮），
+    // 因此配合降低 adiskLit（0.9 → 0.6）保持整体亮度不至于过曝。
+    float outerRadius = 16.0;
 
     float density = max(
         0.0, 1.0 - length(pos.xyz / vec3(outerRadius, adiskHeight, outerRadius)));
