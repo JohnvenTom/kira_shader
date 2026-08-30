@@ -305,8 +305,27 @@ const BLACKHOLE_FRAG = /* glsl */ `
       }
     }
 
-    vec3 dustColor =
-        texture(colorMap, vec2(sphericalCoord.x / outerRadius, 0.5)).rgb;
+    // === 吸积盘"真实配色" ===
+    // 原因：原实现用 colorMap 采样（UV.x = rho / outerRadius），而密度按
+    // 1/rho^4 衰减、物质集中在近内半径 rho≈2.6~4 处，该区间 UV.x≈0.16~0.25，
+    // 正好落在贴图左侧近白色段，导致整盘主体发白。
+    // 这里改按径向温度梯度构造颜色（符合真实吸积盘观感）：
+    //   内缘(高温)白热 → 中部金黄辉光 → 外缘(低温)暗橙红
+    // colorMap 的暖色渐变保留做次要调制，增加盘面色彩层次。
+    float radial = clamp((sphericalCoord.x - innerRadius) /
+                             (outerRadius - innerRadius),
+                         0.0, 1.0);
+    vec3 hotWhite = vec3(1.00, 0.93, 0.80);  // 内缘白热
+    vec3 golden   = vec3(1.00, 0.60, 0.18);  // 中部金黄
+    vec3 deepRed  = vec3(0.55, 0.12, 0.05);  // 外缘暗橙红
+    vec3 diskTint = mix(
+        mix(hotWhite, golden, smoothstep(0.0, 0.5, radial)),
+        deepRed,
+        smoothstep(0.5, 1.0, radial));
+
+    vec3 mapColor =
+        texture(colorMap, vec2(radial, 0.5)).rgb;
+    vec3 dustColor = diskTint * (0.35 + 0.65 * mapColor.r);
 
     color += density * adiskLit * dustColor * alpha * abs(noise);
   }
@@ -471,11 +490,12 @@ export function BlackholeScene({
   const { size, gl } = useThree();
   // 内部鼠标位置（像素坐标，shader 直接用它除以 resolution）
   const pixelMouseRef = useRef({ x: 0, y: 0 });
-  // 视角模式（'auto' | 'orbit'），默认自动轨道；点击左键切换
-  const internalModeRef = useRef<'auto' | 'orbit'>('auto');
+  // 视角模式（'auto' | 'orbit'），默认鼠标控制（orbit）；点击左键切换
+  const internalModeRef = useRef<'auto' | 'orbit'>('orbit');
   const activeModeRef = (modeRef ?? internalModeRef) as React.MutableRefObject<'auto' | 'orbit'>;
   // mouseControl uniform 平滑值（0 自动轨道 / 1 鼠标控制，lerp 过渡避免突兀跳变）
-  const controlSmoothRef = useRef(0);
+  // 初始值 1：默认 orbit 模式下进入即鼠标控制，无需从 0 过渡
+  const controlSmoothRef = useRef(1);
   // 鼠标坐标低通滤波（阻尼）：相机跟随鼠标有惯性延迟
   const smoothMouseRef = useRef({ x: 0, y: 0 });
 

@@ -2013,8 +2013,9 @@ function BlackholeDetailPage({
   // blackhole-detail-inner 根元素 ref（绑定 wheel 事件拦截）
   const blackholeInnerRef = useRef<HTMLDivElement>(null);
   // 视角模式（'auto' 自动轨道 / 'orbit' 鼠标控制）：点击左键在两者间切换
-  const blackholeModeRef = useRef<'auto' | 'orbit'>('auto');
-  const [blackholeMode, setBlackholeMode] = useState<'auto' | 'orbit'>('auto');
+  // 默认 orbit：进入黑洞页面即为鼠标控制视角，更符合交互直觉
+  const blackholeModeRef = useRef<'auto' | 'orbit'>('orbit');
+  const [blackholeMode, setBlackholeMode] = useState<'auto' | 'orbit'>('orbit');
   // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主，
   // bloom 已关闭（bloomIntensity 0 / threshold 0.99）：画面只保留吸积盘本体亮度，
   // 不叠加辉光，配合暗背景呈现干净锐利的高画质观感。
