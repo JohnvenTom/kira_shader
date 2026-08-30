@@ -1,0 +1,405 @@
+{
+  "fields": [
+    {
+      "type": "vec2",
+      "name": "iResolution"
+    },
+    {
+      "type": "float",
+      "name": "iFovRadians"
+    },
+    {
+      "type": "float",
+      "name": "iTime"
+    },
+    {
+      "type": "float",
+      "name": "iGameTime"
+    },
+    {
+      "type": "float",
+      "name": "iTimeDelta"
+    },
+    {
+      "type": "float",
+      "name": "iTimeRate"
+    },
+    {
+      "type": "mat4x4",
+      "name": "iInverseCamRot"
+    },
+    {
+      "type": "vec4",
+      "name": "iBlackHoleRelativePosRs"
+    },
+    {
+      "type": "vec4",
+      "name": "iBlackHoleRelativeDiskNormal"
+    },
+    {
+      "type": "vec4",
+      "name": "iBlackHoleRelativeDiskTangen"
+    },
+    {
+      "type": "vec4",
+      "name": "iCameraVelocity"
+    },
+    {
+      "type": "vec4",
+      "name": "ie1_up"
+    },
+    {
+      "type": "vec4",
+      "name": "ie2_up"
+    },
+    {
+      "type": "vec4",
+      "name": "ie3_up"
+    },
+    {
+      "type": "vec4",
+      "name": "iU_up"
+    },
+    {
+      "type": "int",
+      "name": "iCamDataCoordisOutgoing"
+    },
+    {
+      "type": "int",
+      "name": "iDEBUG"
+    },
+    {
+      "type": "int",
+      "name": "iPrepass"
+    },
+    {
+      "type": "int",
+      "name": "iWhitehole"
+    },
+    {
+      "type": "int",
+      "name": "iInWhichUniverse"
+    },
+    {
+      "type": "int",
+      "name": "iGrid"
+    },
+    {
+      "type": "int",
+      "name": "iEnableHeatHaze"
+    },
+    {
+      "type": "int",
+      "name": "iEnableShadowCulling"
+    },
+    {
+      "type": "int",
+      "name": "iObserverMode"
+    },
+    {
+      "type": "int",
+      "name": "iPolarization"
+    },
+    {
+      "type": "int",
+      "name": "iUseImageDisk"
+    },
+    {
+      "type": "float",
+      "name": "iQuality"
+    },
+    {
+      "type": "float",
+      "name": "iUniverseSign"
+    },
+    {
+      "type": "float",
+      "name": "iBlackHoleTime"
+    },
+    {
+      "type": "float",
+      "name": "iBlackHoleMassSol"
+    },
+    {
+      "type": "float",
+      "name": "iSpin"
+    },
+    {
+      "type": "float",
+      "name": "iQ"
+    },
+    {
+      "type": "float",
+      "name": "iMu"
+    },
+    {
+      "type": "float",
+      "name": "iAccretionRate"
+    },
+    {
+      "type": "float",
+      "name": "iBackShiftMax"
+    },
+    {
+      "type": "float",
+      "name": "iDensestarsurfaceR"
+    },
+    {
+      "type": "float",
+      "name": "iDensestarBlackbodyIntensityExponent"
+    },
+    {
+      "type": "float",
+      "name": "iDensestarRedShiftColorExponent"
+    },
+    {
+      "type": "float",
+      "name": "iDensestarRedShiftIntensityExponent"
+    },
+    {
+      "type": "float",
+      "name": "iDensestarBrightmut"
+    },
+    {
+      "type": "float",
+      "name": "iInterRadiusRs"
+    },
+    {
+      "type": "float",
+      "name": "iOuterRadiusRs"
+    },
+    {
+      "type": "float",
+      "name": "iThinRs"
+    },
+    {
+      "type": "float",
+      "name": "iHopper"
+    },
+    {
+      "type": "float",
+      "name": "iBrightmut"
+    },
+    {
+      "type": "float",
+      "name": "iDarkmut"
+    },
+    {
+      "type": "float",
+      "name": "iReddening"
+    },
+    {
+      "type": "float",
+      "name": "iSaturation"
+    },
+    {
+      "type": "float",
+      "name": "iBlackbodyIntensityExponent"
+    },
+    {
+      "type": "float",
+      "name": "iRedShiftColorExponent"
+    },
+    {
+      "type": "float",
+      "name": "iRedShiftIntensityExponent"
+    },
+    {
+      "type": "float",
+      "name": "iImageRotationSpeed"
+    },
+    {
+      "type": "float",
+      "name": "iPolarizationAngle"
+    },
+    {
+      "type": "float",
+      "name": "iHeatHaze"
+    },
+    {
+      "type": "float",
+      "name": "iBackgroundBrightmut"
+    },
+    {
+      "type": "float",
+      "name": "iPhotonRingBoost"
+    },
+    {
+      "type": "float",
+      "name": "iPhotonRingColorTempBoost"
+    },
+    {
+      "type": "float",
+      "name": "iBoostRot"
+    },
+    {
+      "type": "float",
+      "name": "iJetRedShiftIntensityExponent"
+    },
+    {
+      "type": "float",
+      "name": "iJetBrightmut"
+    },
+    {
+      "type": "float",
+      "name": "iJetSaturation"
+    },
+    {
+      "type": "float",
+      "name": "iJetShiftMax"
+    },
+    {
+      "type": "float",
+      "name": "iBlendWeight"
+    },
+    {
+      "type": "sampler2D",
+      "name": "iHistoryTex"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iBackground0"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iAntiground0"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iBackground1"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iAntiground1"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iBackground2"
+    },
+    {
+      "type": "samplerCube",
+      "name": "iAntiground2"
+    },
+    {
+      "type": "sampler2D",
+      "name": "iImageTexture"
+    }
+  ],
+  "defaults": {
+    "iResolution": [
+      0,
+      0
+    ],
+    "iFovRadians": 0,
+    "iTime": 0,
+    "iGameTime": 0,
+    "iTimeDelta": 0,
+    "iTimeRate": 0,
+    "iInverseCamRot": [],
+    "iBlackHoleRelativePosRs": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "iBlackHoleRelativeDiskNormal": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "iBlackHoleRelativeDiskTangen": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "iCameraVelocity": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "ie1_up": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "ie2_up": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "ie3_up": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "iU_up": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "iCamDataCoordisOutgoing": 0,
+    "iDEBUG": 0,
+    "iPrepass": 0,
+    "iWhitehole": 0,
+    "iInWhichUniverse": 0,
+    "iGrid": 0,
+    "iEnableHeatHaze": 0,
+    "iEnableShadowCulling": 0,
+    "iObserverMode": 0,
+    "iPolarization": 0,
+    "iUseImageDisk": 0,
+    "iQuality": 0,
+    "iUniverseSign": 0,
+    "iBlackHoleTime": 0,
+    "iBlackHoleMassSol": 0,
+    "iSpin": 0,
+    "iQ": 0,
+    "iMu": 0,
+    "iAccretionRate": 0,
+    "iBackShiftMax": 0,
+    "iDensestarsurfaceR": 0,
+    "iDensestarBlackbodyIntensityExponent": 0,
+    "iDensestarRedShiftColorExponent": 0,
+    "iDensestarRedShiftIntensityExponent": 0,
+    "iDensestarBrightmut": 0,
+    "iInterRadiusRs": 0,
+    "iOuterRadiusRs": 0,
+    "iThinRs": 0,
+    "iHopper": 0,
+    "iBrightmut": 0,
+    "iDarkmut": 0,
+    "iReddening": 0,
+    "iSaturation": 0,
+    "iBlackbodyIntensityExponent": 0,
+    "iRedShiftColorExponent": 0,
+    "iRedShiftIntensityExponent": 0,
+    "iImageRotationSpeed": 0,
+    "iPolarizationAngle": 0,
+    "iHeatHaze": 0,
+    "iBackgroundBrightmut": 0,
+    "iPhotonRingBoost": 0,
+    "iPhotonRingColorTempBoost": 0,
+    "iBoostRot": 0,
+    "iJetRedShiftIntensityExponent": 0,
+    "iJetBrightmut": 0,
+    "iJetSaturation": 0,
+    "iJetShiftMax": 0,
+    "iBlendWeight": 0,
+    "iHistoryTex": null,
+    "iBackground0": null,
+    "iAntiground0": null,
+    "iBackground1": null,
+    "iAntiground1": null,
+    "iBackground2": null,
+    "iAntiground2": null,
+    "iImageTexture": null
+  },
+  "leftovers": []
+}

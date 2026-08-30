@@ -10,7 +10,7 @@ import {
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
-import { BlackholeScene } from './components/BlackholeScene';
+import { NpgsBlackholeScene } from './components/NpgsBlackholeScene';
 import gsap from 'gsap';
 
 /**
@@ -2002,6 +2002,21 @@ function BlackholeDetailPage({
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
   detailOpen: boolean;
 }) {
+  // 物理级黑洞场景的天空盒：加载立方体星云天空盒
+  // 顺序：px,nx,py,ny,pz,nz = right,left,top,bottom,front,back
+  // 用 loader.load() 同步返回纹理对象，配合 Suspense 兜底
+  const blackholeSkybox = useMemo(() => {
+    const cubeLoader = new THREE.CubeTextureLoader();
+    return cubeLoader.load([
+      '/asset/textures/blackhole/skybox_nebula_dark/right.png',
+      '/asset/textures/blackhole/skybox_nebula_dark/left.png',
+      '/asset/textures/blackhole/skybox_nebula_dark/top.png',
+      '/asset/textures/blackhole/skybox_nebula_dark/bottom.png',
+      '/asset/textures/blackhole/skybox_nebula_dark/front.png',
+      '/asset/textures/blackhole/skybox_nebula_dark/back.png',
+    ]);
+  }, []);
+
   // 黑洞详情页内部独立滚动容器 ref
   const blackholeScrollRef = useRef<HTMLDivElement>(null);
   // 内部滚动进度 0~1（驱动镜头拉近 + 说明淡入）
@@ -2117,27 +2132,26 @@ function BlackholeDetailPage({
 
   return (
     <div ref={blackholeInnerRef} className="contact-detail-inner">
-      {/* 全屏 Canvas：实时光线步进黑洞
-          - dpr=1.0 全分辨率渲染（300 步 ray march 较重，高端 GPU 无压力；
-            低端集显若掉帧可降回 0.8）
+      {/* 全屏 Canvas：物理级 Kerr-Newman 黑洞（移植自 NPGS）
+          - 每像素 RK4 质点积分极重，dpr 降到 0.5 保证可交互
           - 不透明背景（黑洞自带深空星云）
           - 复用 FilmPostProcessing 提供 bloom + 暗角 + 颗粒 */}
       <div className="contact-canvas-wrapper">
         <Canvas
-          dpr={1.0}
+          dpr={0.5}
           gl={{ antialias: false, powerPreference: 'high-performance' }}
-          camera={{ fov: 45, near: 0.1, far: 100, position: [0, 0, 1] }}
+          camera={{ fov: 60, near: 0.1, far: 1000, position: [0, 0, 1] }}
           onCreated={({ gl }) => {
             gl.setClearColor(new THREE.Color('#000000'), 1);
           }}
         >
           <Suspense fallback={null}>
-            <BlackholeScene
+            <NpgsBlackholeScene
               mouseRef={mouseRef}
               zoomProgressRef={blackholeScrollProgress}
-              adiskLit={0.6}
               modeRef={blackholeModeRef}
               onModeChange={setBlackholeMode}
+              skybox={blackholeSkybox}
             />
           </Suspense>
           <FilmPostProcessing params={blackholeFilmParams} />
