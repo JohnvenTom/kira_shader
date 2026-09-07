@@ -11,6 +11,7 @@ import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
 import { BlackholeScene } from './components/BlackholeScene';
+import { PianoDetailPage } from './components/piano/PianoDetailPage';
 import gsap from 'gsap';
 
 /**
@@ -296,6 +297,10 @@ export default function KiraFilmDemo() {
     const onMouseDown = (e: MouseEvent) => {
       // 仅左键触发
       if (e.button !== 0) return;
+      // 详情页打开时不触发胶片拖动：详情页内的拖动（如钢琴页的
+      // 轨道相机旋转）会冒泡到 window，若不拦截会被误识别为
+      // 水平拖动切换 section
+      if (detailOpenRef.current) return;
       // 仅在视口中间区域（Y 在 15%~85%）触发，避免误触 NavBar 和底部
       const yRatio = e.clientY / window.innerHeight;
       if (yRatio < 0.15 || yRatio > 0.85) return;
@@ -454,9 +459,15 @@ export default function KiraFilmDemo() {
           - 滚轮回退（progress<0.85）时淡出，丝滑回到 3D 场景 */}
       <div
         ref={detailOverlayRef}
-        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 4 ? 'blackhole-mode' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
+        className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 5 ? 'piano-mode' : ''} ${sectionIndex === 4 ? 'blackhole-mode' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
       >
-        {sectionIndex === 4 ? (
+        {sectionIndex === 5 ? (
+          /* === Grand Piano 详情页：全屏可弹奏 3D 三角钢琴 ===
+           - 程序化建模的 88 键三角钢琴 + WebAudio 加法合成音源
+           - 滚动驱动的苹果风镜头旅程（远景 → 键盘 → 演奏位）
+           - 鼠标点击 / 键盘 A~L 行 / MIDI 输入弹奏，含踏板与控制面板 */
+          <PianoDetailPage detailOpen={detailOpen} />
+        ) : sectionIndex === 4 ? (
           /* === Black Hole 详情页：实时光线步进黑洞 ===
            - 移植 refactorWeb 的 blackhole_main.frag（引力透镜 + 吸积盘 + 星云）
            - 独立滚动容器：滚动拉近镜头 + 说明淡入，滚回顶部上滑退出 */

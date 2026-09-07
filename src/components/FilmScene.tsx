@@ -22,7 +22,7 @@ export interface SectionContent {
 }
 
 /**
- * 4 个 section 内容（参考 shader.se 的结构）
+ * section 内容（参考 shader.se 的结构），数量由数组长度决定
  *
  * 注意事项：accentColor 会同时驱动屏幕发光颜色和 RectAreaLight 颜色
  */
@@ -56,6 +56,12 @@ export const SECTIONS: SectionContent[] = [
     subtitle: 'Ray-Marched Reality',
     accentColor: '#ffcc4d',
     description: 'Gravitational lensing · Accretion disk · Bloom',
+  },
+  {
+    title: 'GRAND PIANO',
+    subtitle: 'Playable. In your browser.',
+    accentColor: '#dfe7f4',
+    description: '88 keys · WebAudio synthesis · Apple-style camera.',
   },
 ];
 
@@ -367,11 +373,11 @@ function ScreenDisplay({
   // 用 ref 数组避免 React 重渲染，直接在 useFrame 中操作 group.rotation
   const sectionGroupRefs = useRef<(THREE.Group | null)[]>([]);
 
-  // 主 canvas（CanvasTexture 源）— 宽胶片：4 个 section 横向排列
-  // 每个 section 占 1024 宽，总宽 4096，对应 3D 空间 16 单位宽（4×4）
+  // 主 canvas（CanvasTexture 源）— 宽胶片：所有 section 横向排列
+  // 每个 section 占 1024 宽，总宽 = SECTIONS.length × 1024（由 section 数量动态决定）
   const canvas = useMemo(() => {
     const c = document.createElement('canvas');
-    c.width = 4096;
+    c.width = SECTIONS.length * 1024;
     c.height = 768;
     return c;
   }, []);
@@ -470,7 +476,7 @@ function ScreenDisplay({
       ctx.fillStyle = 'rgba(252,249,243,0.5)';
       ctx.font = '40px "VT323", "Share Tech Mono", "Courier New", monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(`0${idx + 1} / 04`, xOff + 40, h - 40);
+      ctx.fillText(`0${idx + 1} / 0${SECTIONS.length}`, xOff + 40, h - 40);
 
       // 2.6 角标：右上角时间戳
       ctx.textAlign = 'right';
@@ -1284,14 +1290,14 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
     return m;
   }, [dirtMap, grungeMap]);
 
-  // 胶片尺寸：宽 20，高 4.6（屏幕 16×3 在中间，上下边缘各 0.8 高）
-  // 屏幕宽 16 = 4 个 section × 每个 4 宽
+  // 胶片尺寸：高度 4.6（屏幕在中间，上下边缘各 0.8 高）
+  // 屏幕宽 = SECTIONS.length × 4（每个 section 4 宽），随 section 数量动态变化
   // edgeH 从 0.6 增到 0.8：让齿孔在 world 中更显眼
   //   之前 edgeH=0.6，齿孔 55px 仅占 0.13 world 高，视角 0.5° 看不见
   //   现在 edgeH=0.8，齿孔 90px 占 0.225 world 高，视角 1.8° 明显可见
-  const FILM_W = 20;
+  const FILM_W = SECTIONS.length * 4 + 4;
   const FILM_H = 4.6;
-  const SCREEN_W = 16;
+  const SCREEN_W = SECTIONS.length * 4;
   const SCREEN_H = 3;
   const edgeH = (FILM_H - SCREEN_H) / 2;  // 上下边缘各 0.8 高
   const sideW = (FILM_W - SCREEN_W) / 2;  // 左右延伸各 2 宽
@@ -1301,9 +1307,8 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
   // 如果非 0，会和 shader 弯曲叠加，导致弯曲过度
   const CURVATURE = 0;
 
-  // 左右延伸 mesh 在 group 中的 x 偏移
-  // 左延伸位置 x = -SCREEN_W/2 - sideW/2 = -8 - 1 = -9
-  // 右延伸位置 x = 9
+  // 左右延伸 mesh 在 group 中的 x 偏移（各 2 宽，紧贴屏幕左右两侧）
+  // 左延伸位置 x = -SCREEN_W/2 - sideW/2，右延伸位置 x = SCREEN_W/2 + sideW/2
   const LEFT_EXT_X = -SCREEN_W / 2 - sideW / 2;
   const RIGHT_EXT_X = SCREEN_W / 2 + sideW / 2;
 
@@ -1355,10 +1360,10 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
     };
   }, [baseGeo, topEdgeGeo, bottomEdgeGeo, leftExtGeo, rightExtGeo, dividerGeos]);
 
-  // 胶片整体偏移 x=6：让 section 0 中心在原点（相机初始看向 0,0,0）
-  // 屏幕从 -2 到 14，中心 6；胶片从 -4 到 16，中心 6
+  // 胶片整体偏移 x = FILM_W/2 - 4：让 section 0 中心在原点（相机初始看向 0,0,0）
+  // 屏幕从 -2 到 N*4-2；胶片从 -4 到 N*4（N = SECTIONS.length）
   return (
-    <group position={[6, 0, 0]}>
+    <group position={[(SECTIONS.length * 4 + 4) / 2 - 4, 0, 0]}>
       {/* 胶片基底（整体背板）：深褐色，带 dirt 污渍，弯曲
           原本是 boxGeometry（有厚度），改成弯曲 planeGeometry 失去厚度
           但基底被前面 mesh 遮挡看不到，影响小，换来弯曲效果值得 */}

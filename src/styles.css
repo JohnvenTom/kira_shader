@@ -2140,3 +2140,477 @@ body.camera-debug-mode .scroll-container {
   text-transform: uppercase;
 }
 
+/* =============================================================
+ * piano-mode：GRAND PIANO 详情页（纯白极简 / 毛玻璃 / 柔和阴影）
+ * 复刻原独立项目 style.css 的视觉语言，适配 section5 详情覆盖层
+ * ============================================================= */
+
+/* 钢琴页背景：纯白摄影棚，不需要 backdrop-filter（canvas 透明透出此层） */
+.film-detail-overlay.piano-mode {
+  background: #eef0f4;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 摄影棚背景：柔和垂直渐变 + 顶部聚光 + 暗角 */
+.piano-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(112% 88% at 50% 40%, rgba(255, 255, 255, 0) 46%, rgba(112, 120, 136, 0.22) 100%),
+    radial-gradient(120% 85% at 50% -10%, #ffffff 0%, #fafbfd 36%, #eceef3 66%, #dde1e9 100%),
+    linear-gradient(#f7f8fa, #e6e9ee);
+}
+
+/* 3D Canvas 容器：铺满底层，进入交互后接收指针（拖动/缩放/弹奏） */
+.piano-canvas-wrapper {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+.film-detail-overlay.visible .piano-canvas-wrapper {
+  pointer-events: auto;
+}
+.piano-canvas-wrapper canvas {
+  display: block;
+}
+
+/* 详情页未打开时，所有后代强制不接收事件（同 blackhole 逻辑）：
+   R3F Canvas 会在内部 div 上设置内联 pointer-events:auto，
+   不加 !important 会覆盖父级的 none，导致钢琴 Canvas 在
+   overlay 未 visible 时就拦截滚轮，外层滚动进度无法推进，
+   详情页永远打不开 */
+.film-detail-overlay:not(.visible) .piano-canvas-wrapper,
+.film-detail-overlay:not(.visible) .piano-canvas-wrapper *,
+.film-detail-overlay:not(.visible) .piano-content-layer * {
+  pointer-events: none !important;
+}
+
+/* 独立滚动容器：撑出滚动空间驱动镜头旅程
+   pointer-events:none，滚动由根元素 wheel 监听手动驱动 */
+.piano-scroll-container {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 2;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  pointer-events: none;
+}
+.piano-scroll-container::-webkit-scrollbar {
+  display: none;
+}
+
+/* 内容层：固定全屏，标题/面板/踏板叠加在钢琴画面上 */
+.piano-content-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  --piano-progress: 0;
+}
+
+/* 右上角排版式标题（编辑杂志风），随旅程进度淡出上移 */
+.piano-header {
+  position: absolute;
+  top: 84px;
+  right: 5vw;
+  text-align: right;
+  opacity: clamp(1, calc(1.1 - var(--piano-progress) * 1.9), 1);
+  transform: translateY(calc(var(--piano-progress) * -26px));
+  transition: opacity 0.15s linear;
+}
+.piano-kicker {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  color: #9aa0ac;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.piano-title {
+  font-family: var(--font-display);
+  font-size: clamp(44px, 6.4vw, 84px);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  line-height: 0.98;
+  color: #2c2f36;
+}
+.piano-rule {
+  width: 72px;
+  height: 1px;
+  background: rgba(60, 66, 78, 0.4);
+  margin: 20px 0 14px auto;
+}
+.piano-subtitle {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-style: italic;
+  letter-spacing: 0.16em;
+  color: #7c828e;
+}
+
+/* 旅程提示：滚动推进运镜 */
+.piano-scroll-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 68px;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.3em;
+  color: #9aa0ac;
+  text-transform: uppercase;
+  pointer-events: none;
+  animation: piano-hint-pulse 2.4s ease-in-out infinite;
+  opacity: clamp(1, calc(1.2 - var(--piano-progress) * 3.4), 1);
+}
+@keyframes piano-hint-pulse {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, 6px); }
+}
+
+/* 控制面板：毛玻璃白卡片，交互模式淡入 */
+.piano-panel {
+  position: absolute;
+  top: 68px;
+  right: 24px;
+  width: 230px;
+  padding: 16px 16px 14px;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 18px;
+  box-shadow:
+    0 18px 50px rgba(90, 100, 120, 0.14),
+    0 2px 6px rgba(90, 100, 120, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  pointer-events: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+  scrollbar-width: none;
+  opacity: 0;
+  transform: translateX(14px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.45s cubic-bezier(0.4, 0.01, 0.2, 1);
+}
+.piano-panel::-webkit-scrollbar {
+  display: none;
+}
+.piano-content-layer.interactive .piano-panel {
+  opacity: 1;
+  transform: translateX(0);
+}
+.piano-panel.collapsed {
+  transform: translateX(calc(100% + 26px));
+  opacity: 0;
+}
+.piano-panel h2 {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: #98a0ad;
+  text-transform: uppercase;
+  margin: 2px 0 10px 2px;
+}
+.piano-panel h2:not(:first-of-type) {
+  margin-top: 16px;
+}
+
+/* 按钮行 */
+.piano-row {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+/* 面板按钮：白底细边，on 态为深色胶囊 */
+.piano-btn {
+  font: inherit;
+  font-size: 12px;
+  color: #454a55;
+  padding: 8px 11px;
+  border-radius: 11px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(180, 188, 200, 0.42);
+  box-shadow:
+    0 1px 2px rgba(90, 100, 120, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: background 0.18s, color 0.18s, transform 0.12s, box-shadow 0.18s;
+}
+.piano-btn:hover {
+  background: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(90, 100, 120, 0.12);
+}
+.piano-btn:active {
+  transform: translateY(0);
+}
+.piano-btn.on {
+  background: linear-gradient(#3c4250, #2b303b);
+  color: #fff;
+  border-color: #2b303b;
+  box-shadow: 0 4px 14px rgba(40, 46, 58, 0.28);
+}
+.piano-btn.wide {
+  flex: 1 1 100%;
+  text-align: center;
+}
+.piano-btn.half {
+  flex: 1 1 calc(50% - 4px);
+  text-align: center;
+}
+
+/* 音量/混响滑杆 */
+.piano-slider {
+  margin: 9px 2px 2px;
+}
+.piano-slider label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #8b919d;
+  letter-spacing: 0.06em;
+  margin-bottom: 5px;
+}
+.piano-slider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #b9bfca, #dfe3ea);
+  outline: none;
+  cursor: pointer;
+}
+.piano-slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #c3c9d3;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(90, 100, 120, 0.22);
+}
+.piano-slider input[type='range']::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: 1px solid #c3c9d3;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* 面板折叠按钮（圆形，位于面板原位） */
+.piano-collapse-btn {
+  position: absolute;
+  top: 68px;
+  right: 24px;
+  z-index: 6;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: #454a55;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(180, 188, 200, 0.42);
+  box-shadow:
+    0 1px 2px rgba(90, 100, 120, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.5s ease 0.1s, background 0.18s, transform 0.12s;
+}
+.piano-content-layer.interactive .piano-collapse-btn {
+  opacity: 1;
+}
+.piano-collapse-btn:hover {
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+/* 屏幕踏板：按住生效，交互模式淡入 */
+.piano-pedals {
+  position: absolute;
+  right: 26px;
+  bottom: 26px;
+  display: flex;
+  gap: 9px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.5s ease 0.1s, transform 0.45s ease 0.1s;
+}
+.piano-content-layer.interactive .piano-pedals {
+  opacity: 1;
+  transform: translateY(0);
+}
+.piano-pedals button {
+  width: 62px;
+  padding: 9px 0;
+  text-align: center;
+  font: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: #454a55;
+  border-radius: 11px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(180, 188, 200, 0.42);
+  box-shadow:
+    0 1px 2px rgba(90, 100, 120, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: background 0.18s, transform 0.12s;
+  user-select: none;
+  touch-action: none;
+}
+.piano-pedals button:hover {
+  background: #fff;
+}
+.piano-pedals button:active {
+  background: linear-gradient(#3c4250, #2b303b);
+  color: #fff;
+  border-color: #2b303b;
+  transform: translateY(1px);
+}
+
+/* 音符读数：弹奏时显示音名（透明度由 PianoScene 写 style 控制） */
+.piano-note-read {
+  position: absolute;
+  left: 32px;
+  bottom: 74px;
+  font-family: var(--font-display);
+  font-size: 40px;
+  letter-spacing: 0.04em;
+  color: #454a55;
+  opacity: 0;
+  transition: opacity 0.5s, transform 0.14s;
+  pointer-events: none;
+}
+
+/* FPS / 三角面统计 */
+.piano-stat {
+  position: absolute;
+  left: 32px;
+  bottom: 26px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: #a7adb8;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 操作提示：首次弹奏后加 fade 变淡，交互模式淡入 */
+.piano-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: #868d99;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  transition: opacity 0.8s;
+  opacity: 0;
+}
+.piano-content-layer.interactive .piano-hint {
+  opacity: 1;
+}
+.piano-hint.fade {
+  opacity: 0.28;
+}
+.piano-hint kbd {
+  font-family: inherit;
+  font-size: 10.5px;
+  padding: 1.5px 6px;
+  margin: 0 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(180, 188, 200, 0.5);
+  color: #5d636e;
+}
+
+/* toast 提示（八度切换等，show 类由 PianoScene 控制） */
+.piano-toast {
+  position: absolute;
+  left: 50%;
+  top: 30px;
+  transform: translate(-50%, -14px);
+  padding: 8px 16px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #454a55;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 30px rgba(90, 100, 120, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s, transform 0.3s;
+}
+.piano-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* 响应式：窄屏适配 */
+@media (max-width: 720px) {
+  .piano-header {
+    top: 64px;
+    right: 18px;
+  }
+  .piano-panel {
+    width: 200px;
+    top: 56px;
+    right: 14px;
+    padding: 13px;
+  }
+  .piano-collapse-btn {
+    top: 56px;
+    right: 14px;
+  }
+  .piano-note-read {
+    left: 18px;
+    bottom: 96px;
+    font-size: 30px;
+  }
+  .piano-stat {
+    left: 18px;
+  }
+  .piano-hint {
+    font-size: 10.5px;
+    width: 92%;
+  }
+  .piano-pedals {
+    right: 14px;
+    bottom: 62px;
+  }
+  .piano-pedals button {
+    width: 54px;
+  }
+}
+
