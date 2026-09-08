@@ -246,6 +246,7 @@ export function PianoScene({
     demo: null as null | { events: DemoEvent[]; duration: number; i: number; t0: number; active: number[] },
     fps: 60, frames: 0, fpsTime: 0,
     interactive: false,
+    journey: 0,               // 镜头旅程"显示进度"（阻尼平滑后，消除滚轮离散跳变的顿挫）
   });
   /* ---------------- 钢琴模型（一次性构建） ---------------- */
   const piano = useMemo(() => buildPiano(), []);
@@ -644,6 +645,9 @@ export function PianoScene({
       setSustain(false);
       stateRef.current.pedalT = [0, 0, 0];
       piano.keys.forEach((k) => { k.target = 0; k.held = false; });
+    } else {
+      // 重新打开：显示进度归零，避免阻尼值从上次位置"倒放"运镜
+      stateRef.current.journey = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailOpen]);
@@ -789,7 +793,14 @@ export function PianoScene({
   useFrame((_, delta) => {
     const st = stateRef.current;
     const dt = Math.min(0.05, delta);
-    const progress = Math.max(0, Math.min(1, scrollProgressRef.current));
+    // 滚轮是离散跳变（一格约 ±100px scrollTop，progress 阶跃 0.1 左右），
+    // 直接用会产生"一格一顿"的瞬移。这里对 progress 做指数阻尼平滑：
+    // 显示值每帧向目标值趋近，滚一格 → 相机连续滑过去，苹果式跟手感。
+    // lambda=7：约 100ms 收敛，兼顾丝滑与跟手；收敛后 snap 消除残差。
+    const target = Math.max(0, Math.min(1, scrollProgressRef.current));
+    st.journey += (target - st.journey) * (1 - Math.exp(-dt * 7));
+    if (Math.abs(target - st.journey) < 0.0005) st.journey = target;
+    const progress = st.journey;
 
     updateDemo();
     updateOpenables(dt);
