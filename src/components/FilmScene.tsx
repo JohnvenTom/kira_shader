@@ -597,16 +597,14 @@ function ScreenDisplay({
         color={SECTIONS[sectionIndex].accentColor}
         intensity={8}
       />
-      {/* 胶片屏幕平面：宽 16（4 个 section × 每个 4 宽），高 3
-          位置 x=6 让 section 0 中心在原点（相机初始看向 0,0,0）
-          planeGeometry 以中心为原点，宽 16 → 从 -8 到 +8
-          plane 位置 x=6 → plane 从 -2 到 14
-          section 0（canvas 0~1024）对应 3D -2~2，中心 0 ✓
-          section 1（canvas 1024~2048）对应 3D 2~6，中心 4
-          section 2 对应 3D 6~10，中心 8
-          section 3 对应 3D 10~14，中心 12 */}
-      <mesh ref={meshRef} position={[6, 0, 0]} rotation={[0, 0, 0]}>
-        <planeGeometry args={[16, 3]} />
+      {/* 胶片屏幕平面：宽 SECTIONS.length × 4（每个 section 4 宽），高 3
+          位置 x = SCREEN_W/2 - 2 让 section 0 中心在原点（相机初始看向 0,0,0）
+          planeGeometry 以中心为原点，宽 SCREEN_W → 从 -2 到 SCREEN_W-2
+          section i（canvas i*1024~(i+1)*1024）对应 3D [-2+4i, 2+4i]，中心 4i
+          注意：plane 宽高比必须等于 canvas 纹理宽高比（N*1024 : 768 = N*4 : 3），
+          否则纹理被非等比拉伸，圆环等图形会变形 */}
+      <mesh ref={meshRef} position={[SECTIONS.length * 4 / 2 - 2, 0, 0]} rotation={[0, 0, 0]}>
+        <planeGeometry args={[SECTIONS.length * 4, 3]} />
         <meshStandardMaterial
           ref={matRef}
           map={texture}
@@ -1339,13 +1337,23 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
     () => makeCurvedGeometry(sideW, FILM_H, 8, 4, CURVATURE, RIGHT_EXT_X),
     [sideW, FILM_H, CURVATURE, RIGHT_EXT_X]
   );
-  // 4 条帧分隔线，xOffset 各自不同
+  // N-1 条帧分隔线，xOffset 由 section 数量动态计算
+  // section 边界（世界坐标）在 x = 2 + 4i（i = 0..N-2），group 偏移 2N-2，
+  // 故 local x = 4i + 4 - 2N（N=4 时为 [-4,0,4,8] 与旧值一致）
+  const dividerXs = useMemo(
+    () =>
+      Array.from(
+        { length: SECTIONS.length - 1 },
+        (_, i) => (i + 1) * 4 - 2 * SECTIONS.length
+      ),
+    []
+  );
   const dividerGeos = useMemo(
     () =>
-      [-4, 0, 4, 8].map((x) =>
+      dividerXs.map((x) =>
         makeCurvedGeometry(0.04, SCREEN_H, 2, 4, CURVATURE, x)
       ),
-    [SCREEN_H, CURVATURE]
+    [dividerXs, SCREEN_H, CURVATURE]
   );
 
   // 卸载时释放几何体内存
@@ -1401,10 +1409,9 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
       </mesh>
 
       {/* 帧分隔线：每个 section 之间的竖线，标识胶片画面帧边界
-          section i 和 i+1 之间在 x = i*4 - SCREEN_W/2 + 4 = i*4 - 4
-          即 x = -4, 0, 4, 8（相对 group 中心）
+          位置由 dividerXs 动态计算（N-1 条，N = SECTIONS.length）
           每条分隔线用对应 xOffset 的弯曲几何体，弯曲与胶片一致 */}
-      {[-4, 0, 4, 8].map((x, i) => (
+      {dividerXs.map((x, i) => (
         <mesh key={i} position={[x, 0, -0.02]}>
           <primitive object={dividerGeos[i]} attach="geometry" />
           <meshBasicMaterial color="#050300" side={THREE.DoubleSide} />
