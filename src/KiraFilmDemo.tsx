@@ -197,8 +197,10 @@ export default function KiraFilmDemo() {
     // 滚轮速度衰减：停止滚动后很快跌下快速阈值，转入泄能
     st.v *= Math.exp(-dt * 9);
 
-    // 泄能回退：速度不足时能量向 0 泄放 → 镜头平滑退回初始位置
-    if (st.v < SCROLL_V_ON) {
+    // 泄能回退：仅在主场景（详情未打开）且速度不足时能量向 0 泄放
+    // → 镜头平滑退回初始位置。详情页打开期间锁定能量（不泄放），
+    //   防止用户在详情页内阅读/操作时页面自动弹回；退出详情由覆盖层上滚退能驱动
+    if (!detailOpenRef.current && st.v < SCROLL_V_ON) {
       const d = Math.min(Math.abs(st.energy), SCROLL_LEAK * dt);
       st.energy -= Math.sign(st.energy) * d;
     }
