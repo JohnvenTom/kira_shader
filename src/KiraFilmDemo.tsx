@@ -208,7 +208,9 @@ export default function KiraFilmDemo() {
     // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
     st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
     if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
-    setScrollProgress(Math.min(1, Math.max(0, st.display)));
+    // 保留负值（下限 -1）：向上快滚时负进度驱动 FilmScene 相机
+    // 向后回缩拉远，形成穿回主页面前的"缩小镜头"过渡
+    setScrollProgress(Math.min(1, Math.max(-1, st.display)));
 
     // 滞回判断：跃进详情 / 退回主场景
     const open = detailOpenRef.current;

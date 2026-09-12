@@ -2470,8 +2470,14 @@ export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionCh
     transitionFlashRef.current = flash;
 
     // === 相机推进（z 轴，由 scrollProgress 控制）===
-    // 整个 progress 0~1 对应相机从远景 z=7 推进到 z=0.2
-    const cameraT = Math.pow(Math.max(0, Math.min(1, totalProgress)), 1.6);
+    // progress 0~1 对应相机从远景 z=7 推进到 z=0.2（pow 1.6 缓动）
+    // progress 负值（向上滚穿回主页面时）：镜头向后回缩拉远（"缩小"），
+    //   -0.93（SCROLL_BACK 阈值）时回缩幅度 0.5：z 退到约 10.4、FOV 收窄，
+    //   画面整体缩小约 30%，形成穿回前"镜头拉远"的过渡
+    const rawP = Math.max(-1, Math.min(1, totalProgress));
+    const cameraT = rawP >= 0
+      ? Math.pow(rawP, 1.6)
+      : -0.5 * Math.min(1, -rawP / 0.93);
 
     // 鼠标视差（仅在非闪光 + 远景时生效）
     const mouseTarget = mouseRef.current;
