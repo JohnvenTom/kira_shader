@@ -7,6 +7,43 @@ import { NavBar } from './components/NavBar';
 import { PostProcessing, type PostFXParams } from './components/PostProcessing';
 
 /**
+ * === 镜头推进惯性系统参数（速度门控 + 自动回退）===
+ *
+ * 交互模型：
+ *  - 滚轮瞬时速度 >= SCROLL_V_ON（刻意快速甩滚）→ 按 SCROLL_GAIN_FAST 充能，
+ *    持续快速滚动才能把能量推到顶"越过屏幕"（进入 #film）
+ *  - 低于 SCROLL_V_ON（慢滚）→ 按 SCROLL_GAIN_SLOW 微推（有阻力感），
+ *    且被泄能抵消，推不动
+ *  - 滚轮速度不足/停止后，能量以 SCROLL_LEAK/s 泄放 →
+ *    镜头自动平滑回退到初始位置（不回弹到一半，一直退回原点）
+ */
+const SCROLL_V_ON = 2.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
+const SCROLL_GAIN_FAST = 0.0008; // 快速滚每像素充能（一格约 100px → +0.08）
+const SCROLL_GAIN_SLOW = 0.0005; // 慢速滚每像素充能（一格 +0.05，随后被泄能回弹）
+const SCROLL_LEAK = 0.40;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
+const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
+
+/**
+ * wheel 事件位移归一化（像素）
+ *
+ * 功能：不同浏览器 wheel 事件 deltaY 单位不同：
+ *  - Chromium：deltaMode=0，deltaY 已是像素
+ *  - Firefox：deltaMode=1，deltaY 单位是"行"（一行约 33px）
+ *  - 少数设备：deltaMode=2，deltaY 单位是"页"（一页 = 视口高度）
+ *  统一折算成像素，保证推进手感跨浏览器一致
+ *
+ * 参数：
+ *  - e {WheelEvent} wheel 事件对象
+ *
+ * 返回值：{number} 归一化后的像素位移（向下为正）
+ */
+function normalizeWheelDelta(e: WheelEvent): number {
+  if (e.deltaMode === 1) return e.deltaY * 33;
+  if (e.deltaMode === 2) return e.deltaY * window.innerHeight;
+  return e.deltaY;
+}
+
+/**
  * 把字符串拆成逐字 span（用于逐字浮现 + 滚动飞出动画）
  *
  * 功能：将传入的字符串按字符拆分，每个字符包进一个 <span class="hero-char">，
@@ -102,6 +139,11 @@ function splitTextToChars(
  */
 export default function App() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // 惯性推进系统状态（速度门控 + 自动回退）：
+  // - v       滚轮瞬时速度 EMA（px/ms），超过 SCROLL_V_ON 视为"快速滚"
+  // - energy  累积能量 0~1.08，快速滚充能、慢/停时泄能（"不够快就退回原地"）
+  // - display 显示进度（energy 的平滑值），驱动 3D 镜头推进与跨页切换判断
+  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
   // 模型加载状态
@@ -141,17 +183,141 @@ export default function App() {
   );
 
   /**
-   * 滚动事件处理
-   * 功能：读取滚动容器的 scrollTop，计算 0~1 的进度并写入 state
+   * 惯性推进驱动帧循环（速度门控 + 自动回退）
+   *
+   * 功能：每个动画帧推进惯性系统状态：
+   *       1. 滚轮速度自身指数衰减（停止滚动后约 250ms 内跌下快速阈值）
+   *       2. 速度低于阈值 → 能量持续泄放（"滚速不足以越过屏幕时，
+   *          镜头自动平滑回退到初始位置"）
+   *       3. 显示进度向能量平滑趋近（镜头运动丝滑，无跳变）
+   *       4. 能量与显示进度收敛且速度归零 → 停止动画帧（省资源）
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - dt 上限 0.05s，避免后台标签页切回时大步长跳变
+   */
+  const tickScroll = useCallback(() => {
+    const st = scrollStateRef.current;
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(now - st.lastFrame, 0.001));
+    st.lastFrame = now;
+
+    // 滚轮速度衰减：停止滚动后很快跌下快速阈值，转入泄能
+    st.v *= Math.exp(-dt * 9);
+
+    // 泄能回退：速度不足时能量持续泄放 → 镜头平滑退回初始位置
+    if (st.v < SCROLL_V_ON) {
+      st.energy = Math.max(0, st.energy - SCROLL_LEAK * dt);
+    }
+
+    // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
+    st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
+    if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
+    setScrollProgress(Math.min(1, st.display));
+
+    // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
+    if (Math.abs(st.energy - st.display) < 0.0004 && st.v < 0.01) {
+      st.running = false;
+      return;
+    }
+    st.raf = requestAnimationFrame(tickScroll);
+  }, []);
+
+  /**
+   * 唤醒惯性驱动循环（幂等）
+   *
+   * 功能：惯性系统默认不跑动画帧，注入滚轮/触摸位移时调用本函数启动，
+   *      直到能量泄空且显示进度收敛才自行停止，避免空转浪费
+   *
    * 参数：无
    * 返回值：无
    */
-  const handleScroll = useCallback(() => {
+  const ensureScrollLoop = useCallback(() => {
+    const st = scrollStateRef.current;
+    if (!st.running) {
+      st.running = true;
+      st.lastFrame = performance.now();
+      st.raf = requestAnimationFrame(tickScroll);
+    }
+  }, [tickScroll]);
+
+  /**
+   * 滚轮/触摸位移注入惯性系统
+   *
+   * 功能：把一次滚轮/触摸滑动位移（dy，与 wheel deltaY 同向：向下为正）
+   *       按速度门控规则注入惯性系统：
+   *       - 瞬时速度 >= 快速阈值 → 大增益充能（镜头快速推进，
+   *         "滚得够快才能越过屏幕"）
+   *       - 低于阈值 → 极小增益微推（有阻力的慢推，且被泄能抵消）
+   *
+   * 参数：
+   *  - dy  {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
+   *  - now {number} performance.now() 时间戳
+   *
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 瞬时速度用 EMA 平滑（0.55/0.45），消除单次事件抖动
+   *  - dt 下限 8ms 并夹紧，避免连续事件间隔过短导致速度爆炸
+   *  - energy 上限 1.08，给"冲过头"留余量再回弹，手感更自然
+   */
+  const injectScroll = useCallback((dy: number, now: number) => {
+    const st = scrollStateRef.current;
+    const dt = Math.max(now - st.lastTs, 8);
+    st.lastTs = now;
+    const inst = Math.abs(dy) / dt;          // 瞬时速度 px/ms
+    st.v = st.v * 0.55 + inst * 0.45;        // EMA 平滑
+
+    // 速度门控增益：快滚充能，慢滚有阻力
+    const gain = st.v >= SCROLL_V_ON ? SCROLL_GAIN_FAST : SCROLL_GAIN_SLOW;
+    st.energy = Math.max(0, Math.min(1.08, st.energy + dy * gain));
+    ensureScrollLoop();
+  }, [ensureScrollLoop]);
+
+  // 滚动输入监听：把 wheel/touch 位移注入惯性系统（速度门控 + 自动回退）
+  useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const max = el.scrollHeight - el.clientHeight;
-    const progress = max > 0 ? el.scrollTop / max : 0;
-    setScrollProgress(progress);
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      injectScroll(normalizeWheelDelta(e), performance.now());
+    };
+
+    // 触摸：垂直滑动按位移与速度注入（与滚轮同语义）；水平滑动不拦截
+    let tLastX = 0, tLastY = 0;
+    const onTStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      tLastX = t.clientX; tLastY = t.clientY;
+    };
+    const onTMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      const dy = tLastY - t.clientY;          // 上滑为正（与 wheel deltaY 同向）
+      const dx = t.clientX - tLastX;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        e.preventDefault();
+        injectScroll(dy, performance.now());
+      }
+      tLastX = t.clientX; tLastY = t.clientY;
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTStart, { passive: true });
+    el.addEventListener('touchmove', onTMove, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTStart);
+      el.removeEventListener('touchmove', onTMove);
+    };
+  }, [injectScroll]);
+
+  // 组件卸载时停止惯性动画帧，避免 rAF 泄漏
+  useEffect(() => () => {
+    const st = scrollStateRef.current;
+    st.running = false;
+    cancelAnimationFrame(st.raf);
   }, []);
 
   // === 跨 demo 切换：滚动到末尾相机穿过屏幕时，白色闪光掩盖切换到 #film ===
@@ -165,27 +331,24 @@ export default function App() {
     if (scrollProgress >= 0.88 && !flashVisible) {
       setFlashVisible(true);
     }
-    // progress < 0.82（用户回滚）→ 取消闪光
+    // progress < 0.82（能量泄放回退）→ 取消闪光
     if (scrollProgress < 0.82 && flashVisible) {
       setFlashVisible(false);
     }
     // progress >= 0.97 且闪光已接近峰值（给 0.4s transition 时间达到峰值）→ 切换 hash
     if (scrollProgress >= 0.97 && !switchingRef.current) {
       switchingRef.current = true;
-      // 延迟 450ms 让 flash transition（0.5s）达到接近峰值再切换
+      // 延迟 450ms 让 flash transition（0.5s）达到接近峰值再切换；
+      // 期间若用户松手导致能量泄放、镜头回退 → 取消本次切换，允许再次冲击
       setTimeout(() => {
-        window.location.hash = '#film';
+        if (scrollStateRef.current.display >= 0.90) {
+          window.location.hash = '#film';
+        } else {
+          switchingRef.current = false;
+        }
       }, 450);
     }
   }, [scrollProgress, flashVisible]);
-
-  // 绑定滚动监听（passive 提升性能）
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
 
   // 加载完成后短暂延迟再显示标题，制造入场动画
   useEffect(() => {
@@ -249,14 +412,11 @@ export default function App() {
       {/* 顶部导航 */}
       <NavBar />
 
-      {/* 第 1 层：滚动容器 z-50 */}
+      {/* 第 1 层：输入捕获容器 z-50（无原生滚动，wheel/touch 由惯性推进系统处理） */}
       <div
         ref={scrollContainerRef}
         className="scroll-container"
-      >
-        {/* 虚拟高度占位，撑出滚动空间 */}
-        <div className="scroll-placeholder" />
-      </div>
+      />
 
       {/* 第 2 层：WebGL Canvas z-40 */}
       <div className="canvas-wrapper">

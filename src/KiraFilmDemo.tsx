@@ -55,11 +55,47 @@ function splitTextToChars(
 }
 
 /**
+ * === 惯性推进系统参数（模仿 shader.se 的 Lenis 平滑滚动）===
+ *
+ * shader.se 首页的镜头推进基于 Lenis（lenisVersion 1.3.3）：
+ *  - 滚轮位移只累加"目标进度"（target），滚动多少推进多少，不丢不弹
+ *  - 每帧显示进度以固定阻尼系数向目标指数趋近（lerp 0.1）→ 镜头带惯性
+ *    滞后滑动：滚一格，镜头缓缓滑过去；停滚后镜头滑到位就停住（不回弹）
+ *  - 连续快速滚 → 目标快速累加 → 镜头高速追进，越过 SCROLL_ENTER"跃进屏幕"
+ *  手感特征：丝滑、跟手但有惯性余量，无速度门槛、无回弹
+ */
+const SCROLL_LERP = 0.10;       // 每帧阻尼系数（Lenis 默认 0.1，约 100ms 收敛）
+const SCROLL_PX_FULL = 810;     // 满行程所需滚动量（约 8 格鼠标滚轮从远景推到最近）
+const SCROLL_ENTER = 0.92;      // 跃进阈值：显示进度超过它 → 进入详情页
+const SCROLL_EXIT = 0.85;       // 退出阈值：显示进度跌破它 → 退回主场景
+
+/**
+ * wheel 事件位移归一化（像素）
+ *
+ * 功能：不同浏览器 wheel 事件 deltaY 单位不同：
+ *  - Chromium：deltaMode=0，deltaY 已是像素
+ *  - Firefox：deltaMode=1，deltaY 单位是"行"（一行约 33px，否则数值过小会导致
+ *    瞬时速度永远达不到快速阈值，功能在 Firefox 上失效）
+ *  - 少数设备：deltaMode=2，deltaY 单位是"页"（一页 = 视口高度）
+ *  统一折算成像素，保证速度门控在不同浏览器行为一致
+ *
+ * 参数：
+ *  - e {WheelEvent} wheel 事件对象
+ *
+ * 返回值：{number} 归一化后的像素位移（向下为正）
+ */
+function normalizeWheelDelta(e: WheelEvent): number {
+  if (e.deltaMode === 1) return e.deltaY * 33;
+  if (e.deltaMode === 2) return e.deltaY * window.innerHeight;
+  return e.deltaY;
+}
+
+/**
  * KiraFilmDemo - 多 section 滚动驱动 + 无缝切换的电影感页面
  *
  * 功能：
  *  - 搭建三层架构：
- *    1. z-50 滚动容器（捕获滚动，含虚拟高度占位，4 个 section × 视口高度）
+ *    1. z-50 输入捕获容器（wheel/touch 由惯性推进系统处理，无原生滚动）
  *    2. z-40 WebGL Canvas（渲染 FilmScene 3D 内容，不接收交互）
  *    3. z-45 内容覆盖层（文字 UI，随 section 切换更新）
  *  - 滚动进度通过 ref + state 双通道传递给 Canvas 内的 3D 场景
@@ -79,6 +115,10 @@ function splitTextToChars(
  */
 export default function KiraFilmDemo() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // 惯性推进系统状态（模仿 shader.se 的 Lenis 平滑滚动）：
+  // - target  目标进度，滚轮位移直接累加（滚多少推进多少，不丢不弹）
+  // - display 显示进度，每帧按 SCROLL_LERP 阻尼追赶 target → 镜头带惯性滞后滑动
+  const scrollStateRef = useRef({ target: 0, display: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
   // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新）
@@ -120,59 +160,149 @@ export default function KiraFilmDemo() {
   const filmParams = useMemo<FilmFXParams>(() => ({ ...DEFAULT_FILM_PARAMS }), []);
 
   /**
-   * 滚动事件处理
+   * 惯性推进驱动帧循环（Lenis 式阻尼追随）
    *
-   * 功能：读取滚动容器的 scrollTop，计算 0~1 的进度并写入 state；
-   *      同时用滞回阈值判断是否进入详情模式：
-   *       - progress > 0.92 且当前未进入 → 进入详情（detailOpen=true）
-   *       - progress < 0.85 且当前已进入 → 退出详情（detailOpen=false）
-   *      滞回避免在边界来回抖动，保证丝滑切换
+   * 功能：每个动画帧把显示进度向目标进度做指数阻尼（SCROLL_LERP/帧，
+   *       帧率无关换算），实现 shader.se 式镜头手感：
+   *       1. 滚轮停后若显示进度尚未追上目标 → 镜头继续惯性滑动到位
+   *       2. 到位后停住（不回弹）
+   *       3. 滞回判断：显示进度越过跃进阈值进入详情 / 低于退出阈值退回主场景
+   *       4. 收敛静止 → 停止动画帧（省资源），新输入时再唤醒
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
-   *  - 用 passive 监听提升性能，避免阻塞滚动
-   *  - 用 ref 读取当前 detailOpen 状态，避免闭包读到旧值
-   *  - 详情进入/退出由 CSS transition 控制过渡，state 切换是离散的但视觉是丝滑的
+   *  - dt 上限 0.05s，避免后台标签页切回时大步长跳变
+   *  - 阻尼换成 1-(1-LERP)^(dt*60)：不同刷新率（60/120Hz）手感一致
+   *  - 详情页打开期间目标不变（无输入），显示进度停在原地，不会"掉回"主场景；
+   *    退出由覆盖层上滚负向累加目标驱动
    */
-  const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const max = el.scrollHeight - el.clientHeight;
-    const progress = max > 0 ? el.scrollTop / max : 0;
-    setScrollProgress(progress);
+  const tickScroll = useCallback(() => {
+    const st = scrollStateRef.current;
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(now - st.lastFrame, 0.001));
+    st.lastFrame = now;
 
-    // 滞回判断详情模式
-    const isOpen = detailOpenRef.current;
-    if (!isOpen && progress > 0.92) {
+    // 帧率无关的指数阻尼（60fps 下等价 lerp=SCROLL_LERP）
+    const alpha = 1 - Math.pow(1 - SCROLL_LERP, dt * 60);
+    st.display += (st.target - st.display) * alpha;
+    if (Math.abs(st.target - st.display) < 0.0003) st.display = st.target;
+    setScrollProgress(Math.min(1, st.display));
+
+    // 滞回判断：跃进详情 / 退回主场景
+    const open = detailOpenRef.current;
+    if (!open && st.display > SCROLL_ENTER) {
       detailOpenRef.current = true;
       setDetailOpen(true);
-    } else if (isOpen && progress < 0.85) {
+    } else if (open && st.display < SCROLL_EXIT) {
       detailOpenRef.current = false;
       setDetailOpen(false);
     }
+
+    // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
+    if (Math.abs(st.target - st.display) < 0.0003) {
+      st.running = false;
+      return;
+    }
+    st.raf = requestAnimationFrame(tickScroll);
   }, []);
 
-  // 绑定滚动监听
+  /**
+   * 唤醒惯性驱动循环（幂等）
+   *
+   * 功能：惯性系统默认不跑动画帧，注入滚轮/触摸位移时调用本函数启动，
+   *      直到显示进度追平目标才自行停止，避免空转浪费
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  const ensureScrollLoop = useCallback(() => {
+    const st = scrollStateRef.current;
+    if (!st.running) {
+      st.running = true;
+      st.lastFrame = performance.now();
+      st.raf = requestAnimationFrame(tickScroll);
+    }
+  }, [tickScroll]);
+
+  /**
+   * 滚轮/触摸位移注入惯性系统
+   *
+   * 功能：把一次滚轮/触摸滑动位移（dy，与 wheel deltaY 同向：向下为正）
+   *       累加进目标进度：target += dy / SCROLL_PX_FULL，
+   *       滚多少推进多少（Lenis 语义），随后由帧循环阻尼追赶。
+   *
+   * 参数：
+   *  - dy {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
+   *
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - target 上限 1.06（略超 1 给"冲过头"留余量），下限 0
+   *  - 不区分快慢滚动：速度门控由阻尼自然形成（滚得越快，追得越快越远）
+   */
+  const injectScroll = useCallback((dy: number) => {
+    const st = scrollStateRef.current;
+    st.target = Math.max(0, Math.min(1.06, st.target + dy / SCROLL_PX_FULL));
+    ensureScrollLoop();
+  }, [ensureScrollLoop]);
+
+  // 主场景滚轮/触摸监听：把输入位移注入惯性系统
+  // （目标进度累加 + 帧级阻尼追随，模仿 shader.se 的 Lenis 平滑滚动）
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    // 从 App 切换过来时，浏览器可能记忆了滚动位置，强制滚到顶
-    el.scrollTop = 0;
-    setScrollProgress(0);
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      // 详情覆盖层在更上层（z-60），正常情况滚轮到不了这里，兜底忽略
+      if (detailOpenRef.current) return;
+      injectScroll(normalizeWheelDelta(e));
+    };
+
+    // 触摸：垂直滑动按位移植入（与滚轮同语义）；水平滑动不拦截，
+    // 交给既有的水平拖动切换 section 逻辑
+    let tLastX = 0, tLastY = 0;
+    const onTStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      tLastX = t.clientX; tLastY = t.clientY;
+    };
+    const onTMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      const dy = tLastY - t.clientY;          // 上滑为正（与 wheel deltaY 同向）
+      const dx = t.clientX - tLastX;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        e.preventDefault();
+        injectScroll(dy);
+      }
+      tLastX = t.clientX; tLastY = t.clientY;
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTStart, { passive: true });
+    el.addEventListener('touchmove', onTMove, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTStart);
+      el.removeEventListener('touchmove', onTMove);
+    };
+  }, [injectScroll]);
+
+  // 组件卸载时停止惯性动画帧，避免 rAF 泄漏
+  useEffect(() => () => {
+    const st = scrollStateRef.current;
+    st.running = false;
+    cancelAnimationFrame(st.raf);
+  }, []);
 
   /**
-   * 详情覆盖层 wheel 事件转发
+   * 详情覆盖层 wheel 事件监听
    *
-   * 功能：详情覆盖层 pointer-events:auto 会拦截 wheel 事件，导致
-   *      scrollContainer 收不到滚动 → progress 不变 → 无法退出详情。
-   *      这里在覆盖层上用原生 addEventListener 监听 wheel（passive:false），
-   *      阻止默认行为（避免页面/覆盖层自身滚动），把 deltaY 同步到
-   *      scrollContainer.scrollTop，触发 handleScroll 更新 progress。
+   * 功能：详情覆盖层 pointer-events:auto 会拦截 wheel 事件，导致主场景的
+   *      scrollContainer 收不到滚动。这里在覆盖层上用原生 addEventListener
+   *      监听 wheel（passive:false），阻止默认行为，并把上滚（deltaY<0）
+   *      负向累加目标进度：显示进度跌破退出阈值后详情页沿镜头路径退回主场景。
    *
    * 参数：无
    * 返回值：无
@@ -180,23 +310,22 @@ export default function KiraFilmDemo() {
    * 注意事项：
    *  - 必须用 passive:false 才能 preventDefault()
    *  - 覆盖层未 visible 时 pointer-events:none，wheel 不会触发在它上面，
-   *    直接到 scrollContainer，所以只在详情打开时拦截，不影响正常滚动
-   *  - deltaY 同步到 scrollTop 后会触发 scroll 事件，handleScroll 中滞回
-   *    判断 progress<0.85 会退出详情
+   *    直接到 scrollContainer，所以只在详情打开时拦截
+   *  - 只处理上滚方向；下滚交给详情页内部滚动容器（如钢琴镜头旅程）
+   *  - 钢琴等内部页面滚到顶后继续上滑会冒泡到这里，正好触发退出语义
    */
   useEffect(() => {
     const overlay = detailOverlayRef.current;
     if (!overlay) return;
     const onWheel = (e: WheelEvent) => {
-      const el = scrollContainerRef.current;
-      if (!el) return;
       e.preventDefault();
-      // 把 wheel delta 同步到底层 scrollContainer
-      el.scrollTop += e.deltaY;
+      if (detailOpenRef.current && e.deltaY < 0) {
+        injectScroll(normalizeWheelDelta(e));
+      }
     };
     overlay.addEventListener('wheel', onWheel, { passive: false });
     return () => overlay.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [injectScroll]);
 
   /**
    * section 切换回调
@@ -364,11 +493,10 @@ export default function KiraFilmDemo() {
       {/* 顶部导航 */}
       <NavBar />
 
-      {/* 第 1 层：滚动容器 z-50
-          高度 = 4 个 section × 视口高度，撑出足够滚动空间让 section 切换有过渡距离 */}
-      <div ref={scrollContainerRef} className="scroll-container film-scroll-container">
-        <div className="scroll-placeholder film-scroll-placeholder" />
-      </div>
+      {/* 第 1 层：输入捕获容器 z-50
+          不再做原生滚动（wheel/touch 由惯性推进系统拦截处理），
+          仅作为最上层事件接收者：滚轮速度门控驱动镜头"有阻力跃进" */}
+      <div ref={scrollContainerRef} className="scroll-container film-scroll-container" />
 
       {/* 第 2 层：WebGL Canvas z-40 */}
       <div className="canvas-wrapper">
@@ -641,9 +769,8 @@ function ContactDetailPage({
    *  - preventDefault 阻止浏览器默认滚动行为（避免外层 scroll-container 滚动）
    *  - stopPropagation 阻止事件冒泡到 overlay，避免被外层 wheel 转发逻辑拦截
    *  - 手动把 deltaY 同步到 contactScrollRef.scrollTop，触发 scroll 事件
-   *  - 滚到顶后用户继续上滑，事件冒泡到 overlay，外层 wheel 转发把 deltaY
-   *    同步到 scrollContainerRef.scrollTop，触发外层 handleScroll 中
-   *    progress<0.85 → 退出详情页
+   *  - 滚到顶后用户继续上滑，事件冒泡到 overlay，外层 wheel 监听把上滚
+   *    注入惯性系统退能，显示进度跌破退出阈值（0.85）→ 退出详情页
    *  - 监听器绑在 contact-detail-inner 而不是 contact-scroll-container，
    *    因为 contact-content-layer 的子元素（Hello 标题等）有 pointer-events: auto，
    *    鼠标在它们上面时 wheel 事件不经过 contact-scroll-container

@@ -47,13 +47,13 @@ body {
   position: relative;
 }
 
-/* === 滚动容器：z-50，固定全屏，纵向滚动 === */
+/* === 输入捕获容器：z-50，固定全屏，不做原生滚动 ===
+   wheel/touch 由惯性推进系统（Lenis 式阻尼追随）拦截驱动 */
 .scroll-container {
   position: fixed;
   inset: 0;
   width: 100vw;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   z-index: 50;
   -webkit-overflow-scrolling: touch;
   /* 隐藏原生滚动条（Chrome/Safari/Edge） */
@@ -62,14 +62,6 @@ body {
 }
 .scroll-container::-webkit-scrollbar {
   display: none; /* Chrome/Safari/Edge */
-}
-
-/* === 滚动占位：撑出虚拟滚动高度 === */
-.scroll-placeholder {
-  width: 100%;
-  /* 高度 = 页面高度倍数 × 视口高度 */
-  height: calc(var(--page-height) * 100vh);
-  pointer-events: none;
 }
 
 /* === WebGL Canvas 容器：z-40，固定全屏，不接收交互 === */
@@ -363,12 +355,10 @@ body.camera-debug-mode .scroll-container {
  * KiraFilmDemo 样式（#film hash 下的多 section 滚动版）
  * ==================================================================== */
 
-/* 滚动占位：让相机推进进度 0~1 对应足够滚动距离
-   150vh = 1.5 倍视口高度，减去一屏视口后实际可滚动距离约 50% 视口高度
-   在 1080p 显示器上 ≈ 540px，对应鼠标滚轮 5~6 次（每次 ~100px）
-   这样用户滚 5 下左右相机就能从最远推进到最近 */
-.film-scroll-placeholder {
-  height: 150vh;
+/* 主场景输入容器：不再做原生滚动，
+   滚轮/触摸由惯性推进系统（速度门控的"有阻力跃进"）拦截驱动 */
+.film-scroll-container {
+  overflow: hidden;
 }
 
 /* 内容覆盖层：水平左对齐，给左侧文字块更多呼吸空间 */
