@@ -146,6 +146,11 @@ export default function App() {
   const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
+  // === 跨 demo 切换：能量冲到顶相机穿过屏幕时，白色闪光掩盖切换到 #film ===
+  // flashVisible 控制全屏白色 overlay 渐显；switchingRef 防止重复触发
+  // 注意：injectScroll（下方）引用这两个变量，声明必须在其之前
+  const [flashVisible, setFlashVisible] = useState(false);
+  const switchingRef = useRef(false);
   // 模型加载状态
   const [loaded, setLoaded] = useState(false);
   // 加载完成回调：用 useCallback 稳定引用，避免 inline 箭头函数每次重渲染都变 →
@@ -273,6 +278,16 @@ export default function App() {
     // 速度门控增益：快滚充能，慢滚有阻力
     const gain = st.v >= SCROLL_V_ON ? SCROLL_GAIN_FAST : SCROLL_GAIN_SLOW;
     st.energy = Math.max(0, Math.min(1.08, st.energy + dy * gain));
+
+    // 穿入 #film 判定：用能量（注入瞬间即达）而非显示进度（帧循环爬行值），
+    // 保证判定不依赖渲染帧节奏：冲过 0.97 立刻锁存 → 450ms 白闪后切 #film
+    if (st.energy >= 0.97 && !switchingRef.current) {
+      switchingRef.current = true;
+      setFlashVisible(true);
+      setTimeout(() => {
+        window.location.hash = '#film';
+      }, 450);
+    }
     ensureScrollLoop();
   }, [ensureScrollLoop]);
 
@@ -320,12 +335,8 @@ export default function App() {
     cancelAnimationFrame(st.raf);
   }, []);
 
-  // === 跨 demo 切换：滚动到末尾相机穿过屏幕时，白色闪光掩盖切换到 #film ===
-  // flashVisible 控制全屏白色 overlay 渐显
-  const [flashVisible, setFlashVisible] = useState(false);
-  // 防止重复触发切换
-  const switchingRef = useRef(false);
-
+  // 闪光滞回：显示进度（镜头视觉位置）越过 0.88 渐显、跌破 0.82 熄灭
+  // 切换锁存已在 injectScroll 中按能量判定（不依赖帧循环爬行值）
   useEffect(() => {
     // progress >= 0.88（相机已穿过屏幕到背面，画面是黑色背板）→ 白色闪光渐强
     if (scrollProgress >= 0.88 && !flashVisible) {
@@ -334,19 +345,6 @@ export default function App() {
     // progress < 0.82（能量泄放回退）→ 取消闪光
     if (scrollProgress < 0.82 && flashVisible) {
       setFlashVisible(false);
-    }
-    // progress >= 0.97 且闪光已接近峰值（给 0.4s transition 时间达到峰值）→ 切换 hash
-    if (scrollProgress >= 0.97 && !switchingRef.current) {
-      switchingRef.current = true;
-      // 延迟 450ms 让 flash transition（0.5s）达到接近峰值再切换；
-      // 期间若用户松手导致能量泄放、镜头回退 → 取消本次切换，允许再次冲击
-      setTimeout(() => {
-        if (scrollStateRef.current.display >= 0.90) {
-          window.location.hash = '#film';
-        } else {
-          switchingRef.current = false;
-        }
-      }, 450);
     }
   }, [scrollProgress, flashVisible]);
 

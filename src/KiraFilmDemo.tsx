@@ -55,19 +55,24 @@ function splitTextToChars(
 }
 
 /**
- * === 惯性推进系统参数（模仿 shader.se 的 Lenis 平滑滚动）===
+ * === 镜头推进惯性系统参数（速度门控 + 自动回退，双向）===
  *
- * shader.se 首页的镜头推进基于 Lenis（lenisVersion 1.3.3）：
- *  - 滚轮位移只累加"目标进度"（target），滚动多少推进多少，不丢不弹
- *  - 每帧显示进度以固定阻尼系数向目标指数趋近（lerp 0.1）→ 镜头带惯性
- *    滞后滑动：滚一格，镜头缓缓滑过去；停滚后镜头滑到位就停住（不回弹）
- *  - 连续快速滚 → 目标快速累加 → 镜头高速追进，越过 SCROLL_ENTER"跃进屏幕"
- *  手感特征：丝滑、跟手但有惯性余量，无速度门槛、无回弹
+ * 与主页面（App.tsx）同构的交互模型，并扩展为双向：
+ *  - 滚轮瞬时速度 >= SCROLL_V_ON（刻意快速甩滚）→ 大增益充能：
+ *    向下滚推镜头前进（越过 SCROLL_ENTER 进详情页），
+ *    向上滚拉镜头后退（越过 SCROLL_BACK 穿回主页面）
+ *  - 低于阈值 → 阻力微推，被泄能抵消，推不动
+ *  - 滚速不足/停止 → 能量向 0 泄放，镜头自动平滑回退到初始位置
  */
-const SCROLL_LERP = 0.10;       // 每帧阻尼系数（Lenis 默认 0.1，约 100ms 收敛）
-const SCROLL_PX_FULL = 810;     // 满行程所需滚动量（约 8 格鼠标滚轮从远景推到最近）
-const SCROLL_ENTER = 0.92;      // 跃进阈值：显示进度超过它 → 进入详情页
-const SCROLL_EXIT = 0.85;       // 退出阈值：显示进度跌破它 → 退回主场景
+const SCROLL_V_ON = 2.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
+const SCROLL_GAIN_FAST = 0.0008; // 快速滚每像素充能（一格约 100px → ±0.08）
+const SCROLL_GAIN_SLOW = 0.0005; // 慢速滚每像素充能（随后被泄能回弹）
+const SCROLL_GAIN_EXIT = 0.0012; // 详情页内上滚退能灵敏度（固定增益，不带速度门控）
+const SCROLL_LEAK = 0.40;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
+const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
+const SCROLL_ENTER = 0.92;       // 跃进阈值：显示进度超过它 → 进入详情页
+const SCROLL_EXIT = 0.85;        // 退出阈值：显示进度跌破它 → 退回主场景
+const SCROLL_BACK = -0.93;       // 穿回阈值：显示进度跌破它 → 白闪返回主页面
 
 /**
  * wheel 事件位移归一化（像素）
@@ -115,10 +120,12 @@ function normalizeWheelDelta(e: WheelEvent): number {
  */
 export default function KiraFilmDemo() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // 惯性推进系统状态（模仿 shader.se 的 Lenis 平滑滚动）：
-  // - target  目标进度，滚轮位移直接累加（滚多少推进多少，不丢不弹）
-  // - display 显示进度，每帧按 SCROLL_LERP 阻尼追赶 target → 镜头带惯性滞后滑动
-  const scrollStateRef = useRef({ target: 0, display: 0, lastFrame: 0, raf: 0, running: false });
+  // 惯性推进系统状态（速度门控 + 自动回退，双向）：
+  // - v       滚轮瞬时速度 EMA（px/ms），超过 SCROLL_V_ON 视为"快速滚"
+  // - energy  累积能量 [-1.08, 1.08]：向下快滚充正能推进，向上快滚充负能后退；
+  //           慢/停时向 0 泄能（"速度不足以越过屏幕时自动平滑回退到初始位置"）
+  // - display 显示进度（energy 的平滑值），驱动 3D 镜头、详情滞回与穿回主页判定
+  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
   // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新）
@@ -135,6 +142,10 @@ export default function KiraFilmDemo() {
   const [detailOpen, setDetailOpen] = useState(false);
   // 用于滞回判断的 ref（避免闭包读到旧 state）
   const detailOpenRef = useRef(false);
+  // 穿回主页面：向上快速滚把进度跌破 SCROLL_BACK → 白闪过渡切回 `/`
+  // backFlash 控制主场景上方白色 overlay 渐显；backSwitchingRef 防止重复触发
+  const [backFlash, setBackFlash] = useState(false);
+  const backSwitchingRef = useRef(false);
   // 详情覆盖层 ref（用于绑定原生 wheel 事件，转发到 scrollContainer）
   const detailOverlayRef = useRef<HTMLDivElement>(null);
 
@@ -160,23 +171,22 @@ export default function KiraFilmDemo() {
   const filmParams = useMemo<FilmFXParams>(() => ({ ...DEFAULT_FILM_PARAMS }), []);
 
   /**
-   * 惯性推进驱动帧循环（Lenis 式阻尼追随）
+   * 惯性推进驱动帧循环（速度门控 + 自动回退，双向）
    *
-   * 功能：每个动画帧把显示进度向目标进度做指数阻尼（SCROLL_LERP/帧，
-   *       帧率无关换算），实现 shader.se 式镜头手感：
-   *       1. 滚轮停后若显示进度尚未追上目标 → 镜头继续惯性滑动到位
-   *       2. 到位后停住（不回弹）
-   *       3. 滞回判断：显示进度越过跃进阈值进入详情 / 低于退出阈值退回主场景
-   *       4. 收敛静止 → 停止动画帧（省资源），新输入时再唤醒
+   * 功能：每个动画帧推进惯性系统状态：
+   *       1. 滚轮速度自身指数衰减（停止滚动后约 250ms 内跌下快速阈值）
+   *       2. 速度低于阈值 → 能量向 0 泄放（"滚速不足以越过屏幕时，
+   *          镜头自动平滑回退到初始位置"）
+   *       3. 显示进度向能量平滑趋近（镜头运动丝滑，无跳变）
+   *       4. 滞回判断：越过跃进阈值进详情 / 跌破退出阈值退回主场景
+   *       5. 穿回判断：跌破 SCROLL_BACK 且保持 → 白闪切回主页面
+   *       6. 收敛静止 → 停止动画帧（省资源）
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
    *  - dt 上限 0.05s，避免后台标签页切回时大步长跳变
-   *  - 阻尼换成 1-(1-LERP)^(dt*60)：不同刷新率（60/120Hz）手感一致
-   *  - 详情页打开期间目标不变（无输入），显示进度停在原地，不会"掉回"主场景；
-   *    退出由覆盖层上滚负向累加目标驱动
    */
   const tickScroll = useCallback(() => {
     const st = scrollStateRef.current;
@@ -184,11 +194,19 @@ export default function KiraFilmDemo() {
     const dt = Math.min(0.05, Math.max(now - st.lastFrame, 0.001));
     st.lastFrame = now;
 
-    // 帧率无关的指数阻尼（60fps 下等价 lerp=SCROLL_LERP）
-    const alpha = 1 - Math.pow(1 - SCROLL_LERP, dt * 60);
-    st.display += (st.target - st.display) * alpha;
-    if (Math.abs(st.target - st.display) < 0.0003) st.display = st.target;
-    setScrollProgress(Math.min(1, st.display));
+    // 滚轮速度衰减：停止滚动后很快跌下快速阈值，转入泄能
+    st.v *= Math.exp(-dt * 9);
+
+    // 泄能回退：速度不足时能量向 0 泄放 → 镜头平滑退回初始位置
+    if (st.v < SCROLL_V_ON) {
+      const d = Math.min(Math.abs(st.energy), SCROLL_LEAK * dt);
+      st.energy -= Math.sign(st.energy) * d;
+    }
+
+    // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
+    st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
+    if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
+    setScrollProgress(Math.min(1, Math.max(0, st.display)));
 
     // 滞回判断：跃进详情 / 退回主场景
     const open = detailOpenRef.current;
@@ -201,7 +219,7 @@ export default function KiraFilmDemo() {
     }
 
     // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
-    if (Math.abs(st.target - st.display) < 0.0003) {
+    if (Math.abs(st.energy - st.display) < 0.0004 && st.v < 0.01) {
       st.running = false;
       return;
     }
@@ -212,7 +230,7 @@ export default function KiraFilmDemo() {
    * 唤醒惯性驱动循环（幂等）
    *
    * 功能：惯性系统默认不跑动画帧，注入滚轮/触摸位移时调用本函数启动，
-   *      直到显示进度追平目标才自行停止，避免空转浪费
+   *      直到能量泄空且显示进度收敛才自行停止，避免空转浪费
    *
    * 参数：无
    * 返回值：无
@@ -230,26 +248,53 @@ export default function KiraFilmDemo() {
    * 滚轮/触摸位移注入惯性系统
    *
    * 功能：把一次滚轮/触摸滑动位移（dy，与 wheel deltaY 同向：向下为正）
-   *       累加进目标进度：target += dy / SCROLL_PX_FULL，
-   *       滚多少推进多少（Lenis 语义），随后由帧循环阻尼追赶。
+   *       按速度门控规则注入惯性系统（双向，与主页面同构）：
+   *       - 主场景：瞬时速度 >= 快速阈值 → 大增益充能，向下推进 / 向上后退；
+   *         低于阈值 → 阻力微推（被泄能抵消）
+   *       - 详情页内：上滚（dy<0）以固定增益退能，让镜头沿原路径退出详情页
    *
    * 参数：
-   *  - dy {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
+   *  - dy  {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
+   *  - now {number} performance.now() 时间戳
    *
    * 返回值：无
    *
    * 注意事项：
-   *  - target 上限 1.06（略超 1 给"冲过头"留余量），下限 0
-   *  - 不区分快慢滚动：速度门控由阻尼自然形成（滚得越快，追得越快越远）
+   *  - 瞬时速度用 EMA 平滑（0.55/0.45），消除单次事件抖动
+   *  - dt 下限 8ms，避免连续事件间隔过短导致速度爆炸
+   *  - energy 范围 [-1.08, 1.08]，给两个方向的"冲过头"留余量
    */
-  const injectScroll = useCallback((dy: number) => {
+  const injectScroll = useCallback((dy: number, now: number) => {
     const st = scrollStateRef.current;
-    st.target = Math.max(0, Math.min(1.06, st.target + dy / SCROLL_PX_FULL));
+    const dt = Math.max(now - st.lastTs, 8);
+    st.lastTs = now;
+    const inst = Math.abs(dy) / dt;          // 瞬时速度 px/ms
+    st.v = st.v * 0.55 + inst * 0.45;        // EMA 平滑
+
+    // 详情页内：上滚退能（固定增益，不带速度门控，令退出意图总是生效）
+    if (detailOpenRef.current && dy < 0) {
+      st.energy = Math.max(-1.08, Math.min(1.08, st.energy + dy * SCROLL_GAIN_EXIT));
+      ensureScrollLoop();
+      return;
+    }
+
+    // 主场景：速度门控增益（方向由 dy 符号决定）
+    const gain = st.v >= SCROLL_V_ON ? SCROLL_GAIN_FAST : SCROLL_GAIN_SLOW;
+    st.energy = Math.max(-1.08, Math.min(1.08, st.energy + dy * gain));
+
+    // 穿回首页判定：用能量（注入瞬间即达）而非显示进度（帧循环爬行值），
+    // 保证判定不依赖渲染帧节奏：冲过 SCROLL_BACK 立刻锁存 → 450ms 白闪后切回 `/`
+    if (!detailOpenRef.current && st.energy <= SCROLL_BACK && !backSwitchingRef.current) {
+      backSwitchingRef.current = true;
+      setBackFlash(true);
+      setTimeout(() => {
+        window.location.hash = '';
+      }, 450);
+    }
     ensureScrollLoop();
   }, [ensureScrollLoop]);
 
-  // 主场景滚轮/触摸监听：把输入位移注入惯性系统
-  // （目标进度累加 + 帧级阻尼追随，模仿 shader.se 的 Lenis 平滑滚动）
+  // 主场景滚轮/触摸监听：把输入位移注入惯性系统（速度门控 + 自动回退，双向）
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -258,10 +303,10 @@ export default function KiraFilmDemo() {
       e.preventDefault();
       // 详情覆盖层在更上层（z-60），正常情况滚轮到不了这里，兜底忽略
       if (detailOpenRef.current) return;
-      injectScroll(normalizeWheelDelta(e));
+      injectScroll(normalizeWheelDelta(e), performance.now());
     };
 
-    // 触摸：垂直滑动按位移植入（与滚轮同语义）；水平滑动不拦截，
+    // 触摸：垂直滑动按位移与速度注入（与滚轮同语义）；水平滑动不拦截，
     // 交给既有的水平拖动切换 section 逻辑
     let tLastX = 0, tLastY = 0;
     const onTStart = (e: TouchEvent) => {
@@ -274,7 +319,7 @@ export default function KiraFilmDemo() {
       const dx = t.clientX - tLastX;
       if (Math.abs(dy) > Math.abs(dx)) {
         e.preventDefault();
-        injectScroll(dy);
+        injectScroll(dy, performance.now());
       }
       tLastX = t.clientX; tLastY = t.clientY;
     };
@@ -320,7 +365,7 @@ export default function KiraFilmDemo() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (detailOpenRef.current && e.deltaY < 0) {
-        injectScroll(normalizeWheelDelta(e));
+        injectScroll(normalizeWheelDelta(e), performance.now());
       }
     };
     overlay.addEventListener('wheel', onWheel, { passive: false });
@@ -489,6 +534,9 @@ export default function KiraFilmDemo() {
     <>
       {/* 进入闪光层：从 App 切换过来时全屏白色，mount 后淡出露出新场景 */}
       <div className={`demo-flash entering ${enteringFadeOut ? 'fade-out' : ''}`} />
+
+      {/* 穿回主页面闪光层：向上快速滚到 SCROLL_BACK → 白色渐显掩盖切回 `/` */}
+      <div className={`demo-flash outgoing ${backFlash ? 'visible' : ''}`} />
 
       {/* 顶部导航 */}
       <NavBar />
