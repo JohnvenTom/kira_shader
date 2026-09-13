@@ -17,10 +17,10 @@ import { PostProcessing, type PostFXParams } from './components/PostProcessing';
  *  - 滚轮速度不足/停止后，能量以 SCROLL_LEAK/s 泄放 →
  *    镜头自动平滑回退到初始位置（不回弹到一半，一直退回原点）
  */
-const SCROLL_V_ON = 2.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
-const SCROLL_GAIN_FAST = 0.0008; // 快速滚每像素充能（一格约 100px → +0.08）
-const SCROLL_GAIN_SLOW = 0.0005; // 慢速滚每像素充能（一格 +0.05，随后被泄能回弹）
-const SCROLL_LEAK = 0.40;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
+const SCROLL_V_ON = 3.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
+const SCROLL_GAIN_FAST = 0.008; // 快速滚每像素充能（一格约 100px → +0.08）
+const SCROLL_GAIN_SLOW = 0.005; // 慢速滚每像素充能（一格 +0.05，随后被泄能回弹）
+const SCROLL_LEAK = 0.10;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
 const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
 
 /**
