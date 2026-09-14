@@ -65,11 +65,12 @@ function splitTextToChars(
  *  - 滚速不足/停止 → 能量向 0 泄放，镜头自动平滑回退到初始位置
  */
 const SCROLL_V_ON = 2.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
-const SCROLL_GAIN_FAST = 0.0008; // 快速滚每像素充能（一格约 100px → ±0.08）
-const SCROLL_GAIN_SLOW = 0.0005; // 慢速滚每像素充能（随后被泄能回弹）
+const SCROLL_GAIN_FAST = 0.008;  // 快速滚每像素充能（一格约 100px → ±0.2，5 格快滚即可穿行）
+const SCROLL_GAIN_SLOW = 0.001; // 慢速滚每像素充能（有阻力地微推，随后被泄能回弹）
 const SCROLL_GAIN_EXIT = 0.0012; // 详情页内上滚退能灵敏度（固定增益，不带速度门控）
 const SCROLL_LEAK = 0.40;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
 const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
+const SCROLL_DELAY = 0.30;       // 滚轮注入后镜头响应延迟（秒）：滚完歇 0.3s 镜头才开始运动
 const SCROLL_ENTER = 0.92;       // 跃进阈值：显示进度超过它 → 进入详情页
 const SCROLL_EXIT = 0.85;        // 退出阈值：显示进度跌破它 → 退回主场景
 const SCROLL_BACK = -0.93;       // 穿回阈值：显示进度跌破它 → 白闪返回主页面
@@ -125,7 +126,7 @@ export default function KiraFilmDemo() {
   // - energy  累积能量 [-1.08, 1.08]：向下快滚充正能推进，向上快滚充负能后退；
   //           慢/停时向 0 泄能（"速度不足以越过屏幕时自动平滑回退到初始位置"）
   // - display 显示进度（energy 的平滑值），驱动 3D 镜头、详情滞回与穿回主页判定
-  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastFrame: 0, raf: 0, running: false });
+  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastInjectAt: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
   // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新）
@@ -206,11 +207,16 @@ export default function KiraFilmDemo() {
     }
 
     // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
-    st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
-    if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
-    // 保留负值（下限 -1）：向上快滚时负进度驱动 FilmScene 相机
-    // 向后回缩拉远，形成穿回主页面前的"缩小镜头"过渡
-    setScrollProgress(Math.min(1, Math.max(-1, st.display)));
+    // 滚轮注入后延迟 SCROLL_DELAY 才开始镜头运动：注入瞬间能量照常
+    // 累积/泄放，但显示进度（驱动 3D 镜头）在延迟窗口内保持静止，
+    // 窗口结束后镜头才开始平滑追赶，形成"滚了一下、歇半拍、镜头跟上"的节奏
+    if (now - st.lastInjectAt >= SCROLL_DELAY) {
+      st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
+      if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
+      // 保留负值（下限 -1）：向上快滚时负进度驱动 FilmScene 相机
+      // 向后回缩拉远，形成穿回主页面前的"缩小镜头"过渡
+      setScrollProgress(Math.min(1, Math.max(-1, st.display)));
+    }
 
     // 滞回判断：跃进详情 / 退回主场景
     const open = detailOpenRef.current;
@@ -272,6 +278,7 @@ export default function KiraFilmDemo() {
     const st = scrollStateRef.current;
     const dt = Math.max(now - st.lastTs, 8);
     st.lastTs = now;
+    st.lastInjectAt = now;                   // 记录注入时刻：镜头响应延迟计时基准
     const inst = Math.abs(dy) / dt;          // 瞬时速度 px/ms
     st.v = st.v * 0.55 + inst * 0.45;        // EMA 平滑
 
@@ -291,7 +298,6 @@ export default function KiraFilmDemo() {
     if (!detailOpenRef.current && st.energy <= SCROLL_BACK && !backSwitchingRef.current) {
       backSwitchingRef.current = true;
       setBackFlash(true);
-      console.log('[back-debug] triggered', { energy: st.energy, stack: new Error().stack?.slice(0, 400) });
       setTimeout(() => {
         window.location.hash = '';
       }, 450);

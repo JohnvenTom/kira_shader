@@ -18,10 +18,11 @@ import { PostProcessing, type PostFXParams } from './components/PostProcessing';
  *    镜头自动平滑回退到初始位置（不回弹到一半，一直退回原点）
  */
 const SCROLL_V_ON = 3.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
-const SCROLL_GAIN_FAST = 0.008; // 快速滚每像素充能（一格约 100px → +0.08）
-const SCROLL_GAIN_SLOW = 0.005; // 慢速滚每像素充能（一格 +0.05，随后被泄能回弹）
+const SCROLL_GAIN_FAST = 0.001;  // 快速滚每像素充能（一格约 100px → +0.2，5 格快滚即可穿行）
+const SCROLL_GAIN_SLOW = 0.008; // 慢速滚每像素充能（有阻力地微推，随后被泄能回弹）
 const SCROLL_LEAK = 0.10;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
 const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
+const SCROLL_DELAY = 0.30;       // 滚轮注入后镜头响应延迟（秒）：滚完歇 0.3s 镜头才开始运动
 
 /**
  * wheel 事件位移归一化（像素）
@@ -143,7 +144,7 @@ export default function App() {
   // - v       滚轮瞬时速度 EMA（px/ms），超过 SCROLL_V_ON 视为"快速滚"
   // - energy  累积能量 0~1.08，快速滚充能、慢/停时泄能（"不够快就退回原地"）
   // - display 显示进度（energy 的平滑值），驱动 3D 镜头推进与跨页切换判断
-  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastFrame: 0, raf: 0, running: false });
+  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastInjectAt: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
   // === 跨 demo 切换：能量冲到顶相机穿过屏幕时，白色闪光掩盖切换到 #film ===
@@ -220,9 +221,14 @@ export default function App() {
     }
 
     // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
-    st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
-    if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
-    setScrollProgress(Math.min(1, st.display));
+    // 滚轮注入后延迟 SCROLL_DELAY 才开始镜头运动：注入瞬间能量照常
+    // 累积/泄放，但显示进度（驱动 3D 镜头）在延迟窗口内保持静止，
+    // 窗口结束后镜头才开始平滑追赶，形成"滚了一下、歇半拍、镜头跟上"的节奏
+    if (now - st.lastInjectAt >= SCROLL_DELAY) {
+      st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
+      if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
+      setScrollProgress(Math.min(1, st.display));
+    }
 
     // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
     if (Math.abs(st.energy - st.display) < 0.0004 && st.v < 0.01) {
@@ -274,6 +280,7 @@ export default function App() {
     const st = scrollStateRef.current;
     const dt = Math.max(now - st.lastTs, 8);
     st.lastTs = now;
+    st.lastInjectAt = now;                   // 记录注入时刻：镜头响应延迟计时基准
     const inst = Math.abs(dy) / dt;          // 瞬时速度 px/ms
     st.v = st.v * 0.55 + inst * 0.45;        // EMA 平滑
 
