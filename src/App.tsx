@@ -212,8 +212,10 @@ export default function App() {
     // 滚轮速度衰减：停止滚动后很快跌下快速阈值，转入泄能
     st.v *= Math.exp(-dt * 9);
 
-    // 泄能回退：速度不足时能量持续泄放 → 镜头平滑退回初始位置
-    if (st.v < SCROLL_V_ON) {
+    // 泄能回退：速度不足时能量持续泄放 → 镜头平滑退回初始位置。
+    // 切换锁存（switchingRef=true，白闪渐显准备跳转 #film）期间暂停泄能：
+    // 镜头停在穿屏峰值位置，白闪掩盖切换，衔接干净不突兀
+    if (!switchingRef.current && st.v < SCROLL_V_ON) {
       st.energy = Math.max(0, st.energy - SCROLL_LEAK * dt);
     }
 
