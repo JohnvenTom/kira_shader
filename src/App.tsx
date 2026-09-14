@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } fro
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ComputerScene } from './components/ComputerScene';
+import { CanvasContextGuard } from './components/CanvasContextGuard';
 import { LoadingScreen } from './components/LoadingScreen';
 import { NavBar } from './components/NavBar';
 import { PostProcessing, type PostFXParams } from './components/PostProcessing';
@@ -446,6 +447,7 @@ export default function App() {
             mouseRef={mouseRef}
           />
           <PostProcessing params={postFXParams} />
+          <CanvasContextGuard />
         </Canvas>
       </div>
 

@@ -12,6 +12,7 @@ import { NavBar } from './components/NavBar';
 import { PaperScene } from './components/PaperScene';
 import { BlackholeScene } from './components/BlackholeScene';
 import { PianoDetailPage } from './components/piano/PianoDetailPage';
+import { CanvasContextGuard } from './components/CanvasContextGuard';
 import gsap from 'gsap';
 
 /**
@@ -578,6 +579,7 @@ export default function KiraFilmDemo() {
             onSectionChange={handleSectionChange}
           />
           <FilmPostProcessing params={filmParams} />
+          <CanvasContextGuard />
         </Canvas>
       </div>
 
@@ -879,6 +881,7 @@ function ContactDetailPage({
           </Suspense>
           {/* 鱼眼 + 色散 + 暗角 后处理：随 progress 增强效果 */}
           <ContactPostProcessing progressRef={contactScrollProgress} />
+          <CanvasContextGuard />
         </Canvas>
       </div>
 
@@ -1154,6 +1157,7 @@ function OfficeDetailPage({
               officeScrollProgress={officeScrollProgress}
             />
           </Suspense>
+          <CanvasContextGuard />
         </Canvas>
       </div>
 
@@ -2159,6 +2163,7 @@ function PaperDetailPage({
               contentTexture={contentTexture}
             />
           </Suspense>
+          <CanvasContextGuard />
         </Canvas>
       </div>
 
@@ -2339,6 +2344,7 @@ function BlackholeDetailPage({
             />
           </Suspense>
           <FilmPostProcessing params={blackholeFilmParams} />
+          <CanvasContextGuard />
         </Canvas>
       </div>
 

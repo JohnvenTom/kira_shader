@@ -976,6 +976,18 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
   const setup = useMemo(() => {
     if (!modelScene) return null;
 
+    // === 幂等保护：先归一化共享模型对象的自身变换 ===
+    // modelScene 来自 useGLTF 缓存（跨 demo 切换复用的同一对象），
+    // 上一次挂载可能已对它应用过 scale/position 偏移。若带着旧缩放
+    // 直接算包围盒，会得到"已缩放后的尺寸"（≈12），再算出的 scale≈1、
+    // 位移≈0，模型被打回原始 135 单位巨物，相机（按正确距离摆放）
+    // 陷在模型内部 → 表现为"返回主页后电脑模型不显示"。
+    // 因此每次先归一到恒等变换并刷新世界矩阵，保证包围盒始终基于
+    // 文件原始几何计算，重复执行结果一致（StrictMode 双挂载安全）
+    modelScene.scale.setScalar(1);
+    modelScene.position.set(0, 0, 0);
+    modelScene.updateMatrixWorld(true);
+
     // 计算模型包围盒
     const box = new THREE.Box3().setFromObject(modelScene);
     const size = box.getSize(new THREE.Vector3());

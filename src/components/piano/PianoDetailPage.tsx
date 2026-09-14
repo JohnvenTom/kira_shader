@@ -29,6 +29,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
+import { CanvasContextGuard } from '../CanvasContextGuard';
 import {
   PianoScene,
   type PianoApi,
@@ -243,6 +244,7 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
             hintElRef={hintElRef}
             toastElRef={toastElRef}
           />
+          <CanvasContextGuard />
         </Canvas>
       </div>
 
