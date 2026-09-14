@@ -1877,7 +1877,7 @@ export function ContactScene({
 
   // 每帧：根据 contactScrollProgress 计算目标位置，用 lerp 平滑追随
   //        + 鼠标视差让模型组轻微旋转
-  useFrame(() => {
+  useFrame((_, delta) => {
     const p = contactScrollProgress.current;
     // 用 smootherstep（Ken Perlin）替代 smoothstep，过渡更丝滑
     // smootherstep: t = p^3 * (p * (p * 6 - 15) + 10)
@@ -1889,12 +1889,12 @@ export function ContactScene({
     // 目标 FOV
     const targetFov = FOV_START + (FOV_END - FOV_START) * t;
 
-    // lerp 平滑：当前 → 目标，系数 0.15 让相机有惯性追随感
-    // 系数越小越丝滑但延迟越大，0.15 平衡跟手度与平滑度（约 150ms 到达目标）
-    const LERP_FACTOR = 0.15;
-    camPosRef.current.y += (targetCamY - camPosRef.current.y) * LERP_FACTOR;
-    lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * LERP_FACTOR;
-    fovRef.current += (targetFov - fovRef.current) * LERP_FACTOR;
+    // 帧率无关指数阻尼（λ=12，与主页面 SCROLL_SMOOTH 一致）：
+    // 相机带惯性追随滚轮目标，全站滚轮平滑手感统一
+    const k = 1 - Math.exp(-12 * Math.min(0.05, delta));
+    camPosRef.current.y += (targetCamY - camPosRef.current.y) * k;
+    lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * k;
+    fovRef.current += (targetFov - fovRef.current) * k;
 
     camera.position.copy(camPosRef.current);
     camera.lookAt(lookPosRef.current);
@@ -2176,7 +2176,7 @@ export function OfficeScene({
 
   // 每帧：根据 officeScrollProgress 计算目标位置，用 lerp 平滑追随
   //        + 鼠标视差让模型组轻微旋转
-  useFrame(() => {
+  useFrame((_, delta) => {
     const p = officeScrollProgress.current;
     // 用 smootherstep（Ken Perlin）让过渡更丝滑
     const t = p * p * p * (p * (p * 6 - 15) + 10);
@@ -2194,6 +2194,10 @@ export function OfficeScene({
     // FOV 从大（广角俯视）→ 小（长焦聚焦屏幕）
     const targetFov = FOV_START + (FOV_END - FOV_START) * t;
 
+    // 帧率无关指数阻尼（λ=12，与主页面 SCROLL_SMOOTH 一致），
+    // 全站滚轮平滑手感统一
+    const k = 1 - Math.exp(-12 * Math.min(0.05, delta));
+
     // 第一帧直接 set 相机到目标位置，避免 mount 时 Canvas 初始位置
     // 与 OfficeScene 计算位置差距过大，导致前几帧相机快速 lerp 移动看不到模型
     if (firstFrameRef.current) {
@@ -2202,15 +2206,14 @@ export function OfficeScene({
       fovRef.current = targetFov;
       firstFrameRef.current = false;
     } else {
-      // lerp 平滑追随，系数 0.15 平衡跟手度与平滑度
-      const LERP_FACTOR = 0.15;
-      camPosRef.current.x += (targetCamX - camPosRef.current.x) * LERP_FACTOR;
-      camPosRef.current.y += (targetCamY - camPosRef.current.y) * LERP_FACTOR;
-      camPosRef.current.z += (targetCamZ - camPosRef.current.z) * LERP_FACTOR;
-      lookPosRef.current.x += (targetLookX - lookPosRef.current.x) * LERP_FACTOR;
-      lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * LERP_FACTOR;
-      lookPosRef.current.z += (targetLookZ - lookPosRef.current.z) * LERP_FACTOR;
-      fovRef.current += (targetFov - fovRef.current) * LERP_FACTOR;
+      // 指数阻尼平滑追随
+      camPosRef.current.x += (targetCamX - camPosRef.current.x) * k;
+      camPosRef.current.y += (targetCamY - camPosRef.current.y) * k;
+      camPosRef.current.z += (targetCamZ - camPosRef.current.z) * k;
+      lookPosRef.current.x += (targetLookX - lookPosRef.current.x) * k;
+      lookPosRef.current.y += (targetLookY - lookPosRef.current.y) * k;
+      lookPosRef.current.z += (targetLookZ - lookPosRef.current.z) * k;
+      fovRef.current += (targetFov - fovRef.current) * k;
     }
 
     // 鼠标视差：相机绕 lookAt target 做球坐标微旋转（类似 OrbitControls 的 azimuth/polar）

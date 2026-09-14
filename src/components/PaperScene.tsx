@@ -395,25 +395,22 @@ export function PaperScene({
   }, [noiseTexture, contentTexture]);
 
   // 每帧更新 uniforms
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const mesh = meshRef.current;
     if (!mesh) return;
     const mat = mesh.material as THREE.ShaderMaterial;
     if (mat && mat.uniforms) {
-      // lerp 插值：每帧把当前值向目标值趋近（因子 0.06 ≈ 16 帧达到 60%）
-      // 这样离散的 wheel 跳变被插值成连续平滑的滚动，产生阻尼缓和的阅读手感：
-      // 因子越小惯性越足、文字滚动越"沉"，避免滚一格文字跳一大段
+      // 帧率无关指数阻尼（λ=12，与主页面 SCROLL_SMOOTH 一致）：离散的
+      // wheel 跳变被插值成连续平滑的滚动，产生阻尼缓和的阅读手感，
+      // 全站滚轮平滑参数统一（dt 上限 0.05 防后台切回大步长跳变）
+      const k = 1 - Math.exp(-12 * Math.min(0.05, delta));
       const target = paperScrollProgress.current;
       // 当 target 与当前值差距过大（>0.3），说明外部重置了滚动（如进入/退出详情页），
       // 立即 snap 到 target，避免从旧值缓慢插值产生明显延迟
       if (Math.abs(smoothScrollRef.current - target) > 0.3) {
         smoothScrollRef.current = target;
       } else {
-        smoothScrollRef.current = THREE.MathUtils.lerp(
-          smoothScrollRef.current,
-          target,
-          0.06
-        );
+        smoothScrollRef.current += (target - smoothScrollRef.current) * k;
         // 到达目标后清零避免无限插值浮点残留
         if (Math.abs(smoothScrollRef.current - target) < 0.0005) {
           smoothScrollRef.current = target;

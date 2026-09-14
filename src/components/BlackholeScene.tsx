@@ -581,10 +581,13 @@ export function BlackholeScene({
   }, [mouseControl, activeModeRef, onModeChange]);
 
   // 每帧更新 uniforms
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const mat = material;
     const u = mat.uniforms;
     u.time.value = clock.getElapsedTime();
+    // 帧率无关指数阻尼常数：与主页面 SCROLL_SMOOTH 一致（λ=12，约 80ms 收敛），
+    // 统一全站滚轮平滑手感（dt 上限 0.05 防后台切回大步长跳变）
+    const k = 1 - Math.exp(-12 * Math.min(0.05, delta));
 
     // === 关键：resolution 必须用 drawing buffer 物理像素尺寸 ===
     // gl_FragCoord 是设备像素（= CSS 尺寸 × dpr），若用 CSS 尺寸（size.width）
@@ -622,7 +625,7 @@ export function BlackholeScene({
     // 模拟"滚轮向下、镜头拉远"——黑洞变小、四周星云视野更开阔
     if (zoomProgressRef) {
       const zoom = Math.max(0, Math.min(1, zoomProgressRef.current));
-      u.fovScale.value = THREE.MathUtils.lerp(u.fovScale.value, 1.0 + 1.2 * zoom, 0.06);
+      u.fovScale.value += (1.0 + 1.2 * zoom - u.fovScale.value) * k;
     }
   });
 

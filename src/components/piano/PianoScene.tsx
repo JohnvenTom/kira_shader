@@ -796,9 +796,10 @@ export function PianoScene({
     // 滚轮是离散跳变（一格约 ±100px scrollTop，progress 阶跃 0.1 左右），
     // 直接用会产生"一格一顿"的瞬移。这里对 progress 做指数阻尼平滑：
     // 显示值每帧向目标值趋近，滚一格 → 相机连续滑过去，苹果式跟手感。
-    // lambda=7：约 100ms 收敛，兼顾丝滑与跟手；收敛后 snap 消除残差。
+    // lambda=12：与主页面 SCROLL_SMOOTH 一致（约 80ms 收敛），
+    // 全站滚轮平滑手感统一；收敛后 snap 消除残差。
     const target = Math.max(0, Math.min(1, scrollProgressRef.current));
-    st.journey += (target - st.journey) * (1 - Math.exp(-dt * 7));
+    st.journey += (target - st.journey) * (1 - Math.exp(-dt * 12));
     if (Math.abs(target - st.journey) < 0.0005) st.journey = target;
     const progress = st.journey;
 

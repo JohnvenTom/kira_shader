@@ -291,6 +291,7 @@ export default function KiraFilmDemo() {
     if (!detailOpenRef.current && st.energy <= SCROLL_BACK && !backSwitchingRef.current) {
       backSwitchingRef.current = true;
       setBackFlash(true);
+      console.log('[back-debug] triggered', { energy: st.energy, stack: new Error().stack?.slice(0, 400) });
       setTimeout(() => {
         window.location.hash = '';
       }, 450);
