@@ -174,6 +174,8 @@ export default function App() {
   // Bloom：threshold 0.85 只让屏幕 emissive（亮度>1）参与辉光，避免整张图都发糊；
   //        strength 1.4 让彩色光晕明显扩散到屏幕外（呼应 shader.se 的"屏幕反射出彩色光"效果）；
   //        radius 0.6 让光晕柔和弥散而非硬边
+  // motionBlur 0.6：帧间累积混合。相机快速推进/入场运镜时拖影明显有速度感，
+  // 静止画面收敛后无残影（0 关闭 / 1 拖影最长但内容不可读）
   const postFXParams = useMemo<PostFXParams>(
     () => ({
       chromaticAberration: 1.0,
@@ -185,6 +187,7 @@ export default function App() {
       bloomStrength: 0.3,
       bloomRadius: 0.2,
       bloomThreshold: 0.7,
+      motionBlur: 0.6,
     }),
     []
   );

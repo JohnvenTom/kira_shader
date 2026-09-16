@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { MotionBlurPass } from './MotionBlurPass';
 
 /**
  * 后处理参数（运行时可调）
@@ -31,6 +32,9 @@ export interface PostFXParams {
   bloomRadius: number;
   /** Bloom 亮度阈值（0~1）。仅亮度超过此值的像素参与辉光，0.85 = 只让屏幕自发光部分扩散 */
   bloomThreshold: number;
+  /** 运动模糊强度（0~1）。帧间累积混合：值越大运动物体留下的残影拖尾越长越浓，
+   *  0 = 完全关闭；相机推进/转场时拖影最明显，静态画面收敛后无拖影 */
+  motionBlur: number;
 }
 
 /**
@@ -243,8 +247,10 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
   const composerRef = useRef<EffectComposer | null>(null);
   const passRef = useRef<ShaderPass | null>(null);
   const bloomRef = useRef<UnrealBloomPass | null>(null);
+  // 运动模糊通道引用：强度在参数同步 effect 中更新，dt 在 useFrame 中更新
+  const motionBlurRef = useRef<MotionBlurPass | null>(null);
 
-  // 创建 EffectComposer + RenderPass + Bloom + 自定义 ShaderPass
+  // 创建 EffectComposer + RenderPass + Bloom + 自定义 ShaderPass + 运动模糊
   // useMemo 避免每次渲染都重建（只在 gl 变化时重建）
   useMemo(() => {
     // 用默认 renderTarget（UnsignedByteType）保证兼容性：
@@ -265,8 +271,19 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     bloomRef.current = bloom;
 
     const pass = new ShaderPass(PostFXShader);
-    pass.renderToScreen = true;
+    // 色散/畸变/暗角通道让出"最后一帧"位置：运动模糊挂在它之后作为收尾
+    pass.renderToScreen = false;
     c.addPass(pass);
+
+    // 运动模糊通道（帧间累积混合）：置于管线末尾，
+    // 让拖影作用于含 Bloom/色散/暗角在内的完整画面
+    const motionBlur = new MotionBlurPass(
+      gl.domElement.width || 1,
+      gl.domElement.height || 1,
+      params.motionBlur
+    );
+    c.addPass(motionBlur);
+    motionBlurRef.current = motionBlur;
 
     passRef.current = pass;
     composerRef.current = c;
@@ -302,6 +319,10 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
       bloomRef.current.radius = params.bloomRadius;
       bloomRef.current.threshold = params.bloomThreshold;
     }
+    // 运动模糊强度同步：混合同一帧的系数在 useFrame 中按 dt 换算
+    if (motionBlurRef.current) {
+      motionBlurRef.current.strength = params.motionBlur;
+    }
   }, [params]);
 
   // 卸载时释放资源
@@ -310,12 +331,17 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
       composerRef.current?.dispose();
       composerRef.current = null;
       passRef.current = null;
+      // 运动模糊通道持有私有 RenderTarget，需显式销毁防显存泄漏
+      motionBlurRef.current?.dispose();
+      motionBlurRef.current = null;
     };
   }, []);
 
-  // 每帧调用 composer.render()，renderPriority=1 接管 R3F 默认渲染
-  useFrame(() => {
+  // 每帧：先按 dt 更新运动模糊混合系数，再调用 composer.render()，
+  // renderPriority=1 接管 R3F 默认渲染
+  useFrame((_state, delta) => {
     if (!enabled || !composerRef.current) return;
+    motionBlurRef.current?.update(delta);
     composerRef.current.render();
   }, 1);
 
