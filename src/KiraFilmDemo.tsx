@@ -1600,6 +1600,106 @@ function WorkDetailPage({
     }, 420);
   }, []);
 
+  // 粒子生成节流时间戳（全局统一节流，避免多卡刷屏）
+  const particleLastRef = useRef(0);
+
+  /**
+   * hover 期间在卡片上发散粒子（星星 ✦ + 圆形光点混合）
+   *
+   * 功能：约 60ms 生成一次、每次 1~2 颗，从卡片中心随机方向飘出
+   * 40~90px，随机旋转/缩放，600~900ms 生命周期后自动移除。
+   * 颜色青绿为主（75%）混少量白色，星星带 text-shadow 辉光。
+   *
+   * 参数：
+   *  - card {HTMLDivElement} 当前 hover 的卡片元素
+   * 返回值：void
+   *
+   * 注意事项：
+   *  - 粒子挂到卡片内 .work-card-particles 容器，随卡片的 3D 倾斜一起旋转
+   *  - CSS 变量（--dx/--dy/--rot/--sc/--life）驱动单个粒子的飘散轨迹
+   *  - 用 setTimeout 自清理，避免长时间 hover 堆积 DOM 节点
+   */
+  const spawnParticles = useCallback((card: HTMLDivElement) => {
+    const now = performance.now();
+    if (now - particleLastRef.current < 60) return;
+    particleLastRef.current = now;
+    const box = card.querySelector<HTMLDivElement>('.work-card-particles');
+    if (!box || box.childElementCount > 48) return;
+    const count = Math.random() < 0.6 ? 1 : 2;
+    for (let i = 0; i < count; i++) {
+      const p = document.createElement('span');
+      const isStar = Math.random() > 0.45;
+      p.className = isStar
+        ? 'work-particle work-particle--star'
+        : 'work-particle work-particle--dot';
+      p.classList.add(
+        Math.random() < 0.75 ? 'work-particle--teal' : 'work-particle--white'
+      );
+      if (isStar) p.textContent = '✦';
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 40 + Math.random() * 50;
+      p.style.setProperty('--dx', `${(Math.cos(ang) * dist).toFixed(1)}px`);
+      p.style.setProperty('--dy', `${(Math.sin(ang) * dist).toFixed(1)}px`);
+      p.style.setProperty('--rot', `${(Math.random() * 160 - 80).toFixed(0)}deg`);
+      p.style.setProperty('--sc', (0.7 + Math.random() * 0.6).toFixed(2));
+      const life = 600 + Math.random() * 300;
+      p.style.setProperty('--life', `${life}ms`);
+      // 出生点随机错开中心 ±12px，避免全部从同一点冒出
+      const ox = (Math.random() * 24 - 12).toFixed(1);
+      const oy = (Math.random() * 24 - 12).toFixed(1);
+      p.style.left = `calc(50% + ${ox}px)`;
+      p.style.top = `calc(50% + ${oy}px)`;
+      box.appendChild(p);
+      setTimeout(() => p.remove(), life + 120);
+    }
+  }, []);
+
+  /**
+   * 卡片 mousemove：3D 倾斜（±12°~14° + 900px 透视 + 1.06 放大）+ 粒子节流飘散
+   *
+   * 功能：把鼠标在卡片内的相对坐标（-1~1）映射到内层 tilt 容器的
+   * rotateX/rotateY，配合 scale 形成"卡片追着鼠标转头"的立体感。
+   * 倾斜写在内层容器而非卡片本体：卡片外层的 transform 由 GSAP
+   * 拖拽独占（translate），两层互不覆盖。
+   *
+   * 参数：
+   *  - e {React.MouseEvent<HTMLDivElement>} mousemove 事件
+   * 返回值：void
+   *
+   * 注意事项：
+   *  - 拖拽确认后（hasDragged）不加特效，避免拖拽时粒子乱飞
+   *  - rotateY 跟随水平位移、rotateX 反向跟随垂直位移（鼠标在上方时卡片抬头）
+   */
+  const handleCardMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (dragRef.current.hasDragged || dragRef.current.ifMovable) return;
+      const card = e.currentTarget;
+      const rect = card.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+      const tilt = card.querySelector<HTMLDivElement>('.work-card-tilt');
+      if (tilt) {
+        tilt.style.transform =
+          `perspective(900px) rotateX(${(ny * -12).toFixed(2)}deg) ` +
+          `rotateY(${(nx * 14).toFixed(2)}deg) scale(1.06)`;
+      }
+      spawnParticles(card);
+    },
+    [spawnParticles]
+  );
+
+  /**
+   * 卡片 mouseleave：清空倾斜内联样式（CSS 过渡回弹到平置）
+   *
+   * 参数：
+   *  - e {React.MouseEvent<HTMLDivElement>} mouseleave 事件
+   * 返回值：void
+   */
+  const handleCardLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const tilt = e.currentTarget.querySelector<HTMLDivElement>('.work-card-tilt');
+    if (tilt) tilt.style.transform = '';
+  }, []);
+
   /**
    * 鼠标拖拽事件绑定
    *
@@ -1645,6 +1745,8 @@ function WorkDetailPage({
         if (distance > drag.dragThreshold) {
           drag.hasDragged = true;
           document.body.style.cursor = 'grabbing';
+          // 拖拽期间挂 dragging class：禁用背景 blur 景深，避免整墙雾化干扰拖拽
+          if (photosRef.current) photosRef.current.classList.add('dragging');
         }
       }
       move(e.clientX, e.clientY);
@@ -1655,6 +1757,7 @@ function WorkDetailPage({
       if (drag.ifMovable) {
         drag.ifMovable = false;
         document.body.style.cursor = '';
+        if (photosRef.current) photosRef.current.classList.remove('dragging');
       }
     };
 
@@ -1868,29 +1971,37 @@ function WorkDetailPage({
                 className={`work-photo-card ${card.project.id === 'trace-animated' ? 'work-photo-card--trace' : ''}`}
                 data-project={card.project.id}
                 onClick={() => handleWorkCardClick(card.project.id)}
+                onMouseMove={handleCardMove}
+                onMouseLeave={handleCardLeave}
               >
-                {/* 四角装饰（复古胶片风） */}
-                <span className="work-corner work-corner--tl" />
-                <span className="work-corner work-corner--tr" />
-                <span className="work-corner work-corner--bl" />
-                <span className="work-corner work-corner--br" />
-                {/* 项目缩略图（gif 自动播放） */}
-                <img
-                  src={card.project.thumb}
-                  alt={card.project.name}
-                  draggable={false}
-                />
-                {/* trace 卡片专属角标：提示可点击打开展示页 */}
-                {card.project.id === 'trace-animated' && (
-                  <span className="work-card-open">VIEW ↴</span>
-                )}
-                {/* 卡片标签 + 编号 + 项目名 + 年份 */}
-                <span className="work-card-label">{card.unit}</span>
-                <span className="work-card-index">
-                  #{String(card.index).padStart(3, '0')}
-                </span>
-                <span className="work-card-name">{card.project.name}</span>
-                <span className="work-card-year">{card.project.year}</span>
+                {/* 内层 3D 倾斜容器：hover 时随鼠标 rotate + scale。
+                    独立于卡片外层（外层 transform 由 GSAP 拖拽独占） */}
+                <div className="work-card-tilt">
+                  {/* 四角装饰（复古胶片风，随倾斜一起转动） */}
+                  <span className="work-corner work-corner--tl" />
+                  <span className="work-corner work-corner--tr" />
+                  <span className="work-corner work-corner--bl" />
+                  <span className="work-corner work-corner--br" />
+                  {/* 项目缩略图（gif 自动播放） */}
+                  <img
+                    src={card.project.thumb}
+                    alt={card.project.name}
+                    draggable={false}
+                  />
+                  {/* trace 卡片专属角标：提示可点击打开展示页 */}
+                  {card.project.id === 'trace-animated' && (
+                    <span className="work-card-open">VIEW ↴</span>
+                  )}
+                  {/* 卡片标签 + 编号 + 项目名 + 年份 */}
+                  <span className="work-card-label">{card.unit}</span>
+                  <span className="work-card-index">
+                    #{String(card.index).padStart(3, '0')}
+                  </span>
+                  <span className="work-card-name">{card.project.name}</span>
+                  <span className="work-card-year">{card.project.year}</span>
+                </div>
+                {/* 粒子容器：hover 时星星/光点从卡片中心向外飘散 */}
+                <div className="work-card-particles" aria-hidden="true" />
               </div>
             ))}
           </div>

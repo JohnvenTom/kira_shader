@@ -1740,13 +1740,13 @@ body.camera-debug-mode .scroll-container {
    - width/height 用 em，margin-right 用 em
    - flex-shrink: 0 防止压缩
    - relative 定位（GSAP 操作 translate）
-   - overflow hidden 裁切图片 */
+   - overflow visible：让 hover 粒子的飘散不受裁剪（粒子挂卡片内部） */
 .work-photo-card {
   width: 300em;
   height: 100%;
   margin-right: 24em;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   background: #0d0d0d;
   border: 1px solid rgba(252, 249, 243, 0.15);
   flex-shrink: 0;
@@ -1761,15 +1761,28 @@ body.camera-debug-mode .scroll-container {
     drop-shadow(-2.5px 0 0 rgba(40, 120, 255, 0.45));
 }
 
+/* hover 焦点卡：浮到最上层 + 青绿边缘辉光（放大/倾斜由内层 .work-card-tilt 承担） */
 .work-photo-card:hover {
-  border-color: rgba(252, 249, 243, 0.5);
+  z-index: 6;
+  border-color: rgba(94, 234, 200, 0.55);
   box-shadow:
-    0 0 16px rgba(252, 249, 243, 0.15),
-    0 0 32px rgba(252, 249, 243, 0.05);
-  /* hover 时增强色散：R/B 通道偏移加大，模拟镜头对焦时的色散波动 */
+    0 0 0 1px rgba(94, 234, 200, 0.3),
+    0 0 26px rgba(94, 234, 200, 0.4),
+    0 0 70px rgba(47, 191, 154, 0.22),
+    0 24px 60px -18px rgba(0, 0, 0, 0.8);
   filter:
-    drop-shadow(4px 0 0 rgba(255, 40, 40, 0.6))
-    drop-shadow(-4px 0 0 rgba(40, 120, 255, 0.6));
+    drop-shadow(3px 0 0 rgba(255, 40, 40, 0.55))
+    drop-shadow(-3px 0 0 rgba(40, 120, 255, 0.55))
+    drop-shadow(0 0 10px rgba(94, 234, 200, 0.35));
+}
+
+/* 背景景深分离：hover 任一卡片时，其余卡片轻微雾化变暗（blur 2px + 亮度 78%）。
+   拖拽期间（.dragging）禁用，避免整墙雾化干扰拖拽操作 */
+.work-photos:hover:not(.dragging) .work-photo-card:not(:hover) {
+  filter:
+    blur(2px) brightness(0.78)
+    drop-shadow(2.5px 0 0 rgba(255, 40, 40, 0.45))
+    drop-shadow(-2.5px 0 0 rgba(40, 120, 255, 0.45));
 }
 
 /* trace 作品卡片：可点击打开展示页（青绿高亮区别于普通卡片） */
@@ -1799,6 +1812,75 @@ body.camera-debug-mode .scroll-container {
   border-radius: 4px;
   padding: 3px 8px;
   pointer-events: none;
+}
+
+/* === hover 交互升级：内层 3D 倾斜容器 ===
+   JS 在 mousemove 时直写 transform（perspective + rotateX/Y ±12~14° + scale 1.06），
+   CSS transition 提供平滑追踪与移出回弹；外层卡片的 translate 由 GSAP 独占，互不覆盖 */
+.work-card-tilt {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.22s ease-out;
+  will-change: transform;
+}
+
+/* 粒子容器：覆盖卡片、不拦截事件，粒子可飘出卡片边界（卡片已 overflow visible） */
+.work-card-particles {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* 单颗粒子基础：从卡片中心出生，按 CSS 变量轨迹飘散 + 旋转 + 缩放 + 淡出 */
+.work-particle {
+  position: absolute;
+  transform: translate(-50%, -50%) rotate(0deg) scale(var(--sc));
+  animation: work-particle-fly var(--life) ease-out forwards;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform, opacity;
+}
+@keyframes work-particle-fly {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(var(--sc));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy)))
+      rotate(var(--rot)) scale(0.15);
+    opacity: 0;
+  }
+}
+/* 星星形态：✦ 字符 + 光晕 */
+.work-particle--star {
+  font-size: 11px;
+  line-height: 1;
+}
+.work-particle--star.work-particle--teal {
+  color: #7dfade;
+  text-shadow: 0 0 6px rgba(125, 250, 222, 0.95), 0 0 14px rgba(47, 191, 154, 0.6);
+}
+.work-particle--star.work-particle--white {
+  color: #f2fff9;
+  text-shadow: 0 0 6px rgba(255, 255, 255, 0.9), 0 0 16px rgba(94, 234, 200, 0.5);
+}
+/* 光点形态：小圆 + 光晕（白色带青绿泛光） */
+.work-particle--dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+.work-particle--dot.work-particle--teal {
+  background: #7dfade;
+  box-shadow: 0 0 8px rgba(125, 250, 222, 0.9), 0 0 16px rgba(47, 191, 154, 0.5);
+}
+.work-particle--dot.work-particle--white {
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 14px rgba(94, 234, 200, 0.45);
 }
 /* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显掩盖 hash 切换 */
 .work-jump-flash {
