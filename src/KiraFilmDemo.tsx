@@ -1356,6 +1356,8 @@ function WorkDetailPage({
 }) {
   // 无限滑动容器 ref（.work-photos，用于获取尺寸和绑定拖拽事件）
   const photosRef = useRef<HTMLDivElement>(null);
+  // 拖拽结束圆形蒙版层 ref（模糊回归的开场动画）
+  const maskRef = useRef<HTMLDivElement>(null);
   // 详情页根元素 ref（用于绑定 wheel 事件，让外层 overlay 处理退出）
   const innerRef = useRef<HTMLDivElement>(null);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
@@ -1700,6 +1702,58 @@ function WorkDetailPage({
     if (tilt) tilt.style.transform = '';
   }, []);
 
+  // 当前聚焦的卡片 id（避免反复进出同一张卡重复播光圈动画）
+  const focusedCardRef = useRef<string>('');
+
+  /**
+   * 卡片 mouseenter：播放"聚焦光圈"圆形扩散动画
+   *
+   * 功能：从卡片中心向外扩张一圈青绿光圈（0.2 → 1.6 倍消散，约 650ms），
+   * 作为聚焦（周围卡片雾化）的开场仪式，让"突兀聚焦"变成柔和的圆形展开。
+   * 只有从别的卡移入时播放（同卡内移动不重复触发）。
+   *
+   * 参数：
+   *  - id {string} 项目 id
+   *  - card {HTMLDivElement} 卡片元素
+   * 返回值：void
+   */
+  const playFocusRing = useCallback((id: string, card: HTMLDivElement) => {
+    if (focusedCardRef.current === id) return;
+    focusedCardRef.current = id;
+    const ring = card.querySelector<HTMLSpanElement>('.work-focus-ring');
+    if (!ring) return;
+    ring.classList.remove('anim');
+    // 强制 reflow 以重启动画
+    void ring.offsetWidth;
+    ring.classList.add('anim');
+  }, []);
+
+  /**
+   * 播放圆形蒙版扩张动画（拖拽结束时模糊回归的开场表演）
+   *
+   * 功能：以鼠标松手位置为圆心，一个深色径向渐变的圆形蒙版从 0 扩张到
+   * 覆盖全屏（1s），动画中段（400ms）由 JS 移除 .dragging、让真实 blur
+   * 以 filter transition 渐入，双轨叠加使"模糊消失→回归"无缝且柔和。
+   *
+   * 参数：
+   *  - cx {number} 圆心视口 X（松手位置）
+   *  - cy {number} 圆心视口 Y
+   * 返回值：void
+   */
+  const playDimMask = useCallback((cx: number, cy: number) => {
+    const mask = maskRef.current;
+    if (!mask) return;
+    mask.style.setProperty('--mx', `${cx}px`);
+    mask.style.setProperty('--my', `${cy}px`);
+    mask.classList.remove('anim');
+    void mask.offsetWidth;
+    mask.classList.add('anim');
+    // 动画中段切回真实模糊：蒙版快盖满时 remove dragging，filter transition 自然衔接
+    setTimeout(() => {
+      if (photosRef.current) photosRef.current.classList.remove('dragging');
+    }, 420);
+  }, []);
+
   /**
    * 鼠标拖拽事件绑定
    *
@@ -1752,12 +1806,14 @@ function WorkDetailPage({
       move(e.clientX, e.clientY);
     };
 
-    const endDrag = () => {
+    const endDrag = (e: MouseEvent) => {
       const drag = dragRef.current;
       if (drag.ifMovable) {
         drag.ifMovable = false;
         document.body.style.cursor = '';
-        if (photosRef.current) photosRef.current.classList.remove('dragging');
+        // 不清除 dragging（保持背景 blur 禁用），先播放圆形蒙版扩张动画，
+        // 动画中段（420ms）再由 playDimMask 内部移除 dragging 让真实模糊衔接
+        playDimMask(e.clientX, e.clientY);
       }
     };
 
@@ -1773,7 +1829,7 @@ function WorkDetailPage({
       container.removeEventListener('mouseleave', endDrag);
       document.body.style.cursor = '';
     };
-  }, [move]);
+  }, [move, playDimMask]);
 
   /**
    * 触摸拖拽事件绑定（移动端支持）
@@ -1821,6 +1877,8 @@ function WorkDetailPage({
 
     const onTouchEnd = () => {
       dragRef.current.ifMovable = false;
+      // 触屏无坐标：以视口中心为圆心播放模糊回归蒙版动画
+      playDimMask(window.innerWidth / 2, window.innerHeight / 2);
     };
 
     container.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -1832,7 +1890,7 @@ function WorkDetailPage({
       container.removeEventListener('touchmove', onTouchMove);
       container.removeEventListener('touchend', onTouchEnd);
     };
-  }, [move]);
+  }, [move, playDimMask]);
 
   /**
    * 窗口 resize 监听
@@ -1924,6 +1982,8 @@ function WorkDetailPage({
     <div ref={innerRef} className="work-detail-inner">
       {/* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显，掩盖 hash 切换 */}
       <div className={`work-jump-flash ${traceFlash ? 'visible' : ''}`} />
+      {/* 拖拽结束的圆形蒙版动画层：从松手点圆扩全屏，模糊回归的开场表演 */}
+      <div ref={maskRef} className="work-dim-mask" aria-hidden="true" />
       {/* 色散 + 边缘虚化变形：纯 CSS 实现（避免 SVG filter 的 JSX 解析问题）
           - 色散：.work-photo-card 上 filter:drop-shadow 实现 R/B 通道偏移
           - 边缘虚化：.work-photos 上 mask-image 径向渐变让边缘渐隐
@@ -1973,6 +2033,7 @@ function WorkDetailPage({
                 onClick={() => handleWorkCardClick(card.project.id)}
                 onMouseMove={handleCardMove}
                 onMouseLeave={handleCardLeave}
+                onMouseEnter={e => playFocusRing(card.project.id, e.currentTarget)}
               >
                 {/* 内层 3D 倾斜容器：hover 时随鼠标 rotate + scale。
                     独立于卡片外层（外层 transform 由 GSAP 拖拽独占） */}
@@ -2002,6 +2063,8 @@ function WorkDetailPage({
                 </div>
                 {/* 粒子容器：hover 时星星/光点从卡片中心向外飘散 */}
                 <div className="work-card-particles" aria-hidden="true" />
+                {/* 聚焦光圈：mouseenter 时从卡中心圆形扩散消散 */}
+                <span className="work-focus-ring" aria-hidden="true" />
               </div>
             ))}
           </div>

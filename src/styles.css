@@ -1882,6 +1882,75 @@ body.camera-debug-mode .scroll-container {
   background: #fff;
   box-shadow: 0 0 6px rgba(255, 255, 255, 0.85), 0 0 14px rgba(94, 234, 200, 0.45);
 }
+
+/* === 拖拽结束的圆形蒙版动画层 ===
+   以松手点（--mx/--my）为圆心的深色径向渐变圆，从 0 扩张覆盖全屏后淡出；
+   伴随 .dragging 在中段移除，真实 blur 以 filter transition 衔接 →
+   "模糊消失→回归"不再是硬切而是圆形开场表演 */
+.work-dim-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    circle at var(--mx, 50%) var(--my, 50%),
+    rgba(8, 10, 9, 0) 0%,
+    rgba(8, 10, 9, 0.42) 100%
+  );
+  clip-path: circle(0% at var(--mx, 50%) var(--my, 50%));
+}
+.work-dim-mask.anim {
+  animation: work-dim-reveal 1s ease-in-out forwards;
+}
+@keyframes work-dim-reveal {
+  0% {
+    clip-path: circle(0% at var(--mx, 50%) var(--my, 50%));
+    opacity: 1;
+  }
+  55% {
+    clip-path: circle(85% at var(--mx, 50%) var(--my, 50%));
+    opacity: 1;
+  }
+  100% {
+    clip-path: circle(170% at var(--mx, 50%) var(--my, 50%));
+    opacity: 0;
+  }
+}
+
+/* === 聚焦光圈：hover 进入卡片时从中心圆形扩散消散 ===
+   青绿描边圆环 + 辉光，0.2 → 1.6 倍缩放淡出，约 650ms，
+   作为"聚焦"的开场仪式，柔化周围卡片雾化的出现 */
+.work-focus-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 62%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%) scale(0.2);
+  border: 1px solid rgba(125, 250, 222, 0);
+  border-radius: 50%;
+  z-index: 7;
+  pointer-events: none;
+  opacity: 0;
+}
+.work-focus-ring.anim {
+  animation: work-focus-ring 0.65s ease-out forwards;
+}
+@keyframes work-focus-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(0.2);
+    opacity: 0.9;
+    border-color: rgba(125, 250, 222, 0.8);
+    box-shadow: 0 0 30px rgba(47, 191, 154, 0.5), inset 0 0 30px rgba(47, 191, 154, 0.2);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.6);
+    opacity: 0;
+    border-color: rgba(125, 250, 222, 0);
+    box-shadow: none;
+  }
+}
 /* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显掩盖 hash 切换 */
 .work-jump-flash {
   position: fixed;
