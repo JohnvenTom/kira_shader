@@ -86,6 +86,8 @@ export default function TraceDetailPage() {
 
   // 已注入的 CSSAnimation 列表（滚动时逐帧统一设置 currentTime）
   const animsRef = useRef<CSSAnimation[]>([]);
+  // 阻尼系统状态：p=显示进度（阻尼后），v=跟踪速度，target=滚动位置目标进度
+  const dampRef = useRef({ p: 0, v: 0, target: 0, raf: 0, running: false, lastFrame: 0 });
   // SVG 文本状态（fetch 完成后触发注入）
   const [svgText, setSvgText] = useState<string | null>(null);
   // 当前激活阶段索引（驱动指示器高亮）
@@ -122,39 +124,122 @@ export default function TraceDetailPage() {
   }, []);
 
   /**
-   * 把主播放区的滚动进度同步到动画时间轴 + 阶段指示器
+   * === 滚动阻尼系统（缓入缓出速度线）===
    *
-   * 功能：
-   *  1. 计算定格区局部进度 p：区段顶端触到视口顶 → 0，区段底端对齐视口底 → 1
-   *  2. t = p * 14650ms 分发到全部 CSSAnimation.currentTime（含 delay 语义）
-   *  3. 同步阶段指示器高亮与百分比（DOM 直改，避免高频重渲染）
-   *
-   * 参数：无
-   * 返回值：void
+   * 交互模型：滚动位置只更新"目标进度" target，显示进度 p 以
+   * 临界阻尼二阶系统（Unity SmoothDamp）追踪 target：
+   *  - 滚得快时动画落后半拍再加速追上（缓入，且速度受位移驱动、越大越快）
+   *  - 接近目标时自动减速、无过冲地停稳（缓出）
+   *  - 停手后约 DAMP_SMOOTH_TIME*2 内收敛静止，随后停帧省资源
+   * 这样滚轮不再 1:1 直连动画，一格滚动的视觉位移被阻尼"稀释"，
+   * 慢滚可精修、快甩有丝滑滑行感，回滚同样倒放可逆。
    */
-  const syncProgress = useCallback(() => {
-    const act = actRef.current;
-    if (!act) return;
-    const vh = window.innerHeight;
-    const max = act.offsetHeight - vh;
-    const p = max > 0 ? Math.max(0, Math.min(1, (-act.getBoundingClientRect().top) / max)) : 0;
-    const t = p * T_TOTAL;
+const DAMP_SMOOTH_TIME = 0.55; // 秒：阻尼时间常数，越大跟随越钝、滑行感越明显
 
-    // 时间轴分发
-    for (const a of animsRef.current) a.currentTime = t;
+/**
+ * 把阻尼后的显示进度分发到动画时间轴 + 阶段指示器
+ *
+ * 功能：
+ *  1. t = p * 14650ms 分发到全部 CSSAnimation.currentTime（含 delay 语义）
+ *  2. 同步阶段指示器高亮（state 驱动）与百分比文本（DOM 直改）
+ *
+ * 参数：
+ *  - p {number} 0~1 的显示进度（已阻尼）
+ * 返回值：void
+ */
+const distribute = useCallback((p: number) => {
+  const t = p * T_TOTAL;
+  for (const a of animsRef.current) a.currentTime = t;
 
-    // 阶段高亮（state 驱动 class，仅在阶段变化时重渲染）
-    const idx = PHASES.findIndex(ph => t >= ph.start && t < ph.end);
-    const resolved = idx === -1 ? (t >= T_TOTAL ? PHASES.length - 1 : 0) : idx;
-    if (phaseIdxRef.current !== resolved) {
-      phaseIdxRef.current = resolved;
-      setPhaseIdx(resolved);
-    }
-    // 百分比文本
-    if (pctRef.current) {
-      pctRef.current.textContent = `${Math.round(p * 100)}%`;
-    }
-  }, []);
+  const idx = PHASES.findIndex(ph => t >= ph.start && t < ph.end);
+  const resolved = idx === -1 ? (t >= T_TOTAL ? PHASES.length - 1 : 0) : idx;
+  if (phaseIdxRef.current !== resolved) {
+    phaseIdxRef.current = resolved;
+    setPhaseIdx(resolved);
+  }
+  if (pctRef.current) {
+    pctRef.current.textContent = `${Math.round(p * 100)}%`;
+  }
+}, []);
+
+/**
+ * 读取当前滚动位置对应的目标进度（0~1，未阻尼）
+ *
+ * 功能：定格区顶端触到视口顶 → 0，区段底端对齐视口底 → 1
+ * 返回值：number 0~1
+ */
+const readTarget = useCallback((): number => {
+  const act = actRef.current;
+  if (!act) return 0;
+  const vh = window.innerHeight;
+  const max = act.offsetHeight - vh;
+  return max > 0 ? Math.max(0, Math.min(1, -act.getBoundingClientRect().top / max)) : 0;
+}, []);
+
+/**
+ * 阻尼追踪帧循环（缓入缓出速度线）
+ *
+ * 功能：每帧用 SmoothDamp 推进显示进度向目标收敛并分发；
+ * 收敛静止后自行停帧等待下次滚动唤醒。
+ *
+ * 参数：无
+ * 返回值：void
+ *
+ * 注意事项：
+ *  - dt 上限 0.05s，避免后台标签页切回时大步长跳变
+ *  - 收敛阈值 0.0003（约 0.03% 进度），静止判定兼顾手感与停帧
+ */
+const tickDamp = useCallback(() => {
+  const st = dampRef.current;
+  const now = performance.now();
+  const dt = Math.min(0.05, Math.max(now - st.lastFrame, 0.001));
+  st.lastFrame = now;
+
+  // SmoothDamp（临界阻尼、无过冲）
+  const omega = 2 / DAMP_SMOOTH_TIME;
+  const x = omega * dt;
+  const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = st.p - st.target;
+  const temp = (st.v + omega * change) * dt;
+  st.v = (st.v - omega * temp) * exp;
+  st.p = st.target + (change + temp) * exp;
+  distribute(st.p);
+
+  if (Math.abs(st.p - st.target) < 0.0003 && Math.abs(st.v) < 0.0003) {
+    st.running = false;
+    return;
+  }
+  st.raf = requestAnimationFrame(tickDamp);
+}, [distribute]);
+
+/**
+ * 唤醒阻尼帧循环（幂等）
+ *
+ * 功能：阻尼系统默认不跑帧，滚动注入目标后调用本函数启动，
+ * 直到显示进度收敛静止自行停止，避免空转浪费。
+ */
+const ensureDampLoop = useCallback(() => {
+  const st = dampRef.current;
+  if (!st.running) {
+    st.running = true;
+    st.lastFrame = performance.now();
+    st.raf = requestAnimationFrame(tickDamp);
+  }
+}, [tickDamp]);
+
+/**
+ * 阻尼状态快照复位（进入页面/资源就绪时直接用当前滚动位置定位）
+ *
+ * 功能：把 p 与 target 同时快照为当前滚动位置，避免从 0 阻尼爬上来的
+ * 启动动画，首帧即为正确画面。
+ */
+const snapDamp = useCallback(() => {
+  const st = dampRef.current;
+  st.target = readTarget();
+  st.p = st.target;
+  st.v = 0;
+  distribute(st.p);
+}, [readTarget, distribute]);
 
   /**
    * WAAPI 时间轴接管：svg 注入后挂 .trace-playing 启动全部 CSS 动画并统一 pause
@@ -193,8 +278,8 @@ export default function TraceDetailPage() {
           a.currentTime = 0;
         });
         animsRef.current = anims;
-        // 初始帧同步一次（scrollY 可能不在 0）
-        syncProgress();
+        // 初始帧直接快照定位（scrollY 可能不在 0，不做阻尼爬升）
+        snapDamp();
         return;
       }
       attempt += 1;
@@ -204,36 +289,47 @@ export default function TraceDetailPage() {
     return () => {
       stopped = true;
     };
-  }, [svgText, syncProgress]);
+  }, [svgText, snapDamp]);
 
   /**
-   * 滚动监听（rAF 节流）：主播放区滚动驱动 + 原理小节 demo 驱动
+   * 滚动/缩放监听：更新阻尼目标 + 唤醒阻尼循环 + 广播原理 demo 驱动
+   *
+   * 功能：滚动位置不直接分发动画，只更新 dampRef.target 并唤醒阻尼
+   * 帧循环（SmoothDamp 提供缓入缓出速度线）；同时广播 trace:scroll 供
+   * 原理小节 demo 读取各自位置驱动。
    */
   useEffect(() => {
-    let raf = 0;
     const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        syncProgress();
-        // 各原理 demo 自行读取自己的位置（通过自定义事件广播）
-        window.dispatchEvent(new CustomEvent('trace:scroll'));
-      });
+      dampRef.current.target = readTarget();
+      ensureDampLoop();
+      // 原理 demo 驱动广播（demo 自行读取位置，无需 rAF 节流）
+      window.dispatchEvent(new CustomEvent('trace:scroll'));
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', onScroll);
     return () => {
       window.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onScroll);
-      cancelAnimationFrame(raf);
     };
-  }, [syncProgress]);
+  }, [readTarget, ensureDampLoop]);
 
   /**
-   * SVG 注入后立即驱动一次（页面可能带着 scrollY 恢复进入）
+   * 组件卸载：停止阻尼帧循环，避免 rAF 泄漏
    */
   useEffect(() => {
-    if (svgText) syncProgress();
-  }, [svgText, syncProgress]);
+    return () => {
+      const st = dampRef.current;
+      st.running = false;
+      cancelAnimationFrame(st.raf);
+    };
+  }, []);
+
+  /**
+   * SVG 注入后立即快照定位一次（页面可能带着 scrollY 恢复进入）
+   */
+  useEffect(() => {
+    if (svgText) snapDamp();
+  }, [svgText, snapDamp]);
 
   return (
     <div className="trace-root trace-page-root">
@@ -410,6 +506,8 @@ function TechDashoffset() {
 
   return (
     <div ref={sectionRef} className="trace-tech">
+      {/* 出血海报数字（非对称编辑风的标志元素，部分溢出区段） */}
+      <span className="trace-bleed-num" aria-hidden>01</span>
       <div className="trace-tech-head">
         <span className="trace-tech-idx">01</span>
         <h3>技法一 · stroke-dashoffset</h3>
@@ -499,7 +597,9 @@ function TechLayers() {
   useTraceScroll(drive);
 
   return (
-    <div ref={sectionRef} className="trace-tech">
+    <div ref={sectionRef} className="trace-tech trace-tech--flip">
+      {/* 出血海报数字 */}
+      <span className="trace-bleed-num" aria-hidden>02</span>
       <div className="trace-tech-head">
         <span className="trace-tech-idx">02</span>
         <h3>技法二 · 分层时间轴</h3>
@@ -612,7 +712,9 @@ function TechClipPath() {
   ];
 
   return (
-    <div ref={sectionRef} className="trace-tech">
+    <div ref={sectionRef} className="trace-tech trace-tech--free">
+      {/* 出血海报数字（自由构图：数字沉到右下出血） */}
+      <span className="trace-bleed-num" aria-hidden>03</span>
       <div className="trace-tech-head">
         <span className="trace-tech-idx">03</span>
         <h3>技法三 · clip-path 分段揭示</h3>

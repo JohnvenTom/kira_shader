@@ -2699,13 +2699,14 @@ body.trace-page #root {
   pointer-events: auto;
 }
 
-/* === 第一幕：首屏 === */
+/* === 第一幕：首屏（12 栏编辑网格 · 对角线非对称构图）===
+   视觉动线：kicker 右上 → 标题右倾 → 副标题左下回勾 → 提示左下角，
+   形成从右上到左下的 Z 字对角线 */
 .trace-act--hero {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  text-align: center;
   position: relative;
   overflow: hidden;
 }
@@ -2715,28 +2716,35 @@ body.trace-page #root {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(60% 45% at 50% 30%, rgba(47, 191, 154, 0.10) 0%, transparent 70%),
-    radial-gradient(90% 60% at 50% 110%, rgba(47, 191, 154, 0.06) 0%, transparent 60%);
+    radial-gradient(42% 38% at 68% 22%, rgba(47, 191, 154, 0.09) 0%, transparent 70%),
+    radial-gradient(80% 50% at 20% 96%, rgba(47, 191, 154, 0.06) 0%, transparent 60%);
   pointer-events: none;
 }
 .trace-hero-inner {
   position: relative;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 18px;
-  padding: 0 24px;
+  width: min(1320px, 92vw);
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  align-items: start;
+  padding: 8vh 0;
 }
 .trace-kicker {
+  grid-column: 7 / 13;
+  justify-self: end;
+  text-align: right;
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.34em;
   color: #2fbf9a;
 }
 .trace-title {
+  grid-column: 4 / 13;
+  margin-top: 9vh;
+  text-align: left;
   font-family: var(--font-serif-en);
-  font-size: clamp(52px, 9vw, 118px);
+  font-size: clamp(52px, 8.6vw, 112px);
   font-weight: 300;
   letter-spacing: 0.12em;
   line-height: 1.08;
@@ -2748,6 +2756,10 @@ body.trace-page #root {
   font-style: italic;
 }
 .trace-subtitle {
+  grid-column: 2 / 9;
+  justify-self: end;
+  text-align: right;
+  margin-top: 7vh;
   font-family: var(--font-serif-cn);
   font-size: 17px;
   font-weight: 300;
@@ -2755,10 +2767,11 @@ body.trace-page #root {
   letter-spacing: 0.22em;
 }
 .trace-scroll-hint {
-  margin-top: 34px;
+  grid-column: 2 / 5;
+  margin-top: 13vh;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   font-size: 12px;
   letter-spacing: 0.22em;
@@ -2792,15 +2805,19 @@ body.trace-page #root {
   overflow: hidden;
 }
 .trace-pin-layout {
-  display: flex;
-  align-items: center;
-  gap: clamp(20px, 4vw, 56px);
-  max-width: 96vw;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  width: min(1320px, 94vw);
+  align-items: start;
 }
+/* 画布占左 8 栏并上浮，面板占右 4 栏下沉 → 垂直错位打破对称 */
 .trace-stage-inner {
+  grid-column: 1 / 9;
+  transform: translateY(-34px);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
 }
 /* 画布放大覆盖（注入 CSS 尾部已在 TRACE_ANIM_CSS 上追加 .trace-frame 尺寸） */
@@ -2828,10 +2845,11 @@ body.trace-page #root {
   font-variant-numeric: tabular-nums;
 }
 
-/* 阶段指示器 */
+/* 阶段指示器：占右 4 栏并下沉错位，各项不等距排布 */
 .trace-phase-panel {
-  width: 240px;
-  flex-shrink: 0;
+  grid-column: 9 / 13;
+  transform: translateY(74px);
+  margin-left: 26px;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -2846,11 +2864,16 @@ body.trace-page #root {
   font-size: 11px;
   letter-spacing: 0.3em;
   color: #5d6b65;
+  margin-bottom: 30px;
 }
 .trace-phase-title-zh {
   color: #3e4a45;
   letter-spacing: 0.2em;
 }
+/* 阶段项横向错位（非对称节奏：破列表感） */
+.trace-phase-item:nth-of-type(3) { margin-left: 18px; }
+.trace-phase-item:nth-of-type(4) { margin-left: -8px; }
+.trace-phase-item:nth-of-type(5) { margin-left: 10px; }
 .trace-phase-item {
   display: flex;
   align-items: flex-start;
@@ -2904,40 +2927,60 @@ body.trace-page #root {
   font-variant-numeric: tabular-nums;
 }
 
-/* === 第三幕：原理拆解 === */
+/* === 第三幕：原理拆解（12 栏 + zig-zag 非对称 + 出血编号）=== */
 .trace-act--explain {
-  max-width: 1080px;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 18vh 24px 10vh;
+  padding: 18vh 4vw 10vh;
 }
+/* 区段头：左对齐落在第 2 栏，标题与说明偏右错开 */
 .trace-explain-header {
-  text-align: center;
-  margin-bottom: 10vh;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  margin-bottom: 9vh;
+  align-items: end;
+}
+.trace-explain-header .trace-kicker {
+  grid-column: 2 / 6;
+  justify-self: start;
+  text-align: left;
 }
 .trace-explain-title {
+  grid-column: 6 / 13;
   font-family: var(--font-serif-cn);
-  font-size: clamp(32px, 5vw, 54px);
+  font-size: clamp(34px, 5vw, 56px);
   font-weight: 500;
   letter-spacing: 0.18em;
   color: #f0f5f2;
 }
 .trace-explain-sub {
+  grid-column: 7 / 12;
+  margin-top: 18px;
   font-size: 14px;
   color: #8c9b94;
   letter-spacing: 0.08em;
 }
 
+/* 单个技法小节：12 栏网格，head 与 body 各占一行 */
 .trace-tech {
-  margin-bottom: 16vh;
+  position: relative;
+  margin-bottom: 14vh;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
 }
+/* 标题行与本节 demo 的起始栏位锚定（01/03 左、02 右），消除悬浮感 */
 .trace-tech-head {
+  grid-column: 2 / 8;
+  grid-row: 1;
   display: flex;
   align-items: baseline;
   gap: 16px;
-  margin-bottom: 34px;
+  margin-bottom: 28px;
+}
+.trace-tech--flip .trace-tech-head {
+  grid-column: 7 / 12;
 }
 .trace-tech-idx {
   font-family: var(--font-retro);
@@ -2958,23 +3001,85 @@ body.trace-page #root {
   letter-spacing: 0.24em;
   color: #5d6b65;
   border: 1px solid rgba(47, 191, 154, 0.3);
-  border-radius: 99px;
+  border-radius: 0;
   padding: 4px 12px;
 }
+/* 出血海报数字：半截溢出区段边缘（非对称编辑风的标志元素） */
+.trace-bleed-num {
+  position: absolute;
+  z-index: 0;
+  left: -0.06em;
+  top: -0.28em;
+  font-family: var(--font-serif-en);
+  font-weight: 300;
+  font-size: clamp(120px, 18vw, 260px);
+  line-height: 1;
+  color: rgba(47, 191, 154, 0.07);
+  pointer-events: none;
+  user-select: none;
+}
+.trace-tech--flip .trace-bleed-num {
+  left: auto;
+  right: -0.05em;
+  top: auto;
+  bottom: -0.24em;
+}
+.trace-tech--free .trace-bleed-num {
+  left: auto;
+  right: -0.04em;
+  top: auto;
+  bottom: -0.2em;
+  color: rgba(125, 250, 222, 0.08);
+}
+
+/* 技法小节主体：内层 12 栏
+   统一节奏：三节都是"demo 与 copy 同一水平带 + 反向错位"的 zig-zag，
+   仅方向与错位量有规律地交替（72 / 110 / 72） */
 .trace-tech-body {
+  grid-column: 1 / 13;
+  grid-row: 2;
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: clamp(22px, 4vw, 54px);
-  align-items: center;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  align-items: start;
+  position: relative;
+  z-index: 1;
+}
+/* 01 默认：demo 左（2~8）、文字右（9~12）下沉 72px */
+.trace-tech-body .trace-tech-demo {
+  grid-column: 2 / 8;
+}
+.trace-tech-body .trace-tech-copy {
+  grid-column: 9 / 12;
+  margin-top: 72px;
+}
+/* 02 flip：方向反转——文字左上（2~6）、demo 右下（7~12）下沉 110px */
+.trace-tech--flip .trace-tech-demo {
+  grid-column: 7 / 12;
+  margin-top: 110px;
+}
+.trace-tech--flip .trace-tech-copy {
+  grid-column: 2 / 6;
+  margin-top: 0;
+}
+/* 03 free：回到 01 的方向，但 demo 缩为 6 栏、copy 下沉 72px（与 01 同节奏） */
+.trace-tech--free .trace-clip-grid {
+  grid-column: 2 / 7;
+  grid-row: 1;
+}
+.trace-tech--free .trace-tech-copy {
+  grid-column: 8 / 12;
+  grid-row: 1;
+  margin-top: 72px;
 }
 .trace-tech-body--grid {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 24px;
 }
 .trace-tech-demo {
   position: relative;
   background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.14);
-  border-radius: 16px;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+  border-radius: 0;
   padding: 26px 18px 40px;
   display: flex;
   flex-direction: column;
@@ -3011,7 +3116,7 @@ body.trace-page #root {
   font-size: 12.5px;
   color: #7dfade;
   background: rgba(47, 191, 154, 0.08);
-  border-radius: 5px;
+  border-radius: 0;
   padding: 1px 6px;
 }
 .trace-tech-extra {
@@ -3027,7 +3132,7 @@ body.trace-page #root {
   color: #9fb3ab;
   background: #0e1312;
   border: 1px solid rgba(94, 234, 200, 0.12);
-  border-radius: 12px;
+  border-radius: 0;
   padding: 16px 18px;
   overflow-x: auto;
   white-space: pre;
@@ -3064,7 +3169,7 @@ body.trace-page #root {
   right: 26px;
   bottom: 26px;
   height: 4px;
-  border-radius: 99px;
+  border-radius: 0;
   background: #222;
   overflow: hidden;
   transition: background 0.1s linear;
@@ -3084,7 +3189,7 @@ body.trace-page #root {
 .trace-clip-demo {
   position: relative;
   aspect-ratio: 4 / 3;
-  border-radius: 12px;
+  border-radius: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3104,7 +3209,7 @@ body.trace-page #root {
   font-size: 11px;
   color: #7dfade;
   background: rgba(47, 191, 154, 0.08);
-  border-radius: 5px;
+  border-radius: 0;
   padding: 1px 6px;
   width: fit-content;
 }
@@ -3114,30 +3219,44 @@ body.trace-page #root {
   letter-spacing: 0.06em;
 }
 
-/* === 第四幕：代码对照 === */
+/* === 第四幕：代码对照（标题左、代码右移的非对称错位）=== */
 .trace-act--code {
-  max-width: 900px;
+  position: relative;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 12vh 24px 16vh;
+  padding: 12vh 4vw 16vh;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  align-items: start;
+}
+.trace-act--code .trace-explain-header {
+  grid-column: 1 / 13;
+  margin-bottom: 10vh;
 }
 .trace-code--big {
+  grid-column: 6 / 13;
+  margin-top: 20px;
   font-size: 13.5px;
   line-height: 1.9;
   padding: 26px 30px;
 }
 
-/* === 第五幕：结尾 === */
+/* === 第五幕：结尾（斜向呼应：文字左、按钮右）=== */
 .trace-act--end {
   min-height: 72vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 22px;
-  text-align: center;
-  padding: 0 24px;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 4vw;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  align-content: center;
+  align-items: start;
 }
 .trace-end-zh {
+  grid-column: 2 / 6;
+  justify-self: start;
   font-family: var(--font-serif-cn);
   font-size: 16px;
   font-weight: 300;
@@ -3145,9 +3264,12 @@ body.trace-page #root {
   color: #5d6b65;
 }
 .trace-back-btn {
+  grid-column: 8 / 12;
+  justify-self: end;
+  margin-top: 90px;
   appearance: none;
   border: 1px solid rgba(47, 191, 154, 0.5);
-  border-radius: 99px;
+  border-radius: 0;
   padding: 13px 34px;
   cursor: pointer;
   background: rgba(47, 191, 154, 0.08);
@@ -3163,6 +3285,9 @@ body.trace-page #root {
   transform: translateY(-2px);
 }
 .trace-end-hint {
+  grid-column: 3 / 7;
+  justify-self: start;
+  margin-top: 26px;
   font-size: 12px;
   color: #4c5a54;
   letter-spacing: 0.12em;
@@ -3170,19 +3295,52 @@ body.trace-page #root {
 
 /* 响应式：窄屏适配（阶段面板转到下方、双列改单列） */
 @media (max-width: 860px) {
+  /* hero：错位归零，全部左对齐单列 */
+  .trace-kicker {
+    grid-column: 1 / 13;
+    justify-self: start;
+    text-align: left;
+  }
+  .trace-title {
+    grid-column: 1 / 13;
+    margin-top: 6vh;
+  }
+  .trace-subtitle {
+    grid-column: 1 / 13;
+    justify-self: start;
+    text-align: left;
+    margin-top: 4vh;
+  }
+  .trace-scroll-hint {
+    grid-column: 1 / 13;
+    margin-top: 8vh;
+  }
+  /* pin 区：单列上下排布，错位取消 */
   .trace-pin-layout {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     gap: 18px;
   }
+  .trace-stage-inner {
+    grid-column: 1;
+    transform: none;
+    align-items: center;
+  }
   .trace-phase-panel {
-    width: min(760px, 90vw);
+    grid-column: 1;
+    transform: none;
+    margin-left: 0;
     flex-direction: row;
     flex-wrap: wrap;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 16px;
     border-left: none;
     border-top: 1px solid rgba(47, 191, 154, 0.16);
     padding: 14px 0 0;
+  }
+  .trace-phase-item:nth-of-type(3),
+  .trace-phase-item:nth-of-type(4),
+  .trace-phase-item:nth-of-type(5) {
+    margin-left: 0;
   }
   .trace-phase-title {
     display: none;
@@ -3191,9 +3349,52 @@ body.trace-page #root {
   .trace-phase-time {
     display: none;
   }
-  .trace-tech-body,
-  .trace-tech-body--grid {
+  /* explain：三节构图全部还原为自然单列流 */
+  .trace-explain-header .trace-kicker {
+    grid-column: 1 / 13;
+  }
+  .trace-explain-title {
+    grid-column: 1 / 13;
+  }
+  .trace-explain-sub {
+    grid-column: 1 / 13;
+  }
+  .trace-tech-head {
+    grid-column: 1 / 13;
+  }
+  .trace-tech-body {
     grid-template-columns: 1fr;
+    row-gap: 32px;
+  }
+  .trace-tech-body .trace-tech-demo,
+  .trace-tech-body .trace-tech-copy,
+  .trace-tech--flip .trace-tech-demo,
+  .trace-tech--flip .trace-tech-copy,
+  .trace-tech--free .trace-clip-grid,
+  .trace-tech--free .trace-tech-copy {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 0;
+  }
+  .trace-bleed-num {
+    font-size: 90px;
+    opacity: 0.55;
+  }
+  /* code/end：单列左对齐 */
+  .trace-code--big {
+    grid-column: 1 / 13;
+    margin-top: 0;
+  }
+  .trace-end-zh {
+    grid-column: 1 / 13;
+  }
+  .trace-back-btn {
+    grid-column: 1 / 13;
+    justify-self: start;
+    margin-top: 40px;
+  }
+  .trace-end-hint {
+    grid-column: 1 / 13;
   }
 }
 
