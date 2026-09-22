@@ -1777,10 +1777,18 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* 背景景深分离：hover 任一卡片时，其余卡片轻微雾化变暗（blur 2px + 亮度 78%）。
-   拖拽期间（.dragging）禁用，避免整墙雾化干扰拖拽操作 */
-.work-photos:hover:not(.dragging) .work-photo-card:not(:hover) {
+   拖拽开始（挂 .dragging）→ 下方覆盖规则把 blur 渐退到 0（filter transition 0.3s），
+   "变清楚"也有过渡；拖拽结束 remove .dragging → 蒙版动画中段 blur 以 transition 渐回 */
+.work-photos:hover .work-photo-card:not(:hover) {
   filter:
     blur(2px) brightness(0.78)
+    drop-shadow(2.5px 0 0 rgba(255, 40, 40, 0.45))
+    drop-shadow(-2.5px 0 0 rgba(40, 120, 255, 0.45));
+}
+/* 拖拽中：非 hover 卡的雾化渐退到零（过渡到清晰），色散链保持 */
+.work-photos.dragging:hover .work-photo-card:not(:hover) {
+  filter:
+    blur(0px) brightness(1)
     drop-shadow(2.5px 0 0 rgba(255, 40, 40, 0.45))
     drop-shadow(-2.5px 0 0 rgba(40, 120, 255, 0.45));
 }
@@ -1836,11 +1844,13 @@ body.camera-debug-mode .scroll-container {
   overflow: visible;
 }
 
-/* 单颗粒子基础：从出生点（JS 写入 left/top）按 CSS 变量轨迹飘散 + 旋转 + 缩放 + 淡出 */
+/* 单颗粒子基础：从出生点（JS 写入 left/top）按 CSS 变量轨迹飘散 + 旋转 + 缩放 + 淡出。
+   --ease 由 JS 随机注入（ease-out/ease-in-out/linear/贝塞尔），配合随机寿命与距离，
+   让每颗粒子的发射速度与节奏都不同 */
 .work-particle {
   position: absolute;
   transform: translate(-50%, -50%) rotate(0deg) scale(var(--sc));
-  animation: work-particle-fly var(--life) ease-out forwards;
+  animation: work-particle-fly var(--life) var(--ease, ease-out) forwards;
   pointer-events: none;
   user-select: none;
   will-change: transform, opacity;

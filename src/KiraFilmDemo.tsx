@@ -1643,13 +1643,23 @@ function WorkDetailPage({
       );
       if (isStar) p.textContent = '✦';
       const ang = Math.random() * Math.PI * 2;
-      const dist = 70 + Math.random() * 90;
+      // 距离 40~200px 宽域随机：发射远近差异大，速度感随机
+      const dist = 40 + Math.random() * 160;
       p.style.setProperty('--dx', `${(Math.cos(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--dy', `${(Math.sin(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--rot', `${(Math.random() * 160 - 80).toFixed(0)}deg`);
       p.style.setProperty('--sc', (0.9 + Math.random() * 0.8).toFixed(2));
-      const life = 1200 + Math.random() * 600;
+      // 寿命 1800~3400ms 宽域随机 + 随机缓动曲线：每颗飞行的快慢节奏都不同
+      const life = 1800 + Math.random() * 1600;
       p.style.setProperty('--life', `${life}ms`);
+      const eases = [
+        'ease-out',
+        'ease-in-out',
+        'linear',
+        'cubic-bezier(0.22, 0.9, 0.3, 1)',
+        'cubic-bezier(0.5, -0.1, 0.3, 1)',
+      ];
+      p.style.setProperty('--ease', eases[Math.floor(Math.random() * eases.length)]);
       // 出生点即鼠标视口位置（浮层 fixed，坐标直接可用），随机错开 ±10px
       const ox = Math.random() * 20 - 10;
       const oy = Math.random() * 20 - 10;
