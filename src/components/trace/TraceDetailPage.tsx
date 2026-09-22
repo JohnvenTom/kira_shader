@@ -434,6 +434,8 @@ const snapDamp = useCallback(() => {
           ← RETURN TO COLLECTION
         </button>
         <p className="trace-end-hint">返回收藏集 · 继续探索其他作品</p>
+        {/* 右下出血装饰字：呼应技法区段的海报数字语言，占据右区形成非对称终章构图 */}
+        <span className="trace-end-fin" aria-hidden>Fin.</span>
       </section>
     </div>
   );
