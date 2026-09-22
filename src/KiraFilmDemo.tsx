@@ -1358,6 +1358,8 @@ function WorkDetailPage({
   const photosRef = useRef<HTMLDivElement>(null);
   // 拖拽结束圆形蒙版层 ref（模糊回归的开场动画）
   const maskRef = useRef<HTMLDivElement>(null);
+  // 全局粒子层 ref（挂 .work-photos 内：层序夹在普通卡与 hover 卡之间）
+  const particlesLayerRef = useRef<HTMLDivElement>(null);
   // 详情页根元素 ref（用于绑定 wheel 事件，让外层 overlay 处理退出）
   const innerRef = useRef<HTMLDivElement>(null);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
@@ -1617,16 +1619,27 @@ function WorkDetailPage({
    * 返回值：void
    *
    * 注意事项：
-   *  - 粒子挂到卡片内 .work-card-particles 容器，随卡片的 3D 倾斜一起旋转
+   *  - 粒子挂到 .work-photos 内的全局粒子层（z-index 5）：渲染在普通卡片
+   *    之前、hover 焦点卡（z-6）之后，形成"焦点卡 > 粒子 > 背景卡"的夹层
+   *  - 出生点按卡片中心换算到 photos 本地坐标系（÷ 容器 scale 抵消缩放变形）
    *  - CSS 变量（--dx/--dy/--rot/--sc/--life）驱动单个粒子的飘散轨迹
    *  - 用 setTimeout 自清理，避免长时间 hover 堆积 DOM 节点
    */
   const spawnParticles = useCallback((card: HTMLDivElement) => {
     const now = performance.now();
-    if (now - particleLastRef.current < 60) return;
+    if (now - particleLastRef.current < 70) return;
     particleLastRef.current = now;
-    const box = card.querySelector<HTMLDivElement>('.work-card-particles');
-    if (!box || box.childElementCount > 48) return;
+    const box = particlesLayerRef.current;
+    if (!box || box.childElementCount > 36) return;
+    // 出生点取卡片中心，换算到 photos 容器本地坐标系：
+    // 视觉 rect 差 ÷ 容器 scale（photos 有整体 scale 变形）
+    const photosEl = photosRef.current;
+    if (!photosEl) return;
+    const cardRect = card.getBoundingClientRect();
+    const photosRect = photosEl.getBoundingClientRect();
+    const scale = dimsRef.current.scaleNums || 1;
+    const cx = (cardRect.left + cardRect.width / 2 - photosRect.left) / scale;
+    const cy = (cardRect.top + cardRect.height / 2 - photosRect.top) / scale;
     const count = Math.random() < 0.6 ? 1 : 2;
     for (let i = 0; i < count; i++) {
       const p = document.createElement('span');
@@ -1639,20 +1652,20 @@ function WorkDetailPage({
       );
       if (isStar) p.textContent = '✦';
       const ang = Math.random() * Math.PI * 2;
-      const dist = 40 + Math.random() * 50;
+      const dist = 60 + Math.random() * 80;
       p.style.setProperty('--dx', `${(Math.cos(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--dy', `${(Math.sin(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--rot', `${(Math.random() * 160 - 80).toFixed(0)}deg`);
-      p.style.setProperty('--sc', (0.7 + Math.random() * 0.6).toFixed(2));
-      const life = 600 + Math.random() * 300;
+      p.style.setProperty('--sc', (0.85 + Math.random() * 0.7).toFixed(2));
+      const life = 1200 + Math.random() * 600;
       p.style.setProperty('--life', `${life}ms`);
-      // 出生点随机错开中心 ±12px，避免全部从同一点冒出
-      const ox = (Math.random() * 24 - 12).toFixed(1);
-      const oy = (Math.random() * 24 - 12).toFixed(1);
-      p.style.left = `calc(50% + ${ox}px)`;
-      p.style.top = `calc(50% + ${oy}px)`;
+      // 出生点随机错开中心 ±14px，避免全部从同一点冒出
+      const ox = (Math.random() * 28 - 14).toFixed(1);
+      const oy = (Math.random() * 28 - 14).toFixed(1);
+      p.style.left = `${(cx + Number(ox)).toFixed(1)}px`;
+      p.style.top = `${(cy + Number(oy)).toFixed(1)}px`;
       box.appendChild(p);
-      setTimeout(() => p.remove(), life + 120);
+      setTimeout(() => p.remove(), life + 150);
     }
   }, []);
 
@@ -2061,14 +2074,14 @@ function WorkDetailPage({
                   <span className="work-card-name">{card.project.name}</span>
                   <span className="work-card-year">{card.project.year}</span>
                 </div>
-                {/* 粒子容器：hover 时星星/光点从卡片中心向外飘散 */}
-                <div className="work-card-particles" aria-hidden="true" />
                 {/* 聚焦光圈：mouseenter 时从卡中心圆形扩散消散 */}
                 <span className="work-focus-ring" aria-hidden="true" />
               </div>
             ))}
           </div>
         ))}
+        {/* 全局粒子层：夹在普通卡片与 hover 卡之间（z-5），粒子从这里全图发散 */}
+        <div ref={particlesLayerRef} className="work-photos-particles" aria-hidden="true" />
       </div>
 
       {/* 底部 footer：版本标识 + 拖拽提示 */}
