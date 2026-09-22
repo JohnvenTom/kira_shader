@@ -1,6 +1,8 @@
 /* === 全局重置与基础样式 === */
 /* 引入优雅细体衬线字体（用于副标题），离线时 fallback 到 STIX/Times */
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&display=swap');
+/* 引入中文衬线（思源宋体，用于高级感中文标题），离线时 fallback 到系统宋体 */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;500;600&display=swap');
 /* 引入老式复古字体（用于胶片屏幕上的数字/角标）：
    - VT323：老式 CRT 终端像素字体，最贴合复古胶片感
    - Share Tech Mono：等宽科技感字体，fallback 用 */
@@ -19,6 +21,9 @@
   --font-retro: "VT323", "Share Tech Mono", "Courier New", monospace;
   /* 副标题专用：优雅细体衬线，fallback 到 STIX/Times */
   --font-display: "Cormorant Garamond", "STIX Two Text", "Times New Roman", serif;
+  /* 高级感标题用：英文细体衬线 + 中文思源宋体（各自独立声明以便混排） */
+  --font-serif-en: "Cormorant Garamond", "STIX Two Text", Georgia, "Times New Roman", serif;
+  --font-serif-cn: "Cormorant Garamond", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif;
   /* 虚拟页面高度倍数（越大滚动越长）
      1.5 = 视口高度的 1.5 倍，约 5~8 次鼠标滚轮即可滚到底，对应"推进入屏幕"完整动画 */
   --page-height: 1.5;
@@ -1767,6 +1772,49 @@ body.camera-debug-mode .scroll-container {
     drop-shadow(-4px 0 0 rgba(40, 120, 255, 0.6));
 }
 
+/* trace 作品卡片：可点击打开展示页（青绿高亮区别于普通卡片） */
+.work-photo-card--trace {
+  cursor: pointer;
+}
+.work-photo-card--trace:hover {
+  border-color: rgba(94, 234, 200, 0.7);
+  box-shadow:
+    0 0 20px rgba(94, 234, 200, 0.3),
+    0 0 46px rgba(94, 234, 200, 0.14);
+  filter:
+    drop-shadow(3px 0 0 rgba(255, 40, 40, 0.5))
+    drop-shadow(-3px 0 0 rgba(40, 120, 255, 0.5));
+}
+/* trace 卡片"点击查看"角标 */
+.work-card-open {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: #0b0d0e;
+  background: linear-gradient(90deg, #2fbf9a, #7dfade);
+  border-radius: 4px;
+  padding: 3px 8px;
+  pointer-events: none;
+}
+/* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显掩盖 hash 切换 */
+.work-jump-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: #f4fffa;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+.work-jump-flash.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* 卡片顶部扫描线装饰（呼应胶片屏幕风） */
 .work-photo-card::before {
   content: '';
@@ -2601,6 +2649,551 @@ body.camera-debug-mode .scroll-container {
   }
   .piano-pedals button {
     width: 54px;
+  }
+}
+
+/* ============================================================
+   trace 作品展示页（#trace 独立路由 · 滚动叙事）
+   ============================================================ */
+
+/* body/html 滚动开关：trace 页需要原生滚动
+   - 滚轮容器统一到 html（根/视口）：body 保持 overflow visible，
+     避免 body 的中间滚动上下文破坏 position:sticky 定格
+   - body.trace-page 只负责解锁高度与背景色 */
+html.trace-page {
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  height: auto;
+}
+body.trace-page {
+  overflow: visible;
+  height: auto;
+  min-height: 100vh;
+  background: #0b0d0e;
+}
+body.trace-page #root {
+  height: auto;
+  min-height: 100vh;
+}
+
+.trace-root {
+  position: relative;
+  background: #0b0d0e;
+  color: #e8edea;
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+/* 返回白闪层 */
+.trace-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: #f4fffa;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+.trace-flash.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* === 第一幕：首屏 === */
+.trace-act--hero {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+/* 首屏背景微光（呼应作品青绿色） */
+.trace-act--hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(60% 45% at 50% 30%, rgba(47, 191, 154, 0.10) 0%, transparent 70%),
+    radial-gradient(90% 60% at 50% 110%, rgba(47, 191, 154, 0.06) 0%, transparent 60%);
+  pointer-events: none;
+}
+.trace-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 0 24px;
+}
+.trace-kicker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.34em;
+  color: #2fbf9a;
+}
+.trace-title {
+  font-family: var(--font-serif-en);
+  font-size: clamp(52px, 9vw, 118px);
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  line-height: 1.08;
+  color: #f0f5f2;
+  text-shadow: 0 0 42px rgba(47, 191, 154, 0.22);
+}
+.trace-title-accent {
+  color: #2fbf9a;
+  font-style: italic;
+}
+.trace-subtitle {
+  font-family: var(--font-serif-cn);
+  font-size: 17px;
+  font-weight: 300;
+  color: #9aa8a1;
+  letter-spacing: 0.22em;
+}
+.trace-scroll-hint {
+  margin-top: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  color: #5d6b65;
+}
+.trace-hint-line {
+  width: 1px;
+  height: 44px;
+  background: linear-gradient(180deg, transparent, #2fbf9a 60%, transparent);
+  animation: trace-hint-drop 1.8s ease-in-out infinite;
+}
+@keyframes trace-hint-drop {
+  0% { transform: translateY(-8px); opacity: 0; }
+  45% { opacity: 1; }
+  100% { transform: translateY(8px); opacity: 0; }
+}
+
+/* === 第二幕：sticky 定格整段播放 === */
+/* 外层长 section 提供滚动路程（约 2.4 屏），内部 sticky 定格 */
+.trace-act--pin {
+  position: relative;
+  height: 240vh;
+}
+.trace-pin {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.trace-pin-layout {
+  display: flex;
+  align-items: center;
+  gap: clamp(20px, 4vw, 56px);
+  max-width: 96vw;
+}
+.trace-stage-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+/* 画布放大覆盖（注入 CSS 尾部已在 TRACE_ANIM_CSS 上追加 .trace-frame 尺寸） */
+.trace-stage-inner .trace-frame {
+  box-shadow:
+    0 0 0 1px rgba(94, 234, 200, 0.22),
+    0 30px 80px -18px rgba(0, 0, 0, 0.75),
+    0 0 90px rgba(47, 191, 154, 0.10);
+}
+.trace-stage-inner .trace-bar {
+  width: min(760px, 90vw);
+}
+.trace-pin-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7a74;
+  letter-spacing: 0.12em;
+}
+.trace-pct {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: #2fbf9a;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 阶段指示器 */
+.trace-phase-panel {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  border-left: 1px solid rgba(47, 191, 154, 0.16);
+  padding-left: 26px;
+}
+.trace-phase-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: #5d6b65;
+}
+.trace-phase-title-zh {
+  color: #3e4a45;
+  letter-spacing: 0.2em;
+}
+.trace-phase-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  opacity: 0.32;
+  transition: opacity 0.35s ease;
+}
+.trace-phase-item.active {
+  opacity: 1;
+}
+.trace-phase-dot {
+  margin-top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(233, 240, 236, 0.35);
+  transition: background 0.35s ease, box-shadow 0.35s ease;
+}
+.trace-phase-item.active .trace-phase-dot {
+  background: #2fbf9a;
+  box-shadow: 0 0 12px rgba(47, 191, 154, 0.85);
+}
+.trace-phase-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trace-phase-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  color: #2fbf9a;
+}
+.trace-phase-zh {
+  font-family: var(--font-serif-cn);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: #e8edea;
+}
+.trace-phase-en {
+  font-size: 11px;
+  color: #8c9b94;
+}
+.trace-phase-time {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #4c5a54;
+  font-variant-numeric: tabular-nums;
+}
+
+/* === 第三幕：原理拆解 === */
+.trace-act--explain {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 18vh 24px 10vh;
+}
+.trace-explain-header {
+  text-align: center;
+  margin-bottom: 10vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.trace-explain-title {
+  font-family: var(--font-serif-cn);
+  font-size: clamp(32px, 5vw, 54px);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: #f0f5f2;
+}
+.trace-explain-sub {
+  font-size: 14px;
+  color: #8c9b94;
+  letter-spacing: 0.08em;
+}
+
+.trace-tech {
+  margin-bottom: 16vh;
+}
+.trace-tech-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 34px;
+}
+.trace-tech-idx {
+  font-family: var(--font-retro);
+  font-size: 26px;
+  color: #2fbf9a;
+}
+.trace-tech-head h3 {
+  font-family: var(--font-serif-cn);
+  font-size: 23px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: #e8edea;
+}
+.trace-tech-tag {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: #5d6b65;
+  border: 1px solid rgba(47, 191, 154, 0.3);
+  border-radius: 99px;
+  padding: 4px 12px;
+}
+.trace-tech-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: clamp(22px, 4vw, 54px);
+  align-items: center;
+}
+.trace-tech-body--grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.trace-tech-demo {
+  position: relative;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.14);
+  border-radius: 16px;
+  padding: 26px 18px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+}
+.trace-demo-line-svg {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+}
+.trace-demo-note {
+  position: absolute;
+  bottom: 12px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: #56766c;
+}
+.trace-tech-copy {
+  font-size: 14.5px;
+  line-height: 1.9;
+  color: #b9c6c0;
+}
+.trace-tech-copy strong {
+  color: #eef5f1;
+}
+.trace-tech-copy em {
+  color: #2fbf9a;
+  font-style: normal;
+}
+.trace-tech-copy code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: #7dfade;
+  background: rgba(47, 191, 154, 0.08);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.trace-tech-extra {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #7c8a84;
+}
+.trace-code {
+  margin-top: 16px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: #9fb3ab;
+  background: #0e1312;
+  border: 1px solid rgba(94, 234, 200, 0.12);
+  border-radius: 12px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* 技法②：三层叠放 demo */
+.trace-demo-stack {
+  padding: 18px;
+  min-height: 320px;
+}
+.trace-layer {
+  position: absolute;
+  inset: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.12s linear;
+}
+.trace-layer svg {
+  width: 88%;
+  height: auto;
+  display: block;
+}
+.trace-layer-tag {
+  position: absolute;
+  bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: #6b7a74;
+}
+.trace-demo-layers-bar {
+  position: absolute;
+  left: 26px;
+  right: 26px;
+  bottom: 26px;
+  height: 4px;
+  border-radius: 99px;
+  background: #222;
+  overflow: hidden;
+  transition: background 0.1s linear;
+}
+
+/* 技法③：clip-path 2×2 网格 */
+.trace-clip-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.trace-clip-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trace-clip-demo {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  color: #0b0d0e;
+  background:
+    radial-gradient(120% 100% at 20% 0%, #d9f7ee 0%, #52c9a6 48%, #1c8f74 100%);
+  will-change: clip-path, opacity;
+}
+.trace-clip-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.trace-clip-label code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #7dfade;
+  background: rgba(47, 191, 154, 0.08);
+  border-radius: 5px;
+  padding: 1px 6px;
+  width: fit-content;
+}
+.trace-clip-label span {
+  font-size: 11px;
+  color: #6b7a74;
+  letter-spacing: 0.06em;
+}
+
+/* === 第四幕：代码对照 === */
+.trace-act--code {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 12vh 24px 16vh;
+}
+.trace-code--big {
+  font-size: 13.5px;
+  line-height: 1.9;
+  padding: 26px 30px;
+}
+
+/* === 第五幕：结尾 === */
+.trace-act--end {
+  min-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  text-align: center;
+  padding: 0 24px;
+}
+.trace-end-zh {
+  font-family: var(--font-serif-cn);
+  font-size: 16px;
+  font-weight: 300;
+  letter-spacing: 0.34em;
+  color: #5d6b65;
+}
+.trace-back-btn {
+  appearance: none;
+  border: 1px solid rgba(47, 191, 154, 0.5);
+  border-radius: 99px;
+  padding: 13px 34px;
+  cursor: pointer;
+  background: rgba(47, 191, 154, 0.08);
+  color: #7dfade;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+.trace-back-btn:hover {
+  background: rgba(47, 191, 154, 0.18);
+  box-shadow: 0 0 30px rgba(47, 191, 154, 0.25);
+  transform: translateY(-2px);
+}
+.trace-end-hint {
+  font-size: 12px;
+  color: #4c5a54;
+  letter-spacing: 0.12em;
+}
+
+/* 响应式：窄屏适配（阶段面板转到下方、双列改单列） */
+@media (max-width: 860px) {
+  .trace-pin-layout {
+    flex-direction: column;
+    gap: 18px;
+  }
+  .trace-phase-panel {
+    width: min(760px, 90vw);
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 16px;
+    border-left: none;
+    border-top: 1px solid rgba(47, 191, 154, 0.16);
+    padding: 14px 0 0;
+  }
+  .trace-phase-title {
+    display: none;
+  }
+  .trace-phase-en,
+  .trace-phase-time {
+    display: none;
+  }
+  .trace-tech-body,
+  .trace-tech-body--grid {
+    grid-template-columns: 1fr;
   }
 }
 

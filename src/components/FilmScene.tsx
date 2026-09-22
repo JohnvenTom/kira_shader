@@ -114,6 +114,13 @@ export const PROJECTS: ProjectItem[] = [
     thumb: '/asset/textures/projects/project-4.gif',
     year: '2023',
   },
+  {
+    id: 'trace-animated',
+    name: 'Trace · animated',
+    tagline: 'SVG stroke choreography',
+    thumb: '/asset/textures/projects/trace.png',
+    year: '2026',
+  },
 ];
 
 /**
@@ -2372,6 +2379,8 @@ interface FilmSceneProps {
   dragOffsetRef: React.MutableRefObject<number>;
   /** 当前 section 索引变化回调（通知外层更新文字 UI） */
   onSectionChange?: (index: number) => void;
+  /** 初始 section 索引（从 trace 页返回恢复时用，mount 即定位，不依赖帧循环 lerp） */
+  initialSection?: number;
 }
 
 /**
@@ -2396,7 +2405,13 @@ interface FilmSceneProps {
  *  - 闪光在 sectionIndex 变化时短暂触发
  *  - 相机看向当前 section 中心（sectionIndex * 4, 0, 0）
  */
-export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionChange }: FilmSceneProps) {
+export function FilmScene({
+  scrollProgress,
+  mouseRef,
+  dragOffsetRef,
+  onSectionChange,
+  initialSection = 0,
+}: FilmSceneProps) {
   const { camera } = useThree();
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
@@ -2405,16 +2420,27 @@ export function FilmScene({ scrollProgress, mouseRef, dragOffsetRef, onSectionCh
   const mouseSmoothedRef = useRef({ x: 0, y: 0 });
 
   // 当前 section 索引（state，触发 ScreenDisplay 重绘 + onSectionChange 回调）
-  const [sectionIndex, setSectionIndex] = useState(0);
+  const [sectionIndex, setSectionIndex] = useState(initialSection);
   // 上一次触发的 section 索引（避免重复回调）
-  const lastNotifiedSectionRef = useRef(0);
+  const lastNotifiedSectionRef = useRef(initialSection);
 
   // 切换闪光强度 [0, 1]（驱动屏幕过曝掩盖切换）
   // 用 ref 不触发 React 重渲染，每帧由 ScreenDisplay 的 useFrame 读取
   const transitionFlashRef = useRef(0);
 
   // 胶片水平偏移平滑值（用于平滑插值到目标 dragOffset）
-  const filmXSmoothedRef = useRef(0);
+  // 初始化为 initialSection 对应的中心位置，从 trace 页返回时 mount 即定位
+  const filmXSmoothedRef = useRef(-initialSection * 4);
+
+  /**
+   * 初始 section 恢复：mount 时同步父级 dragOffsetRef 到初始 section 中心，
+   * 避免帧循环 lerp 把 smoothed 从 -section*4 拉回 0（frame loop 在详情页
+   * 打开后几乎停摆，lerp 收敛不可靠）
+   */
+  useEffect(() => {
+    dragOffsetRef.current = -initialSection * 4;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // section 切换通知
   useEffect(() => {

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import KiraFilmDemo from './KiraFilmDemo';
+import TraceDetailPage from './components/trace/TraceDetailPage';
 import './styles.css';
 
 /**
@@ -10,6 +11,7 @@ import './styles.css';
  * 功能：
  *  - 默认（无 hash 或 #home）：渲染 App（原 ComputerScene 单 section 版本）
  *  - #film：渲染 KiraFilmDemo（多 section 滚动 + 无缝切换版）
+ *  - #trace：渲染 TraceDetailPage（trace 作品滚动叙事展示页）
  *
  * 参数：无
  *
@@ -39,6 +41,7 @@ function useHashRoute() {
  * 功能：根据 URL hash 决定渲染哪个 demo
  *  - 无 hash / #home → App（ComputerScene 版）
  *  - #film           → KiraFilmDemo（多 section 滚动版）
+ *  - #trace          → TraceDetailPage（trace 作品展示页）
  *
  * 参数：无
  * 返回值：无
@@ -49,6 +52,7 @@ function useHashRoute() {
  */
 function Root() {
   const hash = useHashRoute();
+  if (hash === '#trace') return <TraceDetailPage key="trace" />;
   const isFilm = hash === '#film';
   // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
   return <React.StrictMode>{isFilm ? <KiraFilmDemo key="film" /> : <App key="app" />}</React.StrictMode>;

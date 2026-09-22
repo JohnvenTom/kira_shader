@@ -130,8 +130,46 @@ export default function KiraFilmDemo() {
   const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastInjectAt: 0, lastFrame: 0, raf: 0, running: false });
   // 滚动进度 0~1，用于驱动 3D 场景
   const [scrollProgress, setScrollProgress] = useState(0);
-  // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新）
-  const [sectionIndex, setSectionIndex] = useState(0);
+
+  /**
+   * 返回恢复数据（同步读取一次，跨渲染稳定）
+   *
+   * 功能：mount 时同步读取 sessionStorage['kira-return']
+   * （{ section, detail }，由 trace 展示页返回前写入）。
+   * 用 useMemo 而非 useEffect：sectionIndex 的 useState 初始值与
+   * FilmScene 的 initialSection prop 都必须在首次渲染前确定。
+   *
+   * 返回值：{ section: number; detail: boolean } | null
+   * 注意事项：
+   *  - sessionStorage 仅在定时器回调（详情打开）或非详情分支中清除，
+   *    StrictMode 双 mount 时两次读取结果一致
+   *  - section 会被 clamp 到 [0, SECTIONS.length-1]
+   */
+  const initialRestore = useMemo<{ section: number; detail: boolean } | null>(() => {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem('kira-return');
+    } catch {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      const data = JSON.parse(raw) as { section?: number; detail?: boolean };
+      return {
+        section:
+          typeof data.section === 'number'
+            ? Math.max(0, Math.min(data.section, SECTIONS.length - 1))
+            : 0,
+        detail: data.detail === true,
+      };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新；
+  // 初始值取自返回恢复数据，从 trace 页回来时 mount 即定位）
+  const [sectionIndex, setSectionIndex] = useState(initialRestore?.section ?? 0);
   // 文字 UI 是否可见（section 切换时短暂隐藏再淡入）
   const [textVisible, setTextVisible] = useState(true);
   // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
@@ -159,13 +197,62 @@ export default function KiraFilmDemo() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  /**
+   * 返回恢复：从 trace 展示页白闪返回时，恢复到 SELECTED WORK 详情页
+   *
+   * 功能：消费 useMemo 同步读取的 initialRestore：
+   *      1. 水平胶片定位由 FilmScene 的 initialSection prop + dragOffsetRef
+   *         初始值完成（mount 即定位，不依赖帧循环 lerp）
+   *      2. 惯性系统推进到尽头（穿屏状态），缓解镜头纵深跳变
+   *      3. 等入场白闪淡出后打开详情覆盖层（detailOpen），此时清除
+   *         sessionStorage 标记
+   *
+   * 参数：无
+   * 返回值：无（返回清理函数）
+   *
+   * 注意事项：
+   *  - detailOpenRef 必须与 setDetailOpen 同步写入（滞回判读依赖 ref）
+   *  - 详情打开后惯性系统泄能锁定（tickScroll 内 detailOpenRef 分支），
+   *    详情页内不会自动弹回
+   *  - StrictMode 双 mount 下标记在第一次定时器回调前不被移除，
+   *    两次执行的恢复结果一致
+   */
+  useEffect(() => {
+    if (!initialRestore) return;
+    const data = initialRestore;
+    if (data.detail) {
+      // 惯性系统直接推进到穿屏尽头（详情打开的状态）
+      const st = scrollStateRef.current;
+      st.energy = 1;
+      st.display = 1;
+      setScrollProgress(1);
+      const t = setTimeout(() => {
+        try {
+          sessionStorage.removeItem('kira-return');
+        } catch {
+          /* ignore */
+        }
+        detailOpenRef.current = true;
+        setDetailOpen(true);
+      }, 1000);
+      return () => clearTimeout(t);
+    }
+    // 仅恢复 section（不带详情）时立即清除标记
+    try {
+      sessionStorage.removeItem('kira-return');
+    } catch {
+      /* ignore */
+    }
+  }, [initialRestore]);
+
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
   // 鼠标拖动偏移（世界坐标 x，负值表示胶片向左移动）
   // 范围 0 ~ -(SECTIONS.length-1)*4（section 0 在 x=0，最后一个 section 在 x=-(N-1)*4）
-  const dragOffsetRef = useRef(0);
+  // 初始值取恢复 section 的中心位置（从 trace 页返回时 mount 即定位）
+  const dragOffsetRef = useRef(-(initialRestore?.section ?? 0) * 4);
 
   // 后处理参数（参考 shader.se 的胶片质感）
   // bloomIntensity 1.2 + 4 sin 波动态闪烁，sepia 0.25 略偏暖，
@@ -577,6 +664,7 @@ export default function KiraFilmDemo() {
             mouseRef={mouseRef}
             dragOffsetRef={dragOffsetRef}
             onSectionChange={handleSectionChange}
+            initialSection={initialRestore?.section ?? 0}
           />
           <FilmPostProcessing params={filmParams} />
           <CanvasContextGuard />
@@ -1272,6 +1360,8 @@ function WorkDetailPage({
   const innerRef = useRef<HTMLDivElement>(null);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
   const heroBlockRef = useRef<HTMLDivElement>(null);
+  // trace 跳转白闪层状态（点击 trace 卡片后渐显，掩盖 hash 切换）
+  const [traceFlash, setTraceFlash] = useState(false);
 
   /**
    * 卡片位置索引数据结构
@@ -1474,6 +1564,40 @@ function WorkDetailPage({
     });
     drag.mouseX = x;
     drag.mouseY = y;
+  }, []);
+
+  /**
+   * 收藏柜卡片点击处理
+   *
+   * 功能：trace 作品卡片被点击时，白闪渐显掩盖页面切换：
+   *      记录返回位置（section1 + 详情已开）到 sessionStorage，
+   *      420ms 后切 hash 到 #trace。
+   *      拖拽后（hasDragged=true）忽略点击，避免拖卡片误触发跳转。
+   *
+   * 参数：
+   *  - id {string} 被点击卡片对应的项目 id（data-project）
+   *
+   * 返回值：void
+   *
+   * 注意事项：
+   *  - 其他项目卡片点击无操作（暂无独立展示页）
+   *  - 白闪层 CSS transition 0.4s，与 420ms 定时匹配
+   */
+  const handleWorkCardClick = useCallback((id: string) => {
+    if (id !== 'trace-animated') return;
+    if (dragRef.current.hasDragged) return;
+    setTraceFlash(true);
+    setTimeout(() => {
+      try {
+        sessionStorage.setItem(
+          'kira-return',
+          JSON.stringify({ section: 1, detail: true })
+        );
+      } catch {
+        /* sessionStorage 不可用时静默降级（仍能跳转） */
+      }
+      window.location.hash = '#trace';
+    }, 420);
   }, []);
 
   /**
@@ -1695,6 +1819,8 @@ function WorkDetailPage({
 
   return (
     <div ref={innerRef} className="work-detail-inner">
+      {/* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显，掩盖 hash 切换 */}
+      <div className={`work-jump-flash ${traceFlash ? 'visible' : ''}`} />
       {/* 色散 + 边缘虚化变形：纯 CSS 实现（避免 SVG filter 的 JSX 解析问题）
           - 色散：.work-photo-card 上 filter:drop-shadow 实现 R/B 通道偏移
           - 边缘虚化：.work-photos 上 mask-image 径向渐变让边缘渐隐
@@ -1739,8 +1865,9 @@ function WorkDetailPage({
             {row.map(card => (
               <div
                 key={card.id}
-                className="work-photo-card"
+                className={`work-photo-card ${card.project.id === 'trace-animated' ? 'work-photo-card--trace' : ''}`}
                 data-project={card.project.id}
+                onClick={() => handleWorkCardClick(card.project.id)}
               >
                 {/* 四角装饰（复古胶片风） */}
                 <span className="work-corner work-corner--tl" />
@@ -1753,6 +1880,10 @@ function WorkDetailPage({
                   alt={card.project.name}
                   draggable={false}
                 />
+                {/* trace 卡片专属角标：提示可点击打开展示页 */}
+                {card.project.id === 'trace-animated' && (
+                  <span className="work-card-open">VIEW ↴</span>
+                )}
                 {/* 卡片标签 + 编号 + 项目名 + 年份 */}
                 <span className="work-card-label">{card.unit}</span>
                 <span className="work-card-index">
