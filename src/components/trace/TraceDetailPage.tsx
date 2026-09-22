@@ -95,6 +95,21 @@ export default function TraceDetailPage() {
   const phaseIdxRef = useRef(0);
 
   /**
+   * 入口衔接：从收藏柜四角放大转场（末段白闪）切过来时，
+   * 页面先全白再淡出，与转场白闪无缝衔接，避免白→黑的生硬硬切
+   */
+  useEffect(() => {
+    const el = flashRef.current;
+    if (!el) return;
+    el.classList.add('visible');
+    const t = setTimeout(() => el.classList.remove('visible'), 90);
+    return () => {
+      clearTimeout(t);
+      el.classList.remove('visible');
+    };
+  }, []);
+
+  /**
    * body/html 滚动开关：trace 页需要原生滚动
    *
    * 挂到 html 上：统一滚动容器到视口（根），避免 body overflow:auto

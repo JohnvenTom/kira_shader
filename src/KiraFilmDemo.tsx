@@ -1364,8 +1364,15 @@ function WorkDetailPage({
   const innerRef = useRef<HTMLDivElement>(null);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
   const heroBlockRef = useRef<HTMLDivElement>(null);
-  // trace 跳转白闪层状态（点击 trace 卡片后渐显，掩盖 hash 切换）
-  const [traceFlash, setTraceFlash] = useState(false);
+  // trace 跳转四角放大转场状态（点击卡片后渲染 zoom 层，动画末切 hash）
+  const [zoomCard, setZoomCard] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    thumb: string;
+    zs: number;
+  } | null>(null);
 
   /**
    * 卡片位置索引数据结构
@@ -1587,10 +1594,16 @@ function WorkDetailPage({
    *  - 其他项目卡片点击无操作（暂无独立展示页）
    *  - 白闪层 CSS transition 0.4s，与 420ms 定时匹配
    */
-  const handleWorkCardClick = useCallback((id: string) => {
+  const handleWorkCardClick = useCallback((id: string, card: HTMLDivElement) => {
     if (id !== 'trace-animated') return;
     if (dragRef.current.hasDragged) return;
-    setTraceFlash(true);
+    const rect = card.getBoundingClientRect();
+    const img = card.querySelector<HTMLImageElement>('img');
+    const thumb = img?.src ?? '';
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const zs = Math.max(vw / Math.max(rect.width, 1), vh / Math.max(rect.height, 1)) * 1.12;
+    setZoomCard({ x: rect.left, y: rect.top, w: rect.width, h: rect.height, thumb, zs });
     setTimeout(() => {
       try {
         sessionStorage.setItem(
@@ -1601,7 +1614,7 @@ function WorkDetailPage({
         /* sessionStorage 不可用时静默降级（仍能跳转） */
       }
       window.location.hash = '#trace';
-    }, 420);
+    }, 700);
   }, []);
 
   // 粒子生成节流时间戳（全局统一节流，避免多卡刷屏）
@@ -1995,8 +2008,31 @@ function WorkDetailPage({
 
   return (
     <div ref={innerRef} className="work-detail-inner">
-      {/* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显，掩盖 hash 切换 */}
-      <div className={`work-jump-flash ${traceFlash ? 'visible' : ''}`} />
+      {/* trace 跳转四角放大转场层：卡片克隆从原位放大盖满全屏，
+          四角角标向外放大，末尾白闪覆盖后切 hash */}
+      {zoomCard && (
+        <div className="work-zoom-overlay" aria-hidden="true">
+          <div
+            className="work-zoom-card"
+            style={
+              {
+                left: zoomCard.x,
+                top: zoomCard.y,
+                width: zoomCard.w,
+                height: zoomCard.h,
+                '--zs': zoomCard.zs,
+              } as React.CSSProperties
+            }
+          >
+            <img src={zoomCard.thumb} alt="" draggable={false} />
+            <span className="work-zoom-corner work-zoom-corner--tl" />
+            <span className="work-zoom-corner work-zoom-corner--tr" />
+            <span className="work-zoom-corner work-zoom-corner--bl" />
+            <span className="work-zoom-corner work-zoom-corner--br" />
+          </div>
+          <div className="work-zoom-flash" />
+        </div>
+      )}
       {/* 拖拽结束的圆形蒙版动画层：从松手点圆扩全屏，模糊回归的开场表演 */}
       <div ref={maskRef} className="work-dim-mask" aria-hidden="true" />
       {/* 粒子浮层：覆盖全屏最顶层（fixed z-350），粒子从鼠标位置发射，
@@ -2048,7 +2084,7 @@ function WorkDetailPage({
                 key={card.id}
                 className={`work-photo-card ${card.project.id === 'trace-animated' ? 'work-photo-card--trace' : ''}`}
                 data-project={card.project.id}
-                onClick={() => handleWorkCardClick(card.project.id)}
+                onClick={e => handleWorkCardClick(card.project.id, e.currentTarget)}
                 onMouseMove={handleCardMove}
                 onMouseLeave={handleCardLeave}
                 onMouseEnter={e => playFocusRing(card.project.id, e.currentTarget)}

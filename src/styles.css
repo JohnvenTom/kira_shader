@@ -1962,19 +1962,85 @@ body.camera-debug-mode .scroll-container {
     box-shadow: none;
   }
 }
-/* trace 跳转白闪层：点击 trace 卡片后 0.4s 渐显掩盖 hash 切换 */
-.work-jump-flash {
+/* === trace 跳转四角放大转场 ===
+   点击 trace 卡片：以被点卡片位置尺寸渲染克隆层，卡片 scale 放大盖满视口
+   （比例 --zs 由 JS 按视口/卡片尺寸计算），四角角标同步向外放大消散，
+   末段白闪覆盖后切 hash 到 #trace */
+.work-zoom-overlay {
   position: fixed;
   inset: 0;
-  z-index: 300;
+  z-index: 340;
+  pointer-events: none;
+  overflow: hidden;
+}
+.work-zoom-card {
+  position: fixed;
+  overflow: hidden;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.4);
+  animation: work-zoom-card 0.6s cubic-bezier(0.55, 0.05, 0.3, 1) forwards;
+}
+.work-zoom-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+@keyframes work-zoom-card {
+  0% { transform: scale(1); }
+  100% { transform: scale(var(--zs, 3)); }
+}
+/* 四角角标：随卡片放大向外飞出并消散 */
+.work-zoom-corner {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(125, 250, 222, 0.95);
+  z-index: 2;
+}
+.work-zoom-corner--tl {
+  top: 8px; left: 8px; border-right: none; border-bottom: none;
+  animation: work-zoom-corner-tl 0.6s ease-out forwards;
+}
+.work-zoom-corner--tr {
+  top: 8px; right: 8px; border-left: none; border-bottom: none;
+  animation: work-zoom-corner-tr 0.6s ease-out forwards;
+}
+.work-zoom-corner--bl {
+  bottom: 8px; left: 8px; border-right: none; border-top: none;
+  animation: work-zoom-corner-bl 0.6s ease-out forwards;
+}
+.work-zoom-corner--br {
+  bottom: 8px; right: 8px; border-left: none; border-top: none;
+  animation: work-zoom-corner-br 0.6s ease-out forwards;
+}
+@keyframes work-zoom-corner-tl {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(-16px, -16px) scale(1.7); opacity: 0; }
+}
+@keyframes work-zoom-corner-tr {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(16px, -16px) scale(1.7); opacity: 0; }
+}
+@keyframes work-zoom-corner-bl {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(-16px, 16px) scale(1.7); opacity: 0; }
+}
+@keyframes work-zoom-corner-br {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(16px, 16px) scale(1.7); opacity: 0; }
+}
+/* 转场末段白闪：覆盖缩放完成后的画面，掩护 hash 切换 */
+.work-zoom-flash {
+  position: absolute;
+  inset: 0;
   background: #f4fffa;
   opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.4s ease;
+  animation: work-zoom-flash 0.28s ease-in 0.34s forwards;
 }
-.work-jump-flash.visible {
-  opacity: 1;
-  pointer-events: auto;
+@keyframes work-zoom-flash {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* 卡片顶部扫描线装饰（呼应胶片屏幕风） */
