@@ -1625,21 +1625,12 @@ function WorkDetailPage({
    *  - CSS 变量（--dx/--dy/--rot/--sc/--life）驱动单个粒子的飘散轨迹
    *  - 用 setTimeout 自清理，避免长时间 hover 堆积 DOM 节点
    */
-  const spawnParticles = useCallback((card: HTMLDivElement) => {
+  const spawnParticles = useCallback((mx: number, my: number) => {
     const now = performance.now();
     if (now - particleLastRef.current < 70) return;
     particleLastRef.current = now;
     const box = particlesLayerRef.current;
     if (!box || box.childElementCount > 36) return;
-    // 出生点取卡片中心，换算到 photos 容器本地坐标系：
-    // 视觉 rect 差 ÷ 容器 scale（photos 有整体 scale 变形）
-    const photosEl = photosRef.current;
-    if (!photosEl) return;
-    const cardRect = card.getBoundingClientRect();
-    const photosRect = photosEl.getBoundingClientRect();
-    const scale = dimsRef.current.scaleNums || 1;
-    const cx = (cardRect.left + cardRect.width / 2 - photosRect.left) / scale;
-    const cy = (cardRect.top + cardRect.height / 2 - photosRect.top) / scale;
     const count = Math.random() < 0.6 ? 1 : 2;
     for (let i = 0; i < count; i++) {
       const p = document.createElement('span');
@@ -1652,18 +1643,18 @@ function WorkDetailPage({
       );
       if (isStar) p.textContent = '✦';
       const ang = Math.random() * Math.PI * 2;
-      const dist = 60 + Math.random() * 80;
+      const dist = 70 + Math.random() * 90;
       p.style.setProperty('--dx', `${(Math.cos(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--dy', `${(Math.sin(ang) * dist).toFixed(1)}px`);
       p.style.setProperty('--rot', `${(Math.random() * 160 - 80).toFixed(0)}deg`);
-      p.style.setProperty('--sc', (0.85 + Math.random() * 0.7).toFixed(2));
+      p.style.setProperty('--sc', (0.9 + Math.random() * 0.8).toFixed(2));
       const life = 1200 + Math.random() * 600;
       p.style.setProperty('--life', `${life}ms`);
-      // 出生点随机错开中心 ±14px，避免全部从同一点冒出
-      const ox = (Math.random() * 28 - 14).toFixed(1);
-      const oy = (Math.random() * 28 - 14).toFixed(1);
-      p.style.left = `${(cx + Number(ox)).toFixed(1)}px`;
-      p.style.top = `${(cy + Number(oy)).toFixed(1)}px`;
+      // 出生点即鼠标视口位置（浮层 fixed，坐标直接可用），随机错开 ±10px
+      const ox = Math.random() * 20 - 10;
+      const oy = Math.random() * 20 - 10;
+      p.style.left = `${(mx + ox).toFixed(1)}px`;
+      p.style.top = `${(my + oy).toFixed(1)}px`;
       box.appendChild(p);
       setTimeout(() => p.remove(), life + 150);
     }
@@ -1698,7 +1689,8 @@ function WorkDetailPage({
           `perspective(900px) rotateX(${(ny * -12).toFixed(2)}deg) ` +
           `rotateY(${(nx * 14).toFixed(2)}deg) scale(1.06)`;
       }
-      spawnParticles(card);
+      // 粒子从鼠标视口位置发射（全局浮层，不受卡片遮挡）
+      spawnParticles(e.clientX, e.clientY);
     },
     [spawnParticles]
   );
@@ -1997,6 +1989,9 @@ function WorkDetailPage({
       <div className={`work-jump-flash ${traceFlash ? 'visible' : ''}`} />
       {/* 拖拽结束的圆形蒙版动画层：从松手点圆扩全屏，模糊回归的开场表演 */}
       <div ref={maskRef} className="work-dim-mask" aria-hidden="true" />
+      {/* 粒子浮层：覆盖全屏最顶层（fixed z-350），粒子从鼠标位置发射，
+          永不被任何卡片遮挡 */}
+      <div ref={particlesLayerRef} className="work-photos-particles" aria-hidden="true" />
       {/* 色散 + 边缘虚化变形：纯 CSS 实现（避免 SVG filter 的 JSX 解析问题）
           - 色散：.work-photo-card 上 filter:drop-shadow 实现 R/B 通道偏移
           - 边缘虚化：.work-photos 上 mask-image 径向渐变让边缘渐隐
@@ -2080,8 +2075,6 @@ function WorkDetailPage({
             ))}
           </div>
         ))}
-        {/* 全局粒子层：夹在普通卡片与 hover 卡之间（z-5），粒子从这里全图发散 */}
-        <div ref={particlesLayerRef} className="work-photos-particles" aria-hidden="true" />
       </div>
 
       {/* 底部 footer：版本标识 + 拖拽提示 */}

@@ -1826,12 +1826,12 @@ body.camera-debug-mode .scroll-container {
   will-change: transform;
 }
 
-/* 全局粒子层：.work-photos 的直接子级，z-index 5 夹在普通卡片（auto≈0）
-   与 hover 焦点卡（z-6）之间——"焦点卡 > 粒子 > 背景卡"的夹层渲染 */
+/* 粒子浮层：fixed 覆盖整页最顶层（z-350），粒子从鼠标位置发射，
+   彻底高于所有卡片与覆盖层，不会被任何卡片遮挡 */
 .work-photos-particles {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 5;
+  z-index: 350;
   pointer-events: none;
   overflow: visible;
 }
@@ -1856,32 +1856,32 @@ body.camera-debug-mode .scroll-container {
     opacity: 0;
   }
 }
-/* 星星形态：✦ 字符 + 光晕（加大字号更醒目） */
+/* 星星形态：✦ 字符 + 光晕（大字号醒目） */
 .work-particle--star {
-  font-size: 19px;
+  font-size: 26px;
   line-height: 1;
 }
 .work-particle--star.work-particle--teal {
   color: #7dfade;
-  text-shadow: 0 0 10px rgba(125, 250, 222, 0.95), 0 0 24px rgba(47, 191, 154, 0.65);
+  text-shadow: 0 0 14px rgba(125, 250, 222, 1), 0 0 32px rgba(47, 191, 154, 0.8);
 }
 .work-particle--star.work-particle--white {
   color: #f2fff9;
-  text-shadow: 0 0 10px rgba(255, 255, 255, 0.9), 0 0 26px rgba(94, 234, 200, 0.55);
+  text-shadow: 0 0 14px rgba(255, 255, 255, 0.95), 0 0 34px rgba(94, 234, 200, 0.7);
 }
-/* 光点形态：加大圆点 + 光晕 */
+/* 光点形态：大圆点 + 光晕 */
 .work-particle--dot {
-  width: 7px;
-  height: 7px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
 }
 .work-particle--dot.work-particle--teal {
   background: #7dfade;
-  box-shadow: 0 0 14px rgba(125, 250, 222, 0.9), 0 0 26px rgba(47, 191, 154, 0.55);
+  box-shadow: 0 0 18px rgba(125, 250, 222, 1), 0 0 34px rgba(47, 191, 154, 0.7);
 }
 .work-particle--dot.work-particle--white {
   background: #fff;
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.85), 0 0 24px rgba(94, 234, 200, 0.5);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.9), 0 0 30px rgba(94, 234, 200, 0.6);
 }
 
 /* === 拖拽结束的圆形蒙版动画层 ===
