@@ -3329,6 +3329,17 @@ body.trace-page #root {
   letter-spacing: 0.14em;
   color: #56766c;
 }
+/* 技法①：描边 demo —— 框体加高（min-height 470px），线条在框内垂直居中，
+   把原先堆在框底的空白（框下到「技法二」之间那段空行程）转成线条的可用画布 */
+.trace-demo-stroke {
+  min-height: 470px;
+  justify-content: center;
+}
+/* 放开通用规则的 420px 宽度上限：线条随栏宽等比放大（约 544×207），
+   等比缩放保证 viewBox 内路径不被裁切，底部说明文字位置不变 */
+.trace-demo-stroke .trace-demo-line-svg {
+  max-width: none;
+}
 .trace-tech-copy {
   font-size: 14.5px;
   line-height: 1.9;

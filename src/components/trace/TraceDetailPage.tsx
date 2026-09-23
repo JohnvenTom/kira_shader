@@ -531,7 +531,7 @@ function TechDashoffset() {
         <span className="trace-tech-tag">SKETCH PHASE</span>
       </div>
       <div className="trace-tech-body">
-        <div className="trace-tech-demo">
+        <div className="trace-tech-demo trace-demo-stroke">
           <svg viewBox="0 0 420 160" className="trace-demo-line-svg">
             <path
               ref={pathRef}
