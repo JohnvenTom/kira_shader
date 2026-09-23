@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { TRACE_ANIM_CSS } from './traceAnimCss';
 
 /**
@@ -671,62 +671,186 @@ ink        3.6s → .62`}
   );
 }
 
+/** 成品图路径（原作 trace-body.svg：1600×1095 纯路径、无外部引用，可安全栅格化） */
+const ART_SVG_URL = '/asset/trace/trace-body.svg';
+/** 成品图原始尺寸：栅格化画布与拼图画布比例都用它，保证贴图不被拉伸 */
+const ART_W = 1600;
+const ART_H = 1095;
+/** 拼图规格 6 列 × 5 行 = 30 块，对应原作成品的 30 段片段 */
+const MOSAIC_COLS = 6;
+const MOSAIC_ROWS = 5;
+/** 揭示节奏（进度单位）：每格的起步间隔与单格揭示跨度，
+ *  两者重叠 → 相邻格连成一道"一块接一块"的波 */
+const REVEAL_STAGGER = 0.022;
+const REVEAL_SPAN = 0.3;
+/** 落位顺序的散列步长：order = (下标 × 17) % 30，17 与 30 互质 → 得到均匀打散的落位次序，
+ *  避免按行序揭示时读成"幕布下拉"（下半幅整块黑），更像拼图一块块散布到位 */
+const REVEAL_ORDER_STEP = 17;
+/** 揭示收束点：本节滚动进度到这里，30 格全部落位。
+ *  直接拿 elProgress 当进度的话，p=1 时本节已整段滚出视口——成品永远看不到完整一眼；
+ *  收束到 0.55 后，拼完那一刻画布仍完整在视口内，之后继续下滚还能看着成品离开 */
+const REVEAL_END_PROGRESS = 0.55;
+
 /**
- * 技法③小节 — clip-path 分段揭示
+ * 生成单格片段的 clip-path（四种揭示方向）
  *
- * 功能：演示四种 clip-path 揭示方向（右扫 / 左扫 / 下扫 / 圆心绽开），
- * 2×2 方块随滚动依次展开内部图案，对应原作成品 30 段的 wipe-r/l/d 与 dab。
+ * 功能：按方向类型与揭示进度 q 生成 clip-path 字符串。q=0 时形状面积为零
+ *      （格子完全不可见），q=1 时覆盖整格。
+ *      - r  ：右扫，从左缘向右拉开幕布（揭示边竖直右移）
+ *      - l  ：左扫，从右缘向左拉开幕布
+ *      - d  ：下扫，揭示边保持水平，从上向下降幕
+ *      - dab：点染，自圆心向外扩散的圆
+ *
+ * 参数：
+ *  - dir {string} 方向类型（'r' | 'l' | 'd' | 'dab'）
+ *  - q   {number} 揭示进度 0~1
+ *
+ * 返回值：string 可直接赋给 style.clipPath 的 clip-path 值
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - dab 半径取 80%：圆形百分比按 sqrt((w²+h²)/2) 折算，80% 已能罩住整个格子
+ *  - 原作 2×2 演示里 wipe-l 的多边形只留了 3% 宽的两条边，实际裁出一条斜向薄带；
+ *    这里改为"右缘固定、左缘随进度右移"的正确写法
+ */
+function clipFor(dir: string, q: number): string {
+  const x = q * 100;
+  switch (dir) {
+    case 'l':
+      return `polygon(${100 - x}% 0, 100% 0, 100% 100%, ${100 - x}% 100%)`;
+    case 'd':
+      return `polygon(0 0, 100% 0, 100% ${x}%, 0 ${x}%)`;
+    case 'dab':
+      return `circle(${x * 0.8}% at 50% 50%)`;
+    default:
+      return `polygon(0 0, ${x}% 0, ${x}% 100%, 0 100%)`;
+  }
+}
+
+/**
+ * 技法③小节 — clip-path 分段揭示（30 格拼图）
+ *
+ * 功能：把原作成品图（trace-body.svg）在挂载时栅格化成一张位图，平铺为 6×5=30 格画布；
+ *      滚动进度驱动每格按各自方向（右扫/左扫/下扫/点染）错峰展开，整幅画一块块拼成，
+ *      对应原作成品 30 段片段接力揭示的机制。画布右下角压一枚方向图例，
+ *      画布下方一行说明，替代原先 2×2 的四块示意方块。
  *
  * 参数：无
  * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 位图必须先栅格化再当贴图：直接拿 4.9MB 的 SVG 当背景时，每帧 clip-path 变化
+ *    都会触发整张 SVG 重新栅格化（实测 ≈20fps）；换成位图贴图后稳定 60fps
+ *  - 30 格共用同一张 1600×1095 位图，浏览器只占一份纹理
  */
 function TechClipPath() {
   const sectionRef = useRef<HTMLDivElement>(null);
-  const wipeRRef = useRef<HTMLDivElement>(null);
-  const wipeLRef = useRef<HTMLDivElement>(null);
-  const wipeDRef = useRef<HTMLDivElement>(null);
-  const dabRef = useRef<HTMLDivElement>(null);
+  // 30 个格子元素（数组下标 = 行序 = 揭示顺序）
+  const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // 栅格化后的成品图位图 URL（null = 尚未就绪，画布先显示深色底）
+  const [artUrl, setArtUrl] = useState<string | null>(null);
 
   /**
-   * 滚动驱动四种揭示：按进度计算各自 clip-path 形状
+   * 30 格配置
+   * 功能：按行序（左→右、上→下）生成 30 格，保证网格铺满画布；方向按 (行+列)%4
+   *      循环四种类型，让四种均匀出现；order 是散列后的落位次序（见 REVEAL_ORDER_STEP）；
+   *      bx/by 是 background-position 的百分比——按 (N-1) 归一，
+   *      让每格精确取到整图的 1/30 区域（写 -col*100% 会整张移出可视范围）
+   */
+  const cells = useMemo(() => {
+    const dirs = ['r', 'l', 'd', 'dab'];
+    const total = MOSAIC_COLS * MOSAIC_ROWS;
+    const list: { key: string; dir: string; order: number; bx: number; by: number }[] = [];
+    for (let row = 0; row < MOSAIC_ROWS; row++) {
+      for (let col = 0; col < MOSAIC_COLS; col++) {
+        const idx = row * MOSAIC_COLS + col;
+        list.push({
+          key: `${row}-${col}`,
+          dir: dirs[(row + col) % dirs.length],
+          order: (idx * REVEAL_ORDER_STEP) % total,
+          bx: (col * 100) / (MOSAIC_COLS - 1),
+          by: (row * 100) / (MOSAIC_ROWS - 1),
+        });
+      }
+    }
+    return list;
+  }, []);
+
+  /**
+   * 成品图预栅格化（一次性，挂载后立即开始）
+   *
+   * 功能：decode 4.9MB 的 trace-body.svg → drawImage 到 1600×1095 canvas →
+   *      转成 PNG blob → objectURL 交给 CSS 当贴图，就绪后画布才逐渐显出成品图。
+   *
+   * 参数：无
+   * 返回值：无（副作用：就绪后 setArtUrl 触发一次渲染）
+   *
+   * 异常：解码或编码失败时静默降级——画布保持深色底、揭示动画照常跑，不影响滚动
+   *
+   * 注意事项：
+   *  - 这一步放在挂载时做（用户还在上面几幕），避免滚动到本节时出现栅格化卡顿
+   *  - 卸载时 revokeObjectURL 释放位图；失败/取消路径不创建 URL
+   */
+  useEffect(() => {
+    let cancelled = false;
+    let url = '';
+    const img = new Image();
+    img.src = ART_SVG_URL;
+    img.decode()
+      .then(() => {
+        const cv = document.createElement('canvas');
+        cv.width = ART_W;
+        cv.height = ART_H;
+        const ctx = cv.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(img, 0, 0, ART_W, ART_H);
+        return new Promise<Blob | null>(resolve => cv.toBlob(resolve, 'image/png'));
+      })
+      .then(blob => {
+        if (!blob || cancelled) return;
+        url = URL.createObjectURL(blob);
+        setArtUrl(url);
+      })
+      .catch(() => {
+        /* 静默降级：画布留深色底，揭示动画仍可看 */
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, []);
+
+  /**
+   * 滚动驱动 30 格揭示
+   *
+   * 功能：把本节滚动进度先按 REVEAL_END_PROGRESS 收束（保证拼完那刻画布还在视口内），
+   *      再分配到每格——第 order 位落位的块子在进度 order*REVEAL_STAGGER 处起步，
+   *      用 REVEAL_SPAN 的进度完成揭示；透明度按原作 dab 关键帧的节奏
+   *      （前 35% 从 0 升到 1）淡入，避免揭示边缘过硬。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 只改 clip-path / opacity 两个合成属性，配合位图贴图不触发重栅格化
    */
   const drive = useCallback(() => {
     const sec = sectionRef.current;
     if (!sec) return;
-    const p = elProgress(sec, 0.7);
-    // 四个 demo 依次错开上演，形成"一段接一段"的接力观感
-    const seg = (i: number) => Math.max(0, Math.min(1, (p - i * 0.18) / 0.35));
-    if (wipeRRef.current) {
-      const q = seg(0) * 113;
-      wipeRRef.current.style.clipPath = `polygon(${-3 + q}% 0, 0 0, 0 100%, ${-3 + q}% 100%)`;
-      wipeRRef.current.style.opacity = String(seg(0) > 0 ? 1 : 0);
+    // 收束点前完成全部落位（见 REVEAL_END_PROGRESS），之后保持成品状态
+    const p = Math.min(1, elProgress(sec, 0.7) / REVEAL_END_PROGRESS);
+    for (let i = 0; i < cells.length; i++) {
+      const el = cellRefs.current[i];
+      if (!el) continue;
+      const c = cells[i];
+      const q = Math.max(0, Math.min(1, (p - c.order * REVEAL_STAGGER) / REVEAL_SPAN));
+      el.style.opacity = String(Math.min(1, q / 0.35));
+      el.style.clipPath = clipFor(c.dir, q);
     }
-    if (wipeLRef.current) {
-      const q = seg(1) * 113;
-      wipeLRef.current.style.clipPath = `polygon(100% 0, 103% 0, ${103 - q}% 100%, ${100 - q}% 100%)`;
-      wipeLRef.current.style.opacity = String(seg(1) > 0 ? 1 : 0);
-    }
-    if (wipeDRef.current) {
-      const q = seg(2) * 113;
-      wipeDRef.current.style.clipPath = `polygon(0 0, 100% 0, ${100 - q}% ${113 - q}%, 0 ${113 - q}%)`;
-      wipeDRef.current.style.opacity = String(seg(2) > 0 ? 1 : 0);
-    }
-    if (dabRef.current) {
-      const q = seg(3) * 120;
-      dabRef.current.style.clipPath = `circle(${q}% at 50% 50%)`;
-      dabRef.current.style.opacity = String(seg(3) > 0 ? 1 : 0);
-    }
-  }, []);
+  }, [cells]);
 
   useTraceScroll(drive);
-
-  // 四个 demo 的标签与说明
-  const items = [
-    { ref: wipeRRef, name: 'wipe-r', zh: '右扫', dir: '从左向右拉开幕布' },
-    { ref: wipeLRef, name: 'wipe-l', zh: '左扫', dir: '从右向左拉开幕布' },
-    { ref: wipeDRef, name: 'wipe-d', zh: '下扫', dir: '从上向下降幕' },
-    { ref: dabRef, name: 'dab', zh: '点染', dir: '自圆心向外扩散' },
-  ];
 
   return (
     <div ref={sectionRef} className="trace-tech trace-tech--free">
@@ -737,19 +861,31 @@ function TechClipPath() {
         <h3>技法三 · clip-path 分段揭示</h3>
         <span className="trace-tech-tag">REVEAL PHASE</span>
       </div>
-      <div className="trace-tech-body trace-tech-body--grid">
-        <div className="trace-clip-grid">
-          {items.map(it => (
-            <div key={it.name} className="trace-clip-cell">
-              <div ref={it.ref} className="trace-clip-demo">
-                墨
-              </div>
-              <div className="trace-clip-label">
-                <code>{it.name}</code>
-                <span>{it.zh} · {it.dir}</span>
-              </div>
+      <div className="trace-tech-body">
+        <div className="trace-tech-demo">
+          <div
+            className="trace-mosaic-canvas"
+            style={{ '--mosaic-art': artUrl ? `url(${artUrl})` : 'none' } as CSSProperties}
+          >
+            {cells.map((c, i) => (
+              <div
+                key={c.key}
+                ref={el => {
+                  cellRefs.current[i] = el;
+                }}
+                className="trace-mosaic-cell"
+                style={{ backgroundPosition: `${c.bx}% ${c.by}%` }}
+              />
+            ))}
+            {/* 方向图例：四种片段类型各一枚 chip，压在画布右下角（不遮主体构图） */}
+            <div className="trace-mosaic-legend">
+              <span>wipe-r · 右扫</span>
+              <span>wipe-l · 左扫</span>
+              <span>wipe-d · 下扫</span>
+              <span>dab · 点染</span>
             </div>
-          ))}
+          </div>
+          <span className="trace-demo-note">30 段 · 随滚动逐块到位</span>
         </div>
         <div className="trace-tech-copy">
           <p>
@@ -761,9 +897,11 @@ function TechClipPath() {
           <pre className="trace-code">
 {`/* 圆心绽开（dab）关键帧 */
 @keyframes dab {
-  0%   { opacity:0; clip-path:circle(0%   at 50% 50%); }
+  0%   { opacity:0;
+         clip-path:circle(0% at 50% 50%); }
   35%  { opacity:1; }
-  100% { opacity:1; clip-path:circle(120% at 50% 50%); }
+  100% { opacity:1;
+         clip-path:circle(120% at 50% 50%); }
 }`}
           </pre>
         </div>
