@@ -678,22 +678,10 @@ const ART_SVG_URL = '/asset/trace/trace-body.svg';
 const ART_W = 1600;
 const ART_H = 1095;
 /** 原作揭示起点（ms）：第 i 段的延迟是 4100 + i*300、单段时长 550，
- *  末段正好在 T_REVEAL_END(13350) 收尾——这里沿用原始节奏，不另造时间轴 */
+ *  末段正好在 T_REVEAL_END(13350) 收尾——循环沿用原始节奏，不另造时间轴 */
 const REVEAL_START_MS = 4100;
 /** 单段揭示时长（ms，原 keyframes 的 .55s）：分发时用它圈出"正在播"的那几段 */
 const REVEAL_FRAG_MS = 550;
-/** 大幅跳变阈值（ms）：位置差超过它说明是快速滚动/跨段跳入，需要整批重写一次兜底 */
-const REVEAL_BURST_MS = 1000;
-/** 揭示动效的阻尼时间常数（1/s）：滚轮一次跳跃后，揭示时间继续平滑追赶约 1s，
- *  否则一格滚轮 ≈ 1.5 段会被整段跳过，"扫"的动作根本没机会显示出来
- *  （取 3.5 与主播放区 DAMP_SMOOTH_TIME 0.55 的滑行手感接近） */
-const REVEAL_DAMP_LAMBDA = 3.5;
-/** 揭示收束点：本节滚动进度到这里，30 段全部落位。
- *  直接拿 elProgress 当进度的话，p=1 时本节已整段滚出视口——成品永远看不到完整一眼；
- *  收束到 0.55 后，拼完那一刻画布仍完整在视口内，之后继续下滚还能看着成品离开 */
-const REVEAL_END_PROGRESS = 0.55;
-/** 空闲循环：停手多久后画布自动开始循环演示（ms） */
-const LOOP_IDLE_MS = 1200;
 /** 循环里成品拼合后停留多久（ms），让观众看清"拼成的样子" */
 const LOOP_HOLD_MS = 1400;
 /** 循环回卷用时（ms）：把成品快速退回未揭示状态，衔接不硬切 */
@@ -703,10 +691,9 @@ const LOOP_REWIND_MS = 700;
  * 技法③小节 — clip-path 分段揭示（原作真实 30 段）
  *
  * 功能：把原作成品图层（trace-body.svg 里的 #trace-art，30 段 .trace-pg）原样注入画布，
- *      并复用原作 CSS 的 wipe-r/wipe-l/wipe-d/dab 关键帧；滚动进度映射到原作揭示窗口
- *      （4.1s~13.35s）后用 WAAPI 统一接管 30 段 CSSAnimation 的 currentTime，
- *      于是每段按自己的 --i 延迟（4100 + i*300ms）依次接力揭示——切分方式、揭示顺序、
- *      方向与缓动全部与原作一致，滚轮即播放头、可回退倒放。
+ *      并复用原作 CSS 的 wipe-r/wipe-l/wipe-d/dab 关键帧；画布独立自动循环播放：
+ *      每段按自己的 --i 延迟（4100 + i*300ms）依次接力揭示 → 成品停留 → 快速回卷 → 再播。
+ *      切分方式、揭示顺序、方向与缓动全部与原作一致，且不绑定滚轮——放着就一直演。
  *
  * 参数：无
  * 返回值：React.ReactElement
@@ -720,22 +707,36 @@ function TechClipPath() {
   const sectionRef = useRef<HTMLDivElement>(null);
   // 真实成品层注入容器
   const artRef = useRef<HTMLDivElement>(null);
-  // 30 段的 CSSAnimation + 各自延迟（原 keyframes，已 pause，由滚动接管 currentTime）
+  // 30 段的 CSSAnimation + 各自延迟（原 keyframes，已 pause，由循环接管 currentTime）
   const animsRef = useRef<{ anim: CSSAnimation; delay: number }[]>([]);
-  // 上一次分发的虚拟时间：用于"值没变就不写样式"与大幅跳变兜底
+  // 上一次分发的虚拟时间：用于"值没变就不写样式"与整批重写兜底
   const lastTRef = useRef(-1);
-  // 阻尼状态：raw = 滚动位置换算的目标时间，disp = 实际写进动画的显示时间
-  const dampRef = useRef({ raw: REVEAL_START_MS, disp: -1, raf: 0, running: false, last: 0 });
-  // 空闲循环状态：滚动停手后画布自动循环演示揭示效果
+  // 循环播放头：t = 虚拟时间，phase = 阶段，left = 停留剩余，last = 上一帧时间戳
   const loopRef = useRef({
-    on: false,
     t: REVEAL_START_MS,
     phase: 'play' as 'play' | 'hold' | 'rewind',
     left: 0,
-    raf: 0,
-    timer: 0,
     last: 0,
   });
+  // 本节是否在视口内（IntersectionObserver 标记：绝不能每帧 getBoundingClientRect——
+  // 那会强制整页布局，这一页有近 6000 条 SVG path，帧率会被拖到个位数）
+  const visibleRef = useRef(true);
+
+  /**
+   * 视口可见性订阅：本节离开视口时暂停循环推进，回到视口内自动接着播
+   *
+   * 参数：无
+   * 返回值：无（卸载时 disconnect）
+   */
+  useEffect(() => {
+    const sec = sectionRef.current;
+    if (!sec) return;
+    const io = new IntersectionObserver(entries => {
+      for (const entry of entries) visibleRef.current = entry.isIntersecting;
+    });
+    io.observe(sec);
+    return () => io.disconnect();
+  }, []);
 
   /**
    * 注入真实成品图层并接管动画（挂载即开始，用户还在上面几幕时就完成）
@@ -753,8 +754,8 @@ function TechClipPath() {
    *
    * 注意事项：
    *  - rAF 重试等待动画注册（2.3MB SVG 解析可能慢几帧），与主播放区同一套写法
-   *  - 动画自创建即被锁在揭示起点，不会抢跑；解锁后完全由滚动 currentTime 驱动
-   *  - 捕获成功后广播一次 trace:scroll，让本节立即按当前滚动位置就位
+   *  - 动画自创建即被锁在揭示起点，不会抢跑；之后完全由自动循环接管 currentTime
+   *  - 捕获成功后立刻把 30 段重置到"未揭示"，让循环从干净状态起步
    */
   useEffect(() => {
     let stopped = false;
@@ -783,7 +784,7 @@ function TechClipPath() {
                 host.contains((a.effect as KeyframeEffect).target as Element)
             );
           if (anims.length > 0) {
-            // 统一暂停并锁到揭示起点，等滚动接管；顺带缓存各段延迟，供分发时判断窗口
+            // 统一暂停并锁到揭示起点；顺带缓存各段延迟，供分发时判断窗口
             animsRef.current = anims.map(a => {
               a.pause();
               a.currentTime = REVEAL_START_MS;
@@ -791,8 +792,8 @@ function TechClipPath() {
               const delay = typeof timing?.delay === 'number' ? timing.delay : 0;
               return { anim: a, delay };
             });
-            // 就位：按当前滚动位置算一次（用户可能已经停在本节）
-            window.dispatchEvent(new CustomEvent('trace:scroll'));
+            // 干净起步：从"未揭示"状态交给自动循环
+            applyT(REVEAL_START_MS, true);
             return;
           }
           attempt += 1;
@@ -812,7 +813,7 @@ function TechClipPath() {
    * 把显示时间写进各段动画
    *
    * 功能：把虚拟时间 t 分发到 30 段动画的 currentTime，并做两处节流：
-   *      - t 与上次相同 → 不写样式（本节在视口外时几乎每帧命中）
+   *      - t 与上次相同 → 不写样式
    *      - 只写"处在揭示窗口内"的段（约 4 段/帧），窗口外的段已停在 0%/100% 两端，
    *        目的是把每帧的重绘范围限制在真正变化的那几段上
    *
@@ -821,15 +822,15 @@ function TechClipPath() {
    *  - force {boolean} 是否强制整批重写（循环首尾用它把状态钉准，默认 false）
    * 返回值：无
    *
-   * 注意事项：位置差超过 REVEAL_BURST_MS 视为大幅跳变（快速滚动/从上方直接跳入），
-   *          自动整批兜底重写一次，避免窗口外的段残留旧状态
+   * 注意事项：快速推进时某段的最后一次写入可能落在 wipe 中段，循环首尾一律走 force，
+   *          避免窗口外的段残留半揭示状态
    */
   const applyT = useCallback((t: number, force = false) => {
     const list = animsRef.current;
     if (!list.length) return;
     const last = lastTRef.current;
     if (!force && t === last) return;
-    const burst = force || last < 0 || Math.abs(t - last) > REVEAL_BURST_MS;
+    const burst = force || last < 0;
     lastTRef.current = t;
     for (const item of list) {
       if (!burst && (t < item.delay || t > item.delay + REVEAL_FRAG_MS)) continue;
@@ -838,179 +839,57 @@ function TechClipPath() {
   }, []);
 
   /**
-   * 阻尼帧循环：显示时间平滑追赶目标时间，收敛后停帧
+   * 自动循环播放（不绑定滚轮）
    *
-   * 功能：每帧用指数阻尼把 disp 推向 raw 并写进动画。滚轮一格 ≈ 1.7 段的跳跃
-   *      会被"稀释"成约 0.5s 的平滑播放，扫的动效因此看得见；
-   *      接近目标时直接贴合（无残留误差），随后停帧省资源。
-   *
-   * 参数：无
-   * 返回值：无
-   *
-   * 注意事项：dt 上限 0.05s，避免后台标签页切回时大步长跳变
-   */
-  const tick = useCallback(() => {
-    const st = dampRef.current;
-    const now = performance.now();
-    const dt = Math.min(0.05, Math.max(now - st.last, 0.001));
-    st.last = now;
-    st.disp += (st.raw - st.disp) * (1 - Math.exp(-dt * REVEAL_DAMP_LAMBDA));
-    if (Math.abs(st.raw - st.disp) < 1) {
-      st.disp = st.raw;
-      applyT(st.disp);
-      st.running = false;
-      return;
-    }
-    applyT(st.disp);
-    st.raf = requestAnimationFrame(tick);
-  }, [applyT]);
-
-  /**
-   * 退出空闲循环，交回滚动驱动
-   *
-   * 功能：停掉循环帧循环，并让阻尼的显示时间从循环当前时间接着走，
-   *      这样"循环 → 滚动"的切换是平滑的，不会跳回旧位置。
+   * 功能：挂载即启动独立帧循环——沿原作时间轴正向揭示一遍（4.1s~13.35s）→
+   *      成品停留 LOOP_HOLD_MS → 用 LOOP_REWIND_MS 快速回卷到未揭示状态 → 再重来。
+   *      本节完全离开视口时暂停推进（不写样式、不重绘），回到视口内自动接着播。
    *
    * 参数：无
-   * 返回值：无
-   */
-  const stopLoop = useCallback(() => {
-    const loop = loopRef.current;
-    if (!loop.on) return;
-    loop.on = false;
-    cancelAnimationFrame(loop.raf);
-    dampRef.current.disp = loop.t;
-  }, []);
-
-  /**
-   * 空闲循环帧循环：揭示 → 停留 → 快速回卷 → 再揭示
-   *
-   * 功能：沿原作时间轴正向播一遍（4.1s~13.35s），拼合后停留 LOOP_HOLD_MS，
-   *      再按比例回卷到揭示起点，然后重新开始——让不滚动的人也能看懂这个效果。
-   *
-   * 参数：无
-   * 返回值：无
+   * 返回值：无（卸载时取消帧循环）
    *
    * 注意事项：
-   *  - 时间步长 dt 上限 50ms，避免后台切回时大步跳变
+   *  - 每帧 dt 上限 50ms，避免后台标签页切回时大步跳变
    *  - 每帧都走 applyT，因此窗口节流与重绘范围控制照旧生效
+   *  - 循环首尾用 applyT(..., true) 强制整批重写，把状态钉准
    */
-  const startLoop = useCallback(() => {
-    const loop = loopRef.current;
-    if (loop.on) return;
-    loop.on = true;
-    loop.phase = 'play';
-    loop.t = REVEAL_START_MS;
-    loop.left = 0;
-    loop.last = performance.now();
-    // 从"未揭示"干净起步（强制整批重写，清掉上一轮的残留）
-    applyT(loop.t, true);
+  useEffect(() => {
+    let raf = 0;
+    const st = loopRef.current;
+    st.last = performance.now();
     const frame = () => {
-      if (!loop.on) return;
       const now = performance.now();
-      const dt = Math.min(50, Math.max(now - loop.last, 1));
-      loop.last = now;
-      if (loop.phase === 'play') {
-        loop.t += dt;
-        if (loop.t >= T_REVEAL_END) {
-          loop.t = T_REVEAL_END;
-          loop.phase = 'hold';
-          loop.left = LOOP_HOLD_MS;
-          // 钉准成品状态：快速推进时每段最后一次写入可能落在 wipe 中段，靠强制重写补齐
-          applyT(loop.t, true);
+      const dt = Math.min(50, Math.max(now - st.last, 1));
+      st.last = now;
+      if (animsRef.current.length && visibleRef.current) {
+        if (st.phase === 'play') {
+          st.t += dt;
+          if (st.t >= T_REVEAL_END) {
+            st.t = T_REVEAL_END;
+            st.phase = 'hold';
+            st.left = LOOP_HOLD_MS;
+            // 钉准成品状态：快速推进时每段最后一次写入可能落在 wipe 中段
+            applyT(st.t, true);
+          }
+        } else if (st.phase === 'hold') {
+          st.left -= dt;
+          if (st.left <= 0) st.phase = 'rewind';
+        } else {
+          st.t -= dt * ((T_REVEAL_END - REVEAL_START_MS) / LOOP_REWIND_MS);
+          if (st.t <= REVEAL_START_MS) {
+            st.t = REVEAL_START_MS;
+            st.phase = 'play';
+            // 回卷结束同样强制重写：否则"没来得及回退"的段会残留半揭示状态
+            applyT(st.t, true);
+          }
         }
-      } else if (loop.phase === 'hold') {
-        loop.left -= dt;
-        if (loop.left <= 0) loop.phase = 'rewind';
-      } else {
-        loop.t -= dt * ((T_REVEAL_END - REVEAL_START_MS) / LOOP_REWIND_MS);
-        if (loop.t <= REVEAL_START_MS) {
-          loop.t = REVEAL_START_MS;
-          loop.phase = 'play';
-          // 回卷结束同样强制重写：否则"没来得及回退"的段会残留半揭示状态
-          applyT(loop.t, true);
-        }
+        applyT(st.t);
       }
-      applyT(loop.t);
-      loop.raf = requestAnimationFrame(frame);
+      raf = requestAnimationFrame(frame);
     };
-    loop.raf = requestAnimationFrame(frame);
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
   }, [applyT]);
-
-  /**
-   * 安排空闲自检：停手 LOOP_IDLE_MS 后若条件满足就开启循环
-   *
-   * 功能：滚动停手后延时检查——只有"成品已拼合"（进度收束到 1）且画布仍在视口内
-   *      才启动循环，避免覆盖用户滚到一半定格的画面。
-   *
-   * 参数：无
-   * 返回值：无
-   *
-   * 注意事项：每次滚动都会重置计时器，因此连续滚动期间不会触发
-   */
-  const scheduleIdle = useCallback(() => {
-    const loop = loopRef.current;
-    clearTimeout(loop.timer);
-    loop.timer = window.setTimeout(() => {
-      const sec = sectionRef.current;
-      if (!sec || !animsRef.current.length) return;
-      const p = Math.min(1, elProgress(sec, 0.7) / REVEAL_END_PROGRESS);
-      if (p < 1) return;
-      const rect = sec.getBoundingClientRect();
-      if (rect.bottom <= 0 || rect.top >= window.innerHeight) return;
-      startLoop();
-    }, LOOP_IDLE_MS);
-  }, [startLoop]);
-
-  /**
-   * 滚动位置 → 目标时间 → 唤醒阻尼循环
-   *
-   * 功能：进度先按 REVEAL_END_PROGRESS 收束（保证成品拼合时画布仍在视口内），
-   *      再线性映射到 [REVEAL_START_MS, T_REVEAL_END] 作为阻尼目标。各段延迟
-   *      （--d = 4.1s + i*0.3s）由原 keyframes 自带，这里不逐段算进度——
-   *      顺序与节奏完全交给原作时间轴。
-   *      任何滚动输入都会退出空闲循环并安排下一次空闲自检。
-   *
-   * 参数：无
-   * 返回值：无
-   *
-   * 注意事项：
-   *  - 首次进来直接贴合目标（不做从 0 爬上来的启动动画）
-   *  - 本函数只登记目标并唤醒循环，真正的写入在 tick 里逐帧进行
-   */
-  const drive = useCallback(() => {
-    const sec = sectionRef.current;
-    if (!sec || !animsRef.current.length) return;
-    stopLoop();
-    const p = Math.min(1, elProgress(sec, 0.7) / REVEAL_END_PROGRESS);
-    const st = dampRef.current;
-    st.raw = REVEAL_START_MS + p * (T_REVEAL_END - REVEAL_START_MS);
-    scheduleIdle();
-    // 首次（或注入后第一次广播）：直接贴合，避免从揭示起点滑过来
-    if (st.disp < 0) {
-      st.disp = st.raw;
-      applyT(st.disp);
-      return;
-    }
-    if (!st.running) {
-      st.running = true;
-      st.last = performance.now();
-      st.raf = requestAnimationFrame(tick);
-    }
-  }, [applyT, scheduleIdle, stopLoop, tick]);
-
-  useTraceScroll(drive);
-
-  // 卸载时停掉阻尼/循环帧循环与空闲计时器，避免泄漏
-  useEffect(() => () => {
-    const st = dampRef.current;
-    st.running = false;
-    cancelAnimationFrame(st.raf);
-    const loop = loopRef.current;
-    loop.on = false;
-    cancelAnimationFrame(loop.raf);
-    clearTimeout(loop.timer);
-  }, []);
 
   return (
     <div ref={sectionRef} className="trace-tech trace-tech--free">
