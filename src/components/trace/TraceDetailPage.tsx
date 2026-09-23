@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { TRACE_ANIM_CSS } from './traceAnimCss';
 
 /**
@@ -132,7 +132,7 @@ export default function TraceDetailPage() {
    * 也无人接收；React 18 对卸载组件 setState 是无害 no-op，直接设置即可
    */
   useEffect(() => {
-    fetch('/asset/trace/trace-body.svg')
+    fetch(ART_SVG_URL)
       .then(r => r.text())
       .then(t => setSvgText(t))
       .catch(err => console.error('[trace] svg load failed', err));
@@ -353,9 +353,10 @@ const snapDamp = useCallback(() => {
 
       {/* 动画 CSS 注入：原作品 keyframes + 放大覆盖 + 暂停锁定
           - .trace-frame 放大到展示尺寸
-          - 最后一条把所有动画锁在 paused：动画自创建即静止，
-            进度完全由 JS 的 currentTime 驱动（杜绝"自动播完停在成品"的时序缺陷） */}
-      <style>{`${TRACE_ANIM_CSS}\n.trace-frame{width:min(760px,90vw)}\n.trace-stage-inner.trace-playing *{animation-play-state:paused!important}\n`}</style>
+          - 主播放区与技法③画布（.trace-art-layer）都把动画锁在 paused：
+            动画自创建即静止，进度完全由 JS 的 currentTime 驱动
+            （杜绝"自动播完停在成品"的时序缺陷） */}
+      <style>{`${TRACE_ANIM_CSS}\n.trace-frame{width:min(760px,90vw)}\n.trace-stage-inner.trace-playing *{animation-play-state:paused!important}\n.trace-art-layer.trace-playing *{animation-play-state:paused!important}\n`}</style>
 
       {/* === 第一幕：首屏 === */}
       <section className="trace-act trace-act--hero">
@@ -671,186 +672,345 @@ ink        3.6s → .62`}
   );
 }
 
-/** 成品图路径（原作 trace-body.svg：1600×1095 纯路径、无外部引用，可安全栅格化） */
+/** 成品图资源路径（原作 trace-body.svg：1600×1095，含 30 段成品画与 45 组草稿线） */
 const ART_SVG_URL = '/asset/trace/trace-body.svg';
-/** 成品图原始尺寸：栅格化画布与拼图画布比例都用它，保证贴图不被拉伸 */
+/** 成品图坐标系尺寸：注入视图的 viewBox 与画布比例都取它 */
 const ART_W = 1600;
 const ART_H = 1095;
-/** 拼图规格 6 列 × 5 行 = 30 块，对应原作成品的 30 段片段 */
-const MOSAIC_COLS = 6;
-const MOSAIC_ROWS = 5;
-/** 揭示节奏（进度单位）：每格的起步间隔与单格揭示跨度，
- *  两者重叠 → 相邻格连成一道"一块接一块"的波 */
-const REVEAL_STAGGER = 0.022;
-const REVEAL_SPAN = 0.3;
-/** 落位顺序的散列步长：order = (下标 × 17) % 30，17 与 30 互质 → 得到均匀打散的落位次序，
- *  避免按行序揭示时读成"幕布下拉"（下半幅整块黑），更像拼图一块块散布到位 */
-const REVEAL_ORDER_STEP = 17;
-/** 揭示收束点：本节滚动进度到这里，30 格全部落位。
+/** 原作揭示起点（ms）：第 i 段的延迟是 4100 + i*300、单段时长 550，
+ *  末段正好在 T_REVEAL_END(13350) 收尾——这里沿用原始节奏，不另造时间轴 */
+const REVEAL_START_MS = 4100;
+/** 单段揭示时长（ms，原 keyframes 的 .55s）：分发时用它圈出"正在播"的那几段 */
+const REVEAL_FRAG_MS = 550;
+/** 大幅跳变阈值（ms）：位置差超过它说明是快速滚动/跨段跳入，需要整批重写一次兜底 */
+const REVEAL_BURST_MS = 1000;
+/** 揭示动效的阻尼时间常数（1/s）：滚轮一次跳跃后，揭示时间继续平滑追赶约 1s，
+ *  否则一格滚轮 ≈ 1.5 段会被整段跳过，"扫"的动作根本没机会显示出来
+ *  （取 3.5 与主播放区 DAMP_SMOOTH_TIME 0.55 的滑行手感接近） */
+const REVEAL_DAMP_LAMBDA = 3.5;
+/** 揭示收束点：本节滚动进度到这里，30 段全部落位。
  *  直接拿 elProgress 当进度的话，p=1 时本节已整段滚出视口——成品永远看不到完整一眼；
  *  收束到 0.55 后，拼完那一刻画布仍完整在视口内，之后继续下滚还能看着成品离开 */
 const REVEAL_END_PROGRESS = 0.55;
+/** 空闲循环：停手多久后画布自动开始循环演示（ms） */
+const LOOP_IDLE_MS = 1200;
+/** 循环里成品拼合后停留多久（ms），让观众看清"拼成的样子" */
+const LOOP_HOLD_MS = 1400;
+/** 循环回卷用时（ms）：把成品快速退回未揭示状态，衔接不硬切 */
+const LOOP_REWIND_MS = 700;
 
 /**
- * 生成单格片段的 clip-path（四种揭示方向）
+ * 技法③小节 — clip-path 分段揭示（原作真实 30 段）
  *
- * 功能：按方向类型与揭示进度 q 生成 clip-path 字符串。q=0 时形状面积为零
- *      （格子完全不可见），q=1 时覆盖整格。
- *      - r  ：右扫，从左缘向右拉开幕布（揭示边竖直右移）
- *      - l  ：左扫，从右缘向左拉开幕布
- *      - d  ：下扫，揭示边保持水平，从上向下降幕
- *      - dab：点染，自圆心向外扩散的圆
- *
- * 参数：
- *  - dir {string} 方向类型（'r' | 'l' | 'd' | 'dab'）
- *  - q   {number} 揭示进度 0~1
- *
- * 返回值：string 可直接赋给 style.clipPath 的 clip-path 值
- *
- * 异常：无
- *
- * 注意事项：
- *  - dab 半径取 80%：圆形百分比按 sqrt((w²+h²)/2) 折算，80% 已能罩住整个格子
- *  - 原作 2×2 演示里 wipe-l 的多边形只留了 3% 宽的两条边，实际裁出一条斜向薄带；
- *    这里改为"右缘固定、左缘随进度右移"的正确写法
- */
-function clipFor(dir: string, q: number): string {
-  const x = q * 100;
-  switch (dir) {
-    case 'l':
-      return `polygon(${100 - x}% 0, 100% 0, 100% 100%, ${100 - x}% 100%)`;
-    case 'd':
-      return `polygon(0 0, 100% 0, 100% ${x}%, 0 ${x}%)`;
-    case 'dab':
-      return `circle(${x * 0.8}% at 50% 50%)`;
-    default:
-      return `polygon(0 0, ${x}% 0, ${x}% 100%, 0 100%)`;
-  }
-}
-
-/**
- * 技法③小节 — clip-path 分段揭示（30 格拼图）
- *
- * 功能：把原作成品图（trace-body.svg）在挂载时栅格化成一张位图，平铺为 6×5=30 格画布；
- *      滚动进度驱动每格按各自方向（右扫/左扫/下扫/点染）错峰展开，整幅画一块块拼成，
- *      对应原作成品 30 段片段接力揭示的机制。画布右下角压一枚方向图例，
- *      画布下方一行说明，替代原先 2×2 的四块示意方块。
+ * 功能：把原作成品图层（trace-body.svg 里的 #trace-art，30 段 .trace-pg）原样注入画布，
+ *      并复用原作 CSS 的 wipe-r/wipe-l/wipe-d/dab 关键帧；滚动进度映射到原作揭示窗口
+ *      （4.1s~13.35s）后用 WAAPI 统一接管 30 段 CSSAnimation 的 currentTime，
+ *      于是每段按自己的 --i 延迟（4100 + i*300ms）依次接力揭示——切分方式、揭示顺序、
+ *      方向与缓动全部与原作一致，滚轮即播放头、可回退倒放。
  *
  * 参数：无
  * 返回值：React.ReactElement
  *
  * 注意事项：
- *  - 位图必须先栅格化再当贴图：直接拿 4.9MB 的 SVG 当背景时，每帧 clip-path 变化
- *    都会触发整张 SVG 重新栅格化（实测 ≈20fps）；换成位图贴图后稳定 60fps
- *  - 30 格共用同一张 1600×1095 位图，浏览器只占一份纹理
+ *  - 原作这 30 段并不是均匀格子：每段自带一组路径，并在整幅画布上做定向 wipe / 圆心绽开，
+ *    所以必须渲染真实图层，不能用"整图按格子裁切"来近似
+ *  - 只注入 #trace-art 层（约 2.3MB），草稿线/墨线层与本节无关，省掉一半体积与一半 path
  */
 function TechClipPath() {
   const sectionRef = useRef<HTMLDivElement>(null);
-  // 30 个格子元素（数组下标 = 行序 = 揭示顺序）
-  const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
-  // 栅格化后的成品图位图 URL（null = 尚未就绪，画布先显示深色底）
-  const [artUrl, setArtUrl] = useState<string | null>(null);
+  // 真实成品层注入容器
+  const artRef = useRef<HTMLDivElement>(null);
+  // 30 段的 CSSAnimation + 各自延迟（原 keyframes，已 pause，由滚动接管 currentTime）
+  const animsRef = useRef<{ anim: CSSAnimation; delay: number }[]>([]);
+  // 上一次分发的虚拟时间：用于"值没变就不写样式"与大幅跳变兜底
+  const lastTRef = useRef(-1);
+  // 阻尼状态：raw = 滚动位置换算的目标时间，disp = 实际写进动画的显示时间
+  const dampRef = useRef({ raw: REVEAL_START_MS, disp: -1, raf: 0, running: false, last: 0 });
+  // 空闲循环状态：滚动停手后画布自动循环演示揭示效果
+  const loopRef = useRef({
+    on: false,
+    t: REVEAL_START_MS,
+    phase: 'play' as 'play' | 'hold' | 'rewind',
+    left: 0,
+    raf: 0,
+    timer: 0,
+    last: 0,
+  });
 
   /**
-   * 30 格配置
-   * 功能：按行序（左→右、上→下）生成 30 格，保证网格铺满画布；方向按 (行+列)%4
-   *      循环四种类型，让四种均匀出现；order 是散列后的落位次序（见 REVEAL_ORDER_STEP）；
-   *      bx/by 是 background-position 的百分比——按 (N-1) 归一，
-   *      让每格精确取到整图的 1/30 区域（写 -col*100% 会整张移出可视范围）
-   */
-  const cells = useMemo(() => {
-    const dirs = ['r', 'l', 'd', 'dab'];
-    const total = MOSAIC_COLS * MOSAIC_ROWS;
-    const list: { key: string; dir: string; order: number; bx: number; by: number }[] = [];
-    for (let row = 0; row < MOSAIC_ROWS; row++) {
-      for (let col = 0; col < MOSAIC_COLS; col++) {
-        const idx = row * MOSAIC_COLS + col;
-        list.push({
-          key: `${row}-${col}`,
-          dir: dirs[(row + col) % dirs.length],
-          order: (idx * REVEAL_ORDER_STEP) % total,
-          bx: (col * 100) / (MOSAIC_COLS - 1),
-          by: (row * 100) / (MOSAIC_ROWS - 1),
-        });
-      }
-    }
-    return list;
-  }, []);
-
-  /**
-   * 成品图预栅格化（一次性，挂载后立即开始）
+   * 注入真实成品图层并接管动画（挂载即开始，用户还在上面几幕时就完成）
    *
-   * 功能：decode 4.9MB 的 trace-body.svg → drawImage 到 1600×1095 canvas →
-   *      转成 PNG blob → objectURL 交给 CSS 当贴图，就绪后画布才逐渐显出成品图。
+   * 功能：
+   *  1. 取 trace-body.svg 文本，切出成品画层 <g id="trace-art">（30 段 .trace-pg）
+   *  2. 包成独立 <svg viewBox="0 0 1600 1095"> 注入画布容器（30 段的重叠/切分关系原样保留）
+   *  3. 挂 .trace-playing 让原作 CSS 把 wipe-r/wipe-l/wipe-d/dab 关键帧挂到各段上，
+   *     再用 document.getAnimations() 收集这 30 段动画、统一 pause 并锁在揭示起点
    *
    * 参数：无
-   * 返回值：无（副作用：就绪后 setArtUrl 触发一次渲染）
+   * 返回值：无
    *
-   * 异常：解码或编码失败时静默降级——画布保持深色底、揭示动画照常跑，不影响滚动
+   * 异常：资源加载失败时静默降级——画布留深色底，不影响滚动
    *
    * 注意事项：
-   *  - 这一步放在挂载时做（用户还在上面几幕），避免滚动到本节时出现栅格化卡顿
-   *  - 卸载时 revokeObjectURL 释放位图；失败/取消路径不创建 URL
+   *  - rAF 重试等待动画注册（2.3MB SVG 解析可能慢几帧），与主播放区同一套写法
+   *  - 动画自创建即被锁在揭示起点，不会抢跑；解锁后完全由滚动 currentTime 驱动
+   *  - 捕获成功后广播一次 trace:scroll，让本节立即按当前滚动位置就位
    */
   useEffect(() => {
-    let cancelled = false;
-    let url = '';
-    const img = new Image();
-    img.src = ART_SVG_URL;
-    img.decode()
-      .then(() => {
-        const cv = document.createElement('canvas');
-        cv.width = ART_W;
-        cv.height = ART_H;
-        const ctx = cv.getContext('2d');
-        if (!ctx) return null;
-        ctx.drawImage(img, 0, 0, ART_W, ART_H);
-        return new Promise<Blob | null>(resolve => cv.toBlob(resolve, 'image/png'));
-      })
-      .then(blob => {
-        if (!blob || cancelled) return;
-        url = URL.createObjectURL(blob);
-        setArtUrl(url);
+    let stopped = false;
+    let attempt = 0;
+    fetch(ART_SVG_URL)
+      .then(r => r.text())
+      .then(text => {
+        if (stopped) return;
+        const host = artRef.current;
+        if (!host) return;
+        // 只取成品画层：从 <g id="trace-art"> 一直切到文件末尾，去掉尾部 </svg>
+        const start = text.indexOf('<g id="trace-art">');
+        if (start < 0) return;
+        const art = text.slice(start).replace(/<\/svg>[\s\S]*$/, '');
+        host.innerHTML = `<svg viewBox="0 0 ${ART_W} ${ART_H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">${art}</svg>`;
+        host.classList.add('trace-playing');
+
+        const tryCapture = () => {
+          if (stopped) return;
+          const anims = document
+            .getAnimations()
+            .filter(
+              (a): a is CSSAnimation =>
+                a instanceof CSSAnimation &&
+                (a.effect as KeyframeEffect | null)?.target instanceof Element &&
+                host.contains((a.effect as KeyframeEffect).target as Element)
+            );
+          if (anims.length > 0) {
+            // 统一暂停并锁到揭示起点，等滚动接管；顺带缓存各段延迟，供分发时判断窗口
+            animsRef.current = anims.map(a => {
+              a.pause();
+              a.currentTime = REVEAL_START_MS;
+              const timing = a.effect?.getTiming?.();
+              const delay = typeof timing?.delay === 'number' ? timing.delay : 0;
+              return { anim: a, delay };
+            });
+            // 就位：按当前滚动位置算一次（用户可能已经停在本节）
+            window.dispatchEvent(new CustomEvent('trace:scroll'));
+            return;
+          }
+          attempt += 1;
+          if (attempt < 120) requestAnimationFrame(tryCapture);
+        };
+        requestAnimationFrame(tryCapture);
       })
       .catch(() => {
-        /* 静默降级：画布留深色底，揭示动画仍可看 */
+        /* 静默降级：画布留深色底 */
       });
     return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
+      stopped = true;
     };
   }, []);
 
   /**
-   * 滚动驱动 30 格揭示
+   * 把显示时间写进各段动画
    *
-   * 功能：把本节滚动进度先按 REVEAL_END_PROGRESS 收束（保证拼完那刻画布还在视口内），
-   *      再分配到每格——第 order 位落位的块子在进度 order*REVEAL_STAGGER 处起步，
-   *      用 REVEAL_SPAN 的进度完成揭示；透明度按原作 dab 关键帧的节奏
-   *      （前 35% 从 0 升到 1）淡入，避免揭示边缘过硬。
+   * 功能：把虚拟时间 t 分发到 30 段动画的 currentTime，并做两处节流：
+   *      - t 与上次相同 → 不写样式（本节在视口外时几乎每帧命中）
+   *      - 只写"处在揭示窗口内"的段（约 4 段/帧），窗口外的段已停在 0%/100% 两端，
+   *        目的是把每帧的重绘范围限制在真正变化的那几段上
+   *
+   * 参数：
+   *  - t     {number}  虚拟时间（ms）
+   *  - force {boolean} 是否强制整批重写（循环首尾用它把状态钉准，默认 false）
+   * 返回值：无
+   *
+   * 注意事项：位置差超过 REVEAL_BURST_MS 视为大幅跳变（快速滚动/从上方直接跳入），
+   *          自动整批兜底重写一次，避免窗口外的段残留旧状态
+   */
+  const applyT = useCallback((t: number, force = false) => {
+    const list = animsRef.current;
+    if (!list.length) return;
+    const last = lastTRef.current;
+    if (!force && t === last) return;
+    const burst = force || last < 0 || Math.abs(t - last) > REVEAL_BURST_MS;
+    lastTRef.current = t;
+    for (const item of list) {
+      if (!burst && (t < item.delay || t > item.delay + REVEAL_FRAG_MS)) continue;
+      item.anim.currentTime = t;
+    }
+  }, []);
+
+  /**
+   * 阻尼帧循环：显示时间平滑追赶目标时间，收敛后停帧
+   *
+   * 功能：每帧用指数阻尼把 disp 推向 raw 并写进动画。滚轮一格 ≈ 1.7 段的跳跃
+   *      会被"稀释"成约 0.5s 的平滑播放，扫的动效因此看得见；
+   *      接近目标时直接贴合（无残留误差），随后停帧省资源。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：dt 上限 0.05s，避免后台标签页切回时大步长跳变
+   */
+  const tick = useCallback(() => {
+    const st = dampRef.current;
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(now - st.last, 0.001));
+    st.last = now;
+    st.disp += (st.raw - st.disp) * (1 - Math.exp(-dt * REVEAL_DAMP_LAMBDA));
+    if (Math.abs(st.raw - st.disp) < 1) {
+      st.disp = st.raw;
+      applyT(st.disp);
+      st.running = false;
+      return;
+    }
+    applyT(st.disp);
+    st.raf = requestAnimationFrame(tick);
+  }, [applyT]);
+
+  /**
+   * 退出空闲循环，交回滚动驱动
+   *
+   * 功能：停掉循环帧循环，并让阻尼的显示时间从循环当前时间接着走，
+   *      这样"循环 → 滚动"的切换是平滑的，不会跳回旧位置。
+   *
+   * 参数：无
+   * 返回值：无
+   */
+  const stopLoop = useCallback(() => {
+    const loop = loopRef.current;
+    if (!loop.on) return;
+    loop.on = false;
+    cancelAnimationFrame(loop.raf);
+    dampRef.current.disp = loop.t;
+  }, []);
+
+  /**
+   * 空闲循环帧循环：揭示 → 停留 → 快速回卷 → 再揭示
+   *
+   * 功能：沿原作时间轴正向播一遍（4.1s~13.35s），拼合后停留 LOOP_HOLD_MS，
+   *      再按比例回卷到揭示起点，然后重新开始——让不滚动的人也能看懂这个效果。
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
-   *  - 只改 clip-path / opacity 两个合成属性，配合位图贴图不触发重栅格化
+   *  - 时间步长 dt 上限 50ms，避免后台切回时大步跳变
+   *  - 每帧都走 applyT，因此窗口节流与重绘范围控制照旧生效
+   */
+  const startLoop = useCallback(() => {
+    const loop = loopRef.current;
+    if (loop.on) return;
+    loop.on = true;
+    loop.phase = 'play';
+    loop.t = REVEAL_START_MS;
+    loop.left = 0;
+    loop.last = performance.now();
+    // 从"未揭示"干净起步（强制整批重写，清掉上一轮的残留）
+    applyT(loop.t, true);
+    const frame = () => {
+      if (!loop.on) return;
+      const now = performance.now();
+      const dt = Math.min(50, Math.max(now - loop.last, 1));
+      loop.last = now;
+      if (loop.phase === 'play') {
+        loop.t += dt;
+        if (loop.t >= T_REVEAL_END) {
+          loop.t = T_REVEAL_END;
+          loop.phase = 'hold';
+          loop.left = LOOP_HOLD_MS;
+          // 钉准成品状态：快速推进时每段最后一次写入可能落在 wipe 中段，靠强制重写补齐
+          applyT(loop.t, true);
+        }
+      } else if (loop.phase === 'hold') {
+        loop.left -= dt;
+        if (loop.left <= 0) loop.phase = 'rewind';
+      } else {
+        loop.t -= dt * ((T_REVEAL_END - REVEAL_START_MS) / LOOP_REWIND_MS);
+        if (loop.t <= REVEAL_START_MS) {
+          loop.t = REVEAL_START_MS;
+          loop.phase = 'play';
+          // 回卷结束同样强制重写：否则"没来得及回退"的段会残留半揭示状态
+          applyT(loop.t, true);
+        }
+      }
+      applyT(loop.t);
+      loop.raf = requestAnimationFrame(frame);
+    };
+    loop.raf = requestAnimationFrame(frame);
+  }, [applyT]);
+
+  /**
+   * 安排空闲自检：停手 LOOP_IDLE_MS 后若条件满足就开启循环
+   *
+   * 功能：滚动停手后延时检查——只有"成品已拼合"（进度收束到 1）且画布仍在视口内
+   *      才启动循环，避免覆盖用户滚到一半定格的画面。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：每次滚动都会重置计时器，因此连续滚动期间不会触发
+   */
+  const scheduleIdle = useCallback(() => {
+    const loop = loopRef.current;
+    clearTimeout(loop.timer);
+    loop.timer = window.setTimeout(() => {
+      const sec = sectionRef.current;
+      if (!sec || !animsRef.current.length) return;
+      const p = Math.min(1, elProgress(sec, 0.7) / REVEAL_END_PROGRESS);
+      if (p < 1) return;
+      const rect = sec.getBoundingClientRect();
+      if (rect.bottom <= 0 || rect.top >= window.innerHeight) return;
+      startLoop();
+    }, LOOP_IDLE_MS);
+  }, [startLoop]);
+
+  /**
+   * 滚动位置 → 目标时间 → 唤醒阻尼循环
+   *
+   * 功能：进度先按 REVEAL_END_PROGRESS 收束（保证成品拼合时画布仍在视口内），
+   *      再线性映射到 [REVEAL_START_MS, T_REVEAL_END] 作为阻尼目标。各段延迟
+   *      （--d = 4.1s + i*0.3s）由原 keyframes 自带，这里不逐段算进度——
+   *      顺序与节奏完全交给原作时间轴。
+   *      任何滚动输入都会退出空闲循环并安排下一次空闲自检。
+   *
+   * 参数：无
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 首次进来直接贴合目标（不做从 0 爬上来的启动动画）
+   *  - 本函数只登记目标并唤醒循环，真正的写入在 tick 里逐帧进行
    */
   const drive = useCallback(() => {
     const sec = sectionRef.current;
-    if (!sec) return;
-    // 收束点前完成全部落位（见 REVEAL_END_PROGRESS），之后保持成品状态
+    if (!sec || !animsRef.current.length) return;
+    stopLoop();
     const p = Math.min(1, elProgress(sec, 0.7) / REVEAL_END_PROGRESS);
-    for (let i = 0; i < cells.length; i++) {
-      const el = cellRefs.current[i];
-      if (!el) continue;
-      const c = cells[i];
-      const q = Math.max(0, Math.min(1, (p - c.order * REVEAL_STAGGER) / REVEAL_SPAN));
-      el.style.opacity = String(Math.min(1, q / 0.35));
-      el.style.clipPath = clipFor(c.dir, q);
+    const st = dampRef.current;
+    st.raw = REVEAL_START_MS + p * (T_REVEAL_END - REVEAL_START_MS);
+    scheduleIdle();
+    // 首次（或注入后第一次广播）：直接贴合，避免从揭示起点滑过来
+    if (st.disp < 0) {
+      st.disp = st.raw;
+      applyT(st.disp);
+      return;
     }
-  }, [cells]);
+    if (!st.running) {
+      st.running = true;
+      st.last = performance.now();
+      st.raf = requestAnimationFrame(tick);
+    }
+  }, [applyT, scheduleIdle, stopLoop, tick]);
 
   useTraceScroll(drive);
+
+  // 卸载时停掉阻尼/循环帧循环与空闲计时器，避免泄漏
+  useEffect(() => () => {
+    const st = dampRef.current;
+    st.running = false;
+    cancelAnimationFrame(st.raf);
+    const loop = loopRef.current;
+    loop.on = false;
+    cancelAnimationFrame(loop.raf);
+    clearTimeout(loop.timer);
+  }, []);
 
   return (
     <div ref={sectionRef} className="trace-tech trace-tech--free">
@@ -863,29 +1023,18 @@ function TechClipPath() {
       </div>
       <div className="trace-tech-body">
         <div className="trace-tech-demo">
-          <div
-            className="trace-mosaic-canvas"
-            style={{ '--mosaic-art': artUrl ? `url(${artUrl})` : 'none' } as CSSProperties}
-          >
-            {cells.map((c, i) => (
-              <div
-                key={c.key}
-                ref={el => {
-                  cellRefs.current[i] = el;
-                }}
-                className="trace-mosaic-cell"
-                style={{ backgroundPosition: `${c.bx}% ${c.by}%` }}
-              />
-            ))}
+          <div className="trace-art-canvas">
+            {/* 真实成品层注入点：30 段 .trace-pg 由原作 CSS 关键帧驱动 */}
+            <div ref={artRef} className="trace-art-layer" />
             {/* 方向图例：四种片段类型各一枚 chip，压在画布右下角（不遮主体构图） */}
-            <div className="trace-mosaic-legend">
+            <div className="trace-art-legend">
               <span>wipe-r · 右扫</span>
               <span>wipe-l · 左扫</span>
               <span>wipe-d · 下扫</span>
               <span>dab · 点染</span>
             </div>
           </div>
-          <span className="trace-demo-note">30 段 · 随滚动逐块到位</span>
+          <span className="trace-demo-note">30 段 · 按 --i 顺序逐段接力</span>
         </div>
         <div className="trace-tech-copy">
           <p>
