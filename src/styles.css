@@ -3373,41 +3373,82 @@ body.trace-page #root {
   white-space: pre;
 }
 
-/* 技法②：三层叠放 demo */
+/* 技法②：真作品三层叠放 demo（草稿 / 墨线 / 成品，位图由原作素材栅格化而来） */
 .trace-demo-stack {
-  padding: 18px;
-  min-height: 320px;
+  padding: 18px 18px 58px;
+}
+/* 画纸：与成品图同比例（1600×1095），白底 + 投影。
+   三层位图都满铺在它上面，且位图自带白纸 —— 纸面始终是实的，不会透出深色框底 */
+.trace-demo-paper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1600 / 1095;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 20px 44px -26px rgba(0, 0, 0, 0.9);
 }
 .trace-layer {
   position: absolute;
-  inset: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 0.12s linear;
+  inset: 0;
+  transition: opacity 0.16s linear;
 }
-.trace-layer svg {
-  width: 88%;
-  height: auto;
+.trace-layer img {
   display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
-.trace-layer-tag {
-  position: absolute;
-  bottom: 6px;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  color: #6b7a74;
-}
+/* 时间轴条：三段色标（草稿灰 / 墨线浅灰 / 成品青），段名随当前阶段高亮 */
 .trace-demo-layers-bar {
   position: absolute;
   left: 26px;
   right: 26px;
-  bottom: 26px;
-  height: 4px;
-  border-radius: 0;
-  background: #222;
+  bottom: 20px;
+  display: flex;
+  gap: 4px;
+}
+.trace-demo-layers-bar span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
   overflow: hidden;
-  transition: background 0.1s linear;
+  opacity: 0.34;
+  transition: opacity 0.18s linear;
+}
+/* 色标本身由 currentColor 生成：段文字与其色块同色 */
+.trace-demo-layers-bar span::before {
+  content: '';
+  display: block;
+  height: 5px;
+  background: currentColor;
+  transition: box-shadow 0.18s linear;
+}
+.trace-demo-layers-bar span:nth-child(1) {
+  color: #8b93a0;
+}
+.trace-demo-layers-bar span:nth-child(2) {
+  color: #cfdad6;
+}
+.trace-demo-layers-bar span:nth-child(3) {
+  color: #2fbf9a;
+}
+.trace-demo-layers-bar[data-phase="0"] span:nth-child(1),
+.trace-demo-layers-bar[data-phase="1"] span:nth-child(2),
+.trace-demo-layers-bar[data-phase="2"] span:nth-child(3) {
+  opacity: 1;
+}
+.trace-demo-layers-bar[data-phase="0"] span:nth-child(1)::before,
+.trace-demo-layers-bar[data-phase="1"] span:nth-child(2)::before,
+.trace-demo-layers-bar[data-phase="2"] span:nth-child(3)::before {
+  box-shadow: 0 0 10px -1px currentColor;
 }
 
 /* 技法③：原作真实 30 段成品画（注入 #trace-art 层，复用原 wipe/dab 关键帧） */
@@ -3631,6 +3672,11 @@ body.trace-page #root {
     left: 10px;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+  /* 窄屏：三段色标的段名再收一档，保证三列都能完整容下 */
+  .trace-demo-layers-bar span {
+    font-size: 9px;
+    letter-spacing: 0.04em;
   }
   .trace-tech-body .trace-tech-demo,
   .trace-tech-body .trace-tech-copy,

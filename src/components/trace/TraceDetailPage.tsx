@@ -496,6 +496,167 @@ function useTraceScroll(handler: () => void): void {
 }
 
 /**
+ * 技法②三层位图（原作素材栅格化结果）
+ */
+type TraceLayerBitmaps = {
+  /** 草稿层：白纸 + 45 组草稿线（钉在"已画完"状态） */
+  sketch: string;
+  /** 墨线层：白纸 + 灰度上墨的成品画 */
+  ink: string;
+  /** 成品层：30 段拼合后的完整成品画 */
+  art: string;
+};
+
+/**
+ * 单张位图的栅格化参数
+ */
+type TraceRasterPaint = {
+  /** 内容不透明度（1 = 原样，0.62 = 原作的"上墨"） */
+  alpha: number;
+  /** 画布滤镜（'' = 不加滤镜） */
+  filter: string;
+};
+
+/** 草稿线组起点标记（45 组 .trace-skb 依次递延描线） */
+const SKETCH_GROUP_MARK = '<g class="trace-skst">';
+/** 底稿引用标记：草稿层切片到此为止（其后就是成品层定义） */
+const ART_USE_MARK = '<use href="#trace-art"';
+/** 成品层起点标记（30 段 .trace-pg 分段） */
+const ART_GROUP_MARK = '<g id="trace-art">';
+/** 画纸底色：对应原作 .trace-frame 的白纸，先铺满画布保证位图不透明 */
+const TRACE_PAPER = '#ffffff';
+/** 上墨滤镜：照抄原作 .trace-sketch 的 filter:grayscale(1) brightness(.72) contrast(1.35) */
+const INK_FILTER = 'grayscale(1) brightness(.72) contrast(1.35)';
+/** 上墨不透明度：原作 ink 关键帧终值 0.62 */
+const INK_ALPHA = 0.62;
+
+/**
+ * 解码一段独立 SVG 文本为可绘制的图片对象
+ *
+ * 功能：把 SVG 标记包成 blob URL 交给 <img> 解码，解码完成后立刻释放该 blob URL
+ *      （图片数据已进内存，之后可反复 drawImage）。
+ *
+ * 参数：
+ *  - svgMarkup {string} 完整的独立 SVG 文本（自带 viewBox，不依赖外部样式）
+ *
+ * 返回值：Promise<HTMLImageElement> 解码完成的图片对象
+ *
+ * 异常：SVG 语法错误或浏览器拒绝解码时 reject（调用方静默降级）
+ *
+ * 注意事项：blob URL 与页面同源，画进 canvas 不会污染画布，toBlob 可用
+ */
+function decodeSvgImage(svgMarkup: string): Promise<HTMLImageElement> {
+  const url = URL.createObjectURL(new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' }));
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('svg decode failed'));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * 把已解码的 SVG 图片栅格化成本地位图
+ *
+ * 功能：在 1600×1095 的离屏画布上先铺白纸，再按参数把图片画上去
+ *      （可带滤镜与不透明度），最后导出 PNG 的 objectURL。
+ *      近 6000 条 path 只在这里渲染一次，滚动帧只剩三张位图的合成。
+ *
+ * 参数：
+ *  - img   {HTMLImageElement} 已解码的 SVG 图片（原始尺寸即原作坐标系）
+ *  - paint {TraceRasterPaint} 栅格化参数（不透明度 / 滤镜）
+ *
+ * 返回值：Promise<string> 位图的 objectURL
+ *
+ * 异常：2d 上下文缺失或 toBlob 失败时 reject（调用方静默降级）
+ *
+ * 注意事项：画布尺寸取原作坐标系 1600×1095，与 viewBox 1:1，
+ *          避免重采样把细描边糊掉
+ */
+function rasterizeLayer(img: HTMLImageElement, paint: TraceRasterPaint): Promise<string> {
+  const canvas = document.createElement('canvas');
+  canvas.width = ART_W;
+  canvas.height = ART_H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return Promise.reject(new Error('2d context unavailable'));
+  ctx.fillStyle = TRACE_PAPER;
+  ctx.fillRect(0, 0, ART_W, ART_H);
+  if (paint.filter) ctx.filter = paint.filter;
+  ctx.globalAlpha = paint.alpha;
+  ctx.drawImage(img, 0, 0, ART_W, ART_H);
+  return new Promise<string>((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(URL.createObjectURL(blob));
+      else reject(new Error('canvas toBlob failed'));
+    }, 'image/png');
+  });
+}
+
+/** 模块级缓存：技法②位图只栅格化一次（StrictMode 双跑 / 返回重进都复用） */
+let traceLayersPromise: Promise<TraceLayerBitmaps> | null = null;
+
+/**
+ * 载入技法②所需的三张位图（草稿 / 墨线 / 成品）
+ *
+ * 功能：
+ *  1. 取 4.7MB 原作 SVG 文本，按标记切成两段：
+ *     `<g class="trace-skst">` 到 `<use href="#trace-art">` 之前的草稿组、
+ *     `<g id="trace-art">` 到文件末尾的成品层
+ *  2. 两段各自包成独立 SVG：草稿段内嵌"钉住画完状态"的样式（去掉描线动画），
+ *     成品段原样保留 30 段 .trace-pg
+ *  3. 成品图解码一次、栅格化两次：原样出成品层，灰度 + 0.62 出墨线层
+ *
+ * 参数：无
+ * 返回值：Promise<TraceLayerBitmaps> 三层位图的 objectURL
+ *
+ * 异常：素材请求失败 / 标记缺失 / 栅格化失败时 reject，并清空缓存以便重试
+ *
+ * 注意事项：
+ *  - 结果缓存在模块作用域，重复挂载不会二次解码 4.7MB 素材
+ *  - 位图 objectURL 不主动 revoke：随文档卸载一起释放，
+ *    否则 StrictMode 二次挂载会拿到失效地址
+ */
+function loadTraceLayers(): Promise<TraceLayerBitmaps> {
+  if (traceLayersPromise) return traceLayersPromise;
+  traceLayersPromise = (async () => {
+    const text = await fetch(ART_SVG_URL).then(r => r.text());
+    const sketchStart = text.indexOf(SKETCH_GROUP_MARK);
+    const useIdx = text.indexOf(ART_USE_MARK);
+    const artStart = text.indexOf(ART_GROUP_MARK);
+    if (sketchStart < 0 || useIdx <= sketchStart || artStart < 0) {
+      throw new Error('trace layers markup not found');
+    }
+    const wrap = (inner: string, style: string) =>
+      `<svg viewBox="0 0 ${ART_W} ${ART_H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><style>${style}</style>${inner}</svg>`;
+    // 草稿段：沿用原作描线样式，但把 stroke-dashoffset 钉在 0（= 45 组线全部画完）
+    const sketchSvg = wrap(
+      text.slice(sketchStart, useIdx),
+      `${TRACE_ANIM_CSS}\n.trace-skb path{stroke-dashoffset:0!important}`
+    );
+    // 成品段：30 段 .trace-pg 原样保留（本节不做揭示，直接当完整成品画用）
+    const artSvg = wrap(text.slice(artStart).replace(/<\/svg>[\s\S]*$/, ''), '');
+
+    const [sketchImg, artImg] = await Promise.all([decodeSvgImage(sketchSvg), decodeSvgImage(artSvg)]);
+    const [sketch, ink, art] = await Promise.all([
+      rasterizeLayer(sketchImg, { alpha: 1, filter: '' }),
+      rasterizeLayer(artImg, { alpha: INK_ALPHA, filter: INK_FILTER }),
+      rasterizeLayer(artImg, { alpha: 1, filter: '' }),
+    ]);
+    return { sketch, ink, art };
+  })().catch(err => {
+    traceLayersPromise = null;
+    throw err;
+  });
+  return traceLayersPromise;
+}
+
+/**
  * 技法①小节 — stroke-dashoffset 描边
  *
  * 功能：演示 SVG 线条描画原理：pathLength 归一化后 dasharray=1，
@@ -575,14 +736,25 @@ stroke-dashoffset: 1;
 }
 
 /**
- * 技法②小节 — 分层时间轴
+ * 技法②小节 — 分层时间轴（真作品三层）
  *
- * 功能：演示分层作画结构：底层草稿 → 中层墨线 → 顶层成品三层叠放，
- * 滚动进度驱动：草稿淡出（0~50%）、墨线浮现（30%~70%）、成品接管（60%~100%），
- * 下方时间轴条随进度填色。
+ * 功能：演示分层作画结构：底层草稿 → 中层墨线 → 顶层成品三层叠放。
+ *      三层画面全部取自原作素材——挂载时把 4.7MB 的 trace-body.svg 切成
+ *      "草稿组（45 组 .trace-skb）"与"成品层（30 段 .trace-pg）"两段并栅格化成位图，
+ *      墨线层就是成品的灰度上墨版（.62 + grayscale 滤镜，与原作 .trace-sketch 同语言）。
+ *      滚动进度驱动快速交接：草稿 0.44 前满幅、墨线 0.30 起入 / 0.72 起出、
+ *      成品 0.58 起入 / 0.72 满幅；入画层满幅之后出画层才开始退场，
+ *      所以任一时刻叠合处都有一层是"实"的，纸面不透底、画面不发虚。
+ *      底部时间轴条为三段色标（草稿 / 墨线 / 成品），随进度高亮当前阶段。
  *
  * 参数：无
  * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 位图只在挂载时栅格化一次（模块级缓存），滚动只改 opacity 与 data-phase，
+ *    近 6000 条 path 的重绘成本被彻底移出滚动帧
+ *  - 位图 objectURL 是页面作用域的，路由切换时随文档释放，不主动 revoke
+ *    （否则 StrictMode 二次挂载会拿到失效 URL）
  */
 function TechLayers() {
   const sectionRef = useRef<HTMLDivElement>(null);
@@ -590,25 +762,53 @@ function TechLayers() {
   const inkLayerRef = useRef<HTMLDivElement>(null);
   const finalLayerRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  // 三层真作品位图（异步就绪；未就绪时先显示空白画纸）
+  const [layers, setLayers] = useState<TraceLayerBitmaps | null>(null);
 
   /**
-   * 滚动驱动三层层叠：按进度窗口控制各层透明度 + 时间轴条宽度
+   * 载入三层位图：命中模块级缓存时立即返回，重复挂载不再解码 4.7MB 素材
+   */
+  useEffect(() => {
+    let alive = true;
+    loadTraceLayers()
+      .then(res => {
+        if (alive) setLayers(res);
+      })
+      .catch(err => console.error('[trace] 技法②图层栅格化失败', err));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 滚动驱动三层快速交接 + 时间轴条阶段高亮
+   *
+   * 功能：把本节演示进度 p 映射为三层不透明度，并更新底部三段色标的当前阶段。
+   *      交接窗口刻意收窄且"入画先满、出画后退"：墨线 0.44 满幅时草稿才开始退，
+   *      成品 0.72 满幅时墨线才开始退，所以叠合处始终有一层满幅。
+   *
+   * 参数：无
+   * 返回值：void
+   *
+   * 注意事项：只写 opacity 与 data-phase，不触碰位图与 SVG，滚动帧内无重绘
    */
   const drive = useCallback(() => {
     const sec = sectionRef.current;
     if (!sec) return;
     const p = elProgress(sec, 0.7);
-    const fade = (a: number, b: number, x: number) => Math.max(0, Math.min(1, (x - b) / (a - b)));
-    if (sketchLayerRef.current) sketchLayerRef.current.style.opacity = String(1 - fade(0, 0.5, p));
-    if (inkLayerRef.current) inkLayerRef.current.style.opacity = String(fade(0.3, 0.7, p) * (1 - fade(0.6, 1, p)));
-    if (finalLayerRef.current) finalLayerRef.current.style.opacity = String(fade(0.6, 1, p));
-    const bar = barRef.current;
-    if (bar) {
-      // 进度到 0.5 前显示草稿色段，之后显示成品色段（示意两阶段）
-      bar.style.background =
-        p < 0.55
-          ? `linear-gradient(90deg,#7b61ff ${p * 100}%,#222 0)`
-          : `linear-gradient(90deg,#7b61ff 50%,#2fbf9a ${(p - 0.5) * 100}%,#222 0)`;
+    const ramp = (from: number, to: number) => Math.max(0, Math.min(1, (p - from) / (to - from)));
+    if (sketchLayerRef.current) {
+      sketchLayerRef.current.style.opacity = String(1 - ramp(0.44, 0.56));
+    }
+    if (inkLayerRef.current) {
+      inkLayerRef.current.style.opacity = String(ramp(0.3, 0.44) * (1 - ramp(0.72, 0.86)));
+    }
+    if (finalLayerRef.current) {
+      finalLayerRef.current.style.opacity = String(ramp(0.58, 0.72));
+    }
+    if (barRef.current) {
+      // 阶段切换取交接窗口的中点：入画层过半时才算"进入该阶段"
+      barRef.current.dataset.phase = p < 0.37 ? '0' : p < 0.65 ? '1' : '2';
     }
   }, []);
 
@@ -625,36 +825,31 @@ function TechLayers() {
       </div>
       <div className="trace-tech-body">
         <div className="trace-tech-demo trace-demo-stack">
-          {/* 三层叠放：草稿 → 墨线 → 成品（简化示意画：山 + 太阳） */}
-          <div ref={sketchLayerRef} className="trace-layer trace-layer--sketch" style={{ opacity: 1 }}>
-            <svg viewBox="0 0 420 220">
-              <path d="M30 170 L150 60 L230 130 L330 40 L390 150" fill="none" stroke="#7b61ff" strokeWidth={3} strokeLinejoin="round" strokeDasharray="7 7" />
-              <circle cx="330" cy="62" r="26" fill="none" stroke="#7b61ff" strokeWidth={3} strokeDasharray="7 7" />
-            </svg>
-            <span className="trace-layer-tag">草稿 · --i 递延描线</span>
+          {/* 画纸 + 三层真作品位图：草稿（45 组描线）→ 墨线（灰度成品）→ 成品（30 段拼合） */}
+          <div className="trace-demo-paper">
+            <div ref={sketchLayerRef} className="trace-layer" style={{ opacity: 1 }}>
+              {layers && <img src={layers.sketch} alt="" draggable={false} />}
+            </div>
+            <div ref={inkLayerRef} className="trace-layer" style={{ opacity: 0 }}>
+              {layers && <img src={layers.ink} alt="" draggable={false} />}
+            </div>
+            <div ref={finalLayerRef} className="trace-layer" style={{ opacity: 0 }}>
+              {layers && <img src={layers.art} alt="" draggable={false} />}
+            </div>
           </div>
-          <div ref={inkLayerRef} className="trace-layer trace-layer--ink" style={{ opacity: 0 }}>
-            <svg viewBox="0 0 420 220">
-              <path d="M30 170 L150 60 L230 130 L330 40 L390 150" fill="none" stroke="#1c1f24" strokeWidth={5} strokeLinejoin="round" strokeLinecap="round" />
-              <circle cx="330" cy="62" r="26" fill="none" stroke="#1c1f24" strokeWidth={5} />
-            </svg>
-            <span className="trace-layer-tag">墨线 · 技法一定型</span>
+          {/* 时间轴条：三段色标（草稿 / 墨线 / 成品），当前阶段随进度高亮 */}
+          <div ref={barRef} className="trace-demo-layers-bar" data-phase="0">
+            <span>草稿 · 45 组描线</span>
+            <span>墨线 · 灰度底稿</span>
+            <span>成品 · 30 段拼合</span>
           </div>
-          <div ref={finalLayerRef} className="trace-layer trace-layer--final" style={{ opacity: 0 }}>
-            <svg viewBox="0 0 420 220">
-              <path d="M30 170 L150 60 L230 130 L330 40 L390 150 L390 190 L30 190 Z" fill="#2fbf9a" opacity={0.9} />
-              <circle cx="330" cy="62" r="26" fill="#ffb347" />
-              <path d="M30 190 L60 190 L60 30 L180 30 L180 60 L120 60 L120 130 L230 130 L230 40 L330 40 L330 130 L390 130 L390 190 Z" fill="rgba(0,0,0,0)" stroke="#1c1f24" strokeWidth={5} strokeLinejoin="round" />
-            </svg>
-            <span className="trace-layer-tag">成品 · 30 段 clip-path 揭示</span>
-          </div>
-          <div ref={barRef} className="trace-demo-layers-bar" />
         </div>
         <div className="trace-tech-copy">
           <p>
             整段动画其实是<strong>三层画面在一条时间轴上接力</strong>：
             <em>草稿线</em>逐笔画出（0~3s）→ <em>草稿淡出、底稿浮现上墨</em>（2.8~4.4s）
-            → <em>成品画</em>分段揭示（4.1s 起）。滚轮即播放头，
+            → <em>成品画</em>分段揭示（4.1s 起）。这里的画面就是原作那三层——
+            草稿 45 组、上墨是成品的灰度版、成品 30 段拼合。滚轮即播放头，
             回滚则倒带，每一帧都可定格细看。
           </p>
           <pre className="trace-code">
