@@ -3335,10 +3335,13 @@ body.trace-page #root {
   min-height: 470px;
   justify-content: center;
 }
-/* 放开通用规则的 420px 宽度上限：线条随栏宽等比放大（约 544×207），
-   等比缩放保证 viewBox 内路径不被裁切，底部说明文字位置不变 */
+/* 放开通用规则的 420px 宽度上限（线条随栏宽等比放大，约 544×207），
+   并让 svg 盒子撑满框内可用区（约 544×404，与框体同高的主尺寸）：
+   默认 preserveAspectRatio="xMidYMid meet" 会把笔画等比居中绘制，
+   所以线条渲染尺寸与位置不变，只是元素盒不再短于框体 */
 .trace-demo-stroke .trace-demo-line-svg {
   max-width: none;
+  height: 100%;
 }
 .trace-tech-copy {
   font-size: 14.5px;
