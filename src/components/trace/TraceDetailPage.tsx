@@ -462,23 +462,27 @@ const snapDamp = useCallback(() => {
 }
 
 /**
- * 计算元素在视口中的"演示进度"（0~1）
+ * 计算元素在视口中的"演示进度"（0~1，保证演完时元素还在视口里）
  *
- * 功能：元素从视口底部 65% 高度处滚动到顶部时，进度从 0 线性到 1。
- * 用于原理小节 demo 的进入驱动（IntersectionObserver 的替代方案，可回退倒放）。
+ * 功能：元素顶边从视口 85% 高度处滚进来时 p=0，滚到"元素底边落在视口 72% 高度处"时 p=1。
+ *      终点用元素自身高度兜底 —— 元素越高越早演完，结局始终发生在元素仍完全可见的时候。
  *
  * 参数：
- *  - el {HTMLElement} 目标元素
- *  - startFrac {number} 起始参考高度（视口高度的比例），默认 0.65
+ *  - el {HTMLElement} 演示元素（传 demo 框本身，不要传整节）
  *
  * 返回值：number 0~1 的演示进度
+ *
+ * 注意事项：这里不能用"p=1 ⟺ 元素顶边滑到 -h"的写法（原来那版就是）：
+ *          对高 demo 它意味着演完时元素已经划出视口 —— 技法① 的框高 493，
+ *          按旧公式 p=1 时整节全在视口上方，等于"画完的那一刻没人看得见"。
  */
-function elProgress(el: HTMLElement, startFrac = 0.65): number {
+function elProgressInView(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
   const vh = window.innerHeight;
-  const start = vh * startFrac;
-  const p = (start - rect.top) / (start + rect.height);
-  return Math.max(0, Math.min(1, p));
+  const start = vh * 0.85;
+  const end = vh * 0.72 - rect.height;
+  const span = Math.max(1, start - end);
+  return Math.max(0, Math.min(1, (start - rect.top) / span));
 }
 
 /**
@@ -790,7 +794,7 @@ function ProcessStage({ n, zh, en, lead, facts, children }: {
  *      01 输入位图 → 02 矢量化描摹 → 03 分组成层 → 04 编舞时间轴 → 05 导出，
  *      幕末附一张「同一工具的现在」注脚，交代后来改掉/新增的部分。
  *
- *      演出分三处，全部由滚动驱动（复用页面既有的 elProgress + trace:scroll 广播）：
+ *      演出分三处，全部由滚动驱动（复用页面既有的 elProgressInView + trace:scroll 广播）：
  *      - 五段各自滚到 30% 时点亮序号与竖线
  *      - 卡 03 的 30 格层网格随进度逐格点亮（= 层的登场顺序）
  *      - 卡 04 的甘特播放头沿 14.65s 时间轴移动并刷新读数
@@ -975,7 +979,7 @@ function ProcessAct() {
     if (!stages.length) return;
 
     const ps: number[] = [];
-    for (const el of stages) ps.push(elProgress(el, 0.8));
+    for (const el of stages) ps.push(elProgressInView(el));
 
     for (let i = 0; i < stages.length; i++) {
       const on = ps[i] > 0.3 ? 1 : 0;
@@ -1258,29 +1262,63 @@ function ProcessAct() {
   );
 }
 
+/** 技法①机制条几何（viewBox 420×58）：拉直后的"路径"起点与长度 */
+const DASH_X0 = 14;
+const DASH_LEN = 392;
+
 /**
  * 技法①小节 — stroke-dashoffset 描边
  *
  * 功能：演示 SVG 线条描画原理：pathLength 归一化后 dasharray=1，
- * dashoffset 从 1 → 0 即"沿线描出"。左侧为随滚动的实况 demo，
- * 右侧为中文原理 + 核心代码。
+ * dashoffset 从 1 → 0 即"沿线描出"。左侧 demo 分上下两半：
+ * 上半是"结果"（曲线被一笔写出），下半是"为什么"（把同一条路径拉直，
+ * 看 dasharray=1 产生的实线段 / 空白段，以及 offset 推进时边界扫过），
+ * 框内右下角给出实时参数读数。右侧为中文原理 + 核心代码。
  *
  * 参数：无
  * 返回值：React.ReactElement
  */
 function TechDashoffset() {
   const sectionRef = useRef<HTMLDivElement>(null);
+  // 演示框本身：进度按它算，保证"画完"发生在框还完全可见的时候
+  const demoRef = useRef<HTMLDivElement>(null);
   const pathRef = useRef<SVGPathElement>(null);
+  // 机制条：实线段右端 + 边界游标（同一进度驱动的两次属性写入）
+  const solidRef = useRef<SVGLineElement>(null);
+  const edgeRef = useRef<SVGLineElement>(null);
+  // 框内右下角读数
+  const meterRef = useRef<HTMLSpanElement>(null);
 
   /**
-   * 滚动驱动描边：把演示进度映射为 strokeDashoffset（1→0）
+   * 滚动驱动描边 + 机制条 + 读数
+   *
+   * 功能：把本节演示进度 p 映射成三处同步显示：
+   *  1. 曲线上的 strokeDashoffset（1 → 0）：实线段沿路径前进，线被写出来
+   *  2. 机制条的实线段右端与边界游标：把路径拉直后，边界正好扫过 (1 - offset) 位置
+   *  3. 右下角读数：写出当前 stroke-dashoffset / dasharray 的值
+   *
+   * 参数：无
+   * 返回值：void
+   *
+   * 注意事项：机制条的坐标用它自己的 viewBox（420×58），
+   *          实线段从 DASH_X0 起、长度按 p 线性增长
    */
   const drive = useCallback(() => {
-    const sec = sectionRef.current;
+    const demo = demoRef.current;
     const path = pathRef.current;
-    if (!sec || !path) return;
-    const p = elProgress(sec, 0.7);
-    path.style.strokeDashoffset = String(1 - p);
+    if (!demo || !path) return;
+    const p = elProgressInView(demo);
+    const offset = 1 - p;
+    path.style.strokeDashoffset = String(offset);
+    const end = (DASH_X0 + p * DASH_LEN).toFixed(1);
+    if (solidRef.current) solidRef.current.setAttribute('x2', end);
+    if (edgeRef.current) {
+      edgeRef.current.setAttribute('x1', end);
+      edgeRef.current.setAttribute('x2', end);
+    }
+    if (meterRef.current) {
+      meterRef.current.textContent = `stroke-dashoffset: ${offset.toFixed(2)} · dasharray: 1`;
+    }
   }, []);
 
   useTraceScroll(drive);
@@ -1295,21 +1333,52 @@ function TechDashoffset() {
         <span className="trace-tech-tag">SKETCH PHASE</span>
       </div>
       <div className="trace-tech-body">
-        <div className="trace-tech-demo trace-demo-stroke">
-          <svg viewBox="0 0 420 160" className="trace-demo-line-svg">
+        <div ref={demoRef} className="trace-tech-demo trace-demo-stroke">
+          {/* 上半：结果 —— 曲线被一笔写出（滚动 = 画笔）。
+              viewBox 紧贴笔画自身的外接框（约 276×192，比例 1.44），
+              这样"meet"缩放下笔画能同时吃满上半区的高与大部分宽 */}
+          <svg viewBox="52 12 276 192" className="trace-demo-line-svg" aria-hidden="true">
             <path
               ref={pathRef}
               pathLength={1}
-              d="M12 118 C 70 20, 350 20, 408 118 S 220 150, 210 82 M 210 82 C 204 30, 60 60, 40 40"
+              d="M64 196 C 60 116, 100 40, 184 30 C 268 20, 344 66, 316 130 C 292 184, 214 196, 158 150"
               fill="none"
               stroke="#2fbf9a"
-              strokeWidth={7}
+              strokeWidth={5.5}
               strokeLinecap="round"
               strokeLinejoin="round"
               style={{ strokeDasharray: 1, strokeDashoffset: 1 }}
             />
           </svg>
-          <span className="trace-demo-note">随滚动 · 线条一笔写出</span>
+          {/* 下半：机制 —— 同一条路径拉直，"实线段 + 空白段"与 offset 边界 */}
+          <div className="trace-dash-strip">
+            <svg viewBox="0 0 420 58" className="trace-dash-strip-svg" aria-hidden="true">
+              <text x={DASH_X0} y="12" className="trace-dash-lb">
+                把路径拉直：实线段 = 还没画到的部分
+              </text>
+              {/* 整条轨道 = 路径全长（空白段） */}
+              <line
+                x1={DASH_X0}
+                y1="30"
+                x2={DASH_X0 + DASH_LEN}
+                y2="30"
+                stroke="rgba(155,190,180,.22)"
+                strokeWidth={8}
+              />
+              {/* 实线段：右端随 offset 推进 */}
+              <line ref={solidRef} x1={DASH_X0} y1="30" x2={DASH_X0} y2="30" stroke="#2fbf9a" strokeWidth={8} />
+              {/* 边界游标 */}
+              <line ref={edgeRef} x1={DASH_X0} y1="17" x2={DASH_X0} y2="43" stroke="#7dfade" strokeWidth={1} />
+              <text x={DASH_X0} y="54" className="trace-dash-lb">0 起点</text>
+              <text x={DASH_X0 + DASH_LEN} y="54" textAnchor="end" className="trace-dash-lb">1 终点</text>
+            </svg>
+          </div>
+          <div className="trace-demo-meter">
+            <span>随滚动 · 线条一笔写出</span>
+            <span ref={meterRef} className="trace-demo-meter-v">
+              stroke-dashoffset: 1.00 · dasharray: 1
+            </span>
+          </div>
         </div>
         <div className="trace-tech-copy">
           <p>
@@ -1360,10 +1429,14 @@ stroke-dashoffset: 1;
  */
 function TechLayers() {
   const sectionRef = useRef<HTMLDivElement>(null);
+  // 演示框本身：进度按它算（成品要在框还完全可见时就位）
+  const demoRef = useRef<HTMLDivElement>(null);
   const sketchLayerRef = useRef<HTMLDivElement>(null);
   const inkLayerRef = useRef<HTMLDivElement>(null);
   const finalLayerRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  // 框内右下角读数（三层实时不透明度）
+  const meterRef = useRef<HTMLSpanElement>(null);
   // 三层真作品位图（异步就绪；未就绪时先显示空白画纸）
   const [layers, setLayers] = useState<TraceLayerBitmaps | null>(null);
 
@@ -1395,22 +1468,23 @@ function TechLayers() {
    * 注意事项：只写 opacity 与 data-phase，不触碰位图与 SVG，滚动帧内无重绘
    */
   const drive = useCallback(() => {
-    const sec = sectionRef.current;
-    if (!sec) return;
-    const p = elProgress(sec, 0.7);
+    const demo = demoRef.current;
+    if (!demo) return;
+    const p = elProgressInView(demo);
     const ramp = (from: number, to: number) => Math.max(0, Math.min(1, (p - from) / (to - from)));
-    if (sketchLayerRef.current) {
-      sketchLayerRef.current.style.opacity = String(1 - ramp(0.44, 0.56));
-    }
-    if (inkLayerRef.current) {
-      inkLayerRef.current.style.opacity = String(ramp(0.3, 0.44) * (1 - ramp(0.72, 0.86)));
-    }
-    if (finalLayerRef.current) {
-      finalLayerRef.current.style.opacity = String(ramp(0.58, 0.72));
-    }
+    const sketch = 1 - ramp(0.44, 0.56);
+    const ink = ramp(0.3, 0.44) * (1 - ramp(0.72, 0.86));
+    const art = ramp(0.58, 0.72);
+    if (sketchLayerRef.current) sketchLayerRef.current.style.opacity = String(sketch);
+    if (inkLayerRef.current) inkLayerRef.current.style.opacity = String(ink);
+    if (finalLayerRef.current) finalLayerRef.current.style.opacity = String(art);
     if (barRef.current) {
       // 阶段切换取交接窗口的中点：入画层过半时才算"进入该阶段"
       barRef.current.dataset.phase = p < 0.37 ? '0' : p < 0.65 ? '1' : '2';
+    }
+    // 读数：三层的实时不透明度 —— 数字上就能看出"任一时刻总有一层是 1.00"
+    if (meterRef.current) {
+      meterRef.current.textContent = `草稿 ${sketch.toFixed(2)} · 墨线 ${ink.toFixed(2)} · 成品 ${art.toFixed(2)}`;
     }
   }, []);
 
@@ -1426,7 +1500,7 @@ function TechLayers() {
         <span className="trace-tech-tag">FADE PHASE</span>
       </div>
       <div className="trace-tech-body">
-        <div className="trace-tech-demo trace-demo-stack">
+        <div ref={demoRef} className="trace-tech-demo trace-demo-stack">
           {/* 画纸 + 三层真作品位图：草稿（45 组描线）→ 墨线（灰度成品）→ 成品（30 段拼合） */}
           <div className="trace-demo-paper">
             <div ref={sketchLayerRef} className="trace-layer" style={{ opacity: 1 }}>
@@ -1438,6 +1512,13 @@ function TechLayers() {
             <div ref={finalLayerRef} className="trace-layer" style={{ opacity: 0 }}>
               {layers && <img src={layers.art} alt="" draggable={false} />}
             </div>
+          </div>
+          {/* 读数：三层实时不透明度（数字上验证"任一时刻总有一层是 1.00"） */}
+          <div className="trace-demo-meter trace-demo-meter--stack">
+            <span>三层快速交接（滚动驱动）</span>
+            <span ref={meterRef} className="trace-demo-meter-v">
+              草稿 1.00 · 墨线 0.00 · 成品 0.00
+            </span>
           </div>
           {/* 时间轴条：三段色标（草稿 / 墨线 / 成品），当前阶段随进度高亮 */}
           <div ref={barRef} className="trace-demo-layers-bar" data-phase="0">
@@ -1518,6 +1599,10 @@ function TechClipPath() {
   // 本节是否在视口内（IntersectionObserver 标记：绝不能每帧 getBoundingClientRect——
   // 那会强制整页布局，这一页有近 6000 条 SVG path，帧率会被拖到个位数）
   const visibleRef = useRef(true);
+  // 框内右下角读数（第 i 段 / 方向 / 虚拟时间）
+  const meterRef = useRef<HTMLSpanElement>(null);
+  // 上一帧写过的读数：只有变化才落 DOM（值每 300ms 才变一次）
+  const meterLabelRef = useRef('');
 
   /**
    * 视口可见性订阅：本节离开视口时暂停循环推进，回到视口内自动接着播
@@ -1580,9 +1665,15 @@ function TechClipPath() {
                 (a.effect as KeyframeEffect | null)?.target instanceof Element &&
                 host.contains((a.effect as KeyframeEffect).target as Element)
             );
-          if (anims.length > 0) {
+          // 只保留 30 段 .trace-pg 的动画：原作 CSS 里还有一条挂在 #trace-art 上的
+          // settle（整体色彩沉降），它不是"段"——收进来会让段号与总数都算错
+          const segs = anims.filter(a => {
+            const el = (a.effect as KeyframeEffect | null)?.target;
+            return el instanceof Element && el.classList.contains('trace-pg');
+          });
+          if (segs.length > 0) {
             // 统一暂停并锁到揭示起点；顺带缓存各段延迟，供分发时判断窗口
-            animsRef.current = anims.map(a => {
+            animsRef.current = segs.map(a => {
               a.pause();
               a.currentTime = REVEAL_START_MS;
               const timing = a.effect?.getTiming?.();
@@ -1681,6 +1772,26 @@ function TechClipPath() {
           }
         }
         applyT(st.t);
+        // 读数：正在揭示的是第几段、什么方向、虚拟时间走到哪（每 300ms 才变一次）
+        const list = animsRef.current;
+        if (meterRef.current && list.length) {
+          let label: string;
+          if (st.phase === 'hold') {
+            label = `${list.length} / ${list.length} 段拼合完成 · 停留 · ${(T_REVEAL_END / 1000).toFixed(2)}s`;
+          } else if (st.phase === 'rewind') {
+            label = `回卷 → 重播 · ${(st.t / 1000).toFixed(2)}s`;
+          } else {
+            // 第 k 段的延迟是 4.1s + k×0.3s，所以按 300ms 折算当前段号
+            const k = Math.max(0, Math.min(list.length - 1, Math.floor((st.t - REVEAL_START_MS) / (PAINT_STEP * 1000))));
+            const target = (list[k].anim.effect as KeyframeEffect | null)?.target ?? null;
+            const dir = DIR_META.find(m => target?.classList.contains(m.cls));
+            label = `第 ${k + 1} / ${list.length} 段 · ${dir ? dir.zh : '揭示'} · ${(st.t / 1000).toFixed(2)}s`;
+          }
+          if (meterLabelRef.current !== label) {
+            meterLabelRef.current = label;
+            meterRef.current.textContent = label;
+          }
+        }
       }
       raf = requestAnimationFrame(frame);
     };
@@ -1710,7 +1821,10 @@ function TechClipPath() {
               <span>dab · 点染</span>
             </div>
           </div>
-          <span className="trace-demo-note">30 段 · 按 --i 顺序逐段接力</span>
+          <div className="trace-demo-meter">
+            <span>30 段 · 按 --i 顺序接力（自动循环）</span>
+            <span ref={meterRef} className="trace-demo-meter-v">等待起笔</span>
+          </div>
         </div>
         <div className="trace-tech-copy">
           <p>

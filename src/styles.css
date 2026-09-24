@@ -3730,26 +3730,65 @@ a.trace-proc-file:hover {
   max-width: 420px;
   height: auto;
 }
-.trace-demo-note {
+/* 框内底部状态行：左＝说明文案，右＝机制读数（三节统一口径：mono 小字 + 青色数值）
+   技法一/三用它替掉原来的单行 note，技法二压在时间轴条上方 */
+.trace-demo-meter {
   position: absolute;
+  left: 18px;
+  right: 18px;
   bottom: 12px;
-  font-size: 11px;
-  letter-spacing: 0.14em;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
   color: #56766c;
 }
-/* 技法①：描边 demo —— 框体加高（min-height 470px），线条在框内垂直居中，
-   把原先堆在框底的空白（框下到「技法二」之间那段空行程）转成线条的可用画布 */
+.trace-demo-meter-v {
+  color: #7dfade;
+  white-space: nowrap;
+}
+.trace-demo-meter--stack {
+  left: 26px;
+  right: 26px;
+  bottom: 46px;
+}
+/* 技法①：描边 demo —— 上下两半：上半是"结果"（曲线被一笔写出），
+   下半是"为什么"（把路径拉直看 dasharray=1 的实线段 / 空白段）。
+   空置高度由这两块内容一起吃掉，不再靠"居中留白"撑框 */
 .trace-demo-stroke {
   min-height: 470px;
-  justify-content: center;
+  padding: 20px 18px 44px;
+  justify-content: flex-start;
 }
-/* 放开通用规则的 420px 宽度上限（线条随栏宽等比放大，约 544×207），
-   并让 svg 盒子撑满框内可用区（约 544×404，与框体同高的主尺寸）：
-   默认 preserveAspectRatio="xMidYMid meet" 会把笔画等比居中绘制，
-   所以线条渲染尺寸与位置不变，只是元素盒不再短于框体 */
+/* 放开通用规则的 420px 宽度上限：曲线随栏宽放大并吃满上半区，
+   再用 max-height 收住（否则框会随曲线比例一路长高，与技法②③ 的节奏脱开） */
 .trace-demo-stroke .trace-demo-line-svg {
   max-width: none;
-  height: 100%;
+  max-height: 330px;
+  width: 100%;
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 机制条：与上半区用一条细线分隔 */
+.trace-dash-strip {
+  width: 100%;
+  padding-top: 12px;
+  border-top: 1px solid rgba(94, 234, 200, 0.14);
+}
+.trace-dash-strip-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.trace-dash-lb {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  fill: #6b7a74;
 }
 .trace-tech-copy {
   font-size: 14.5px;
@@ -3792,7 +3831,7 @@ a.trace-proc-file:hover {
 
 /* 技法②：真作品三层叠放 demo（草稿 / 墨线 / 成品，位图由原作素材栅格化而来） */
 .trace-demo-stack {
-  padding: 18px 18px 58px;
+  padding: 18px 18px 80px;
 }
 /* 画纸：与成品图同比例（1600×1095），白底 + 投影。
    三层位图都满铺在它上面，且位图自带白纸 —— 纸面始终是实的，不会透出深色框底 */
@@ -4094,6 +4133,12 @@ a.trace-proc-file:hover {
   .trace-demo-layers-bar span {
     font-size: 9px;
     letter-spacing: 0.04em;
+  }
+  /* 窄屏：底部状态行的读数允许换行，避免左右两段文案挤在一起 */
+  .trace-demo-meter {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 9.5px;
   }
   /* 制作流程：还原为单列堆叠，去掉流水线竖线，层网格降到 3 列 */
   .trace-proc-head .trace-kicker,
