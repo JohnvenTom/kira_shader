@@ -357,7 +357,7 @@ const snapDamp = useCallback(() => {
           - 主播放区与技法③画布（.trace-art-layer）都把动画锁在 paused：
             动画自创建即静止，进度完全由 JS 的 currentTime 驱动
             （杜绝"自动播完停在成品"的时序缺陷） */}
-      <style>{`${TRACE_ANIM_CSS}\n.trace-frame{width:min(760px,90vw)}\n.trace-stage-inner.trace-playing *{animation-play-state:paused!important}\n.trace-art-layer.trace-playing *{animation-play-state:paused!important}\n`}</style>
+      <style>{`${TRACE_ANIM_CSS}\n.trace-frame{width:min(760px,90vw)}\n.trace-stage-inner.trace-playing *{animation-play-state:paused!important}\n.trace-art-layer.trace-playing *{animation-play-state:paused!important}\n.trace-mini-art.trace-playing *{animation-play-state:paused!important}\n`}</style>
 
       {/* === 第一幕：首屏 === */}
       <section className="trace-act trace-act--hero">
@@ -1853,37 +1853,52 @@ function TechClipPath() {
 }
 
 /**
- * 代码对照区 — 核心逻辑总览（右侧五行桥接 + 左侧可接管的示例播放器）
+ * 时间（s）→ 迷你时间轴带的百分比位置
+ *
+ * 参数：
+ *  - t {number} 时间（秒，0~14.65）
+ * 返回值：string CSS 百分比（如 "28.000%"）
+ */
+function miniPct(t: number): string {
+  return `${((t / ACT_TOTAL) * 100).toFixed(3)}%`;
+}
+
+/**
+ * 代码对照区 — 核心逻辑总览（右侧五行桥接 + 左侧全真的示例播放器）
  *
  * 功能：把滚动驱动的最小实现（本页用的 WAAPI 接管）以代码画廊形式展示，关键行高亮；
- *      左侧配一个"同款桥接"的迷你播放器做对照，两栏同步走同一个虚拟时间 t：
- *      - 默认自动循环：沿 14.65s 真时间轴演一遍（草稿 → 上墨 → 逐段拼合 → 定格 → 回卷）
- *      - 按住滑块即接管成手动推拉（可定格看 animation-delay 语义、可倒推看"回滚即倒带"），
- *        松手恢复自动
- *      - 画面用技法②已栅格化并缓存的三张真作品位图（草稿 / 墨线 / 成品），
- *        右侧竖排时间轴带的 30 格用技法③注入的 DOM 读出的**真实方向序列**着色
+ *      左侧配一个"同款桥接"的**全真**示例播放器做对照，两栏同步走同一个虚拟时间 t：
+ *      - 舞台里注入的是整份 trace-body.svg（45 组逐笔草稿 + 30 段 wipe/dab 定向揭示），
+ *        与幕 2 同一份资源、同一套 keyframes —— 不是三阶段近似
+ *      - 默认自动循环：14.65s 演完 → 停留 → 快速回卷 → 再来；按住滑块即接管成手动推拉
+ *      - 下方横向时间轴带：45 格打稿 + 上墨段 + 30 格上色（真实方向色）+ 定格段 + 播放头
  *
  * 参数：无
  * 返回值：React.ReactElement
  *
  * 注意事项：
- *  - 迷你舞台用与右边代码**同一套机制**驱动：先挂 class 让 CSS 动画自创建，
- *    再用 WAAPI 全部 pause、逐帧写 currentTime = t —— 所以右边那段代码在左边是活的
- *  - rAF 循环只在模块进入视口时推进；离屏或处于接管状态时不动
- *  - 时间轴带的 30 格位置直接由 PAINT_T0 + i × PAINT_STEP 算出，与制作流程 04 的甘特同源
+ *  - 4.8MB 的 SVG 用 requestIdleCallback 注入（不拖首屏、不抢滚动）；
+ *    注入时把 id 改名，避免与页面上另外两份副本撞 id
+ *  - 动画数量约 5.9k 条（每条草稿路径一条），所以 currentTime 写入按
+ *    clamp(t, 延迟, 延迟+时长) 只写"状态真的变了"的那些，并带每帧写入上限
+ *  - 帧循环只在模块进入视口时推进；离屏或处于接管状态时不动
  */
 function CodeGallery() {
   const sectionRef = useRef<HTMLElement>(null);
   // 迷你播放器的根（WAAPI 只抓它内部的动画）
   const rootRef = useRef<HTMLDivElement>(null);
+  // 真动画层（整份 trace-body.svg）的注入容器
+  const artHostRef = useRef<HTMLDivElement>(null);
   // 滑块（既是手动输入，也是自动播放时的进度显示）
   const rangeRef = useRef<HTMLInputElement>(null);
   // 读数：p = 0.37 → currentTime = 5420ms
   const readoutRef = useRef<HTMLSpanElement>(null);
   // 时间轴带上的播放头
   const headRef = useRef<HTMLSpanElement>(null);
-  // 已接管的 CSSAnimation（迷你舞台内全部）
-  const animsRef = useRef<CSSAnimation[]>([]);
+  // 已接管的 CSSAnimation（含各自的延迟与时长，供窗口判断；last 记录上次写入值）
+  const animsRef = useRef<{ anim: CSSAnimation; delay: number; frag: number; last: number }[]>([]);
+  // 还要扫描多少帧来接管"新出现的"动画（挂载后与 SVG 注入后各扫一阵，不做长期每帧扫描）
+  const pendingCaptureRef = useRef(40);
   // 循环状态机：t=虚拟时间，phase=阶段，left=停留剩余，last=上一帧，mode=自动/被接管
   const miniRef = useRef({
     t: 0,
@@ -1893,51 +1908,58 @@ function CodeGallery() {
     mode: 'auto' as 'auto' | 'drag',
     visible: false,
   });
-  // 真作品位图（技法②已缓存过，这里直接复用，不重复栅格化）
-  const [layers, setLayers] = useState<TraceLayerBitmaps | null>(null);
-  // 30 段真实方向序列（从技法③注入的 DOM 读；读不到就用兜底循环）
+  // 真 SVG 是否已注入（未就绪时舞台留白 + 提示）
+  const [ready, setReady] = useState(false);
+  // 30 段真实方向序列（从自己注入的 DOM 里读出，给下方时间轴带着色）
   const [dirs, setDirs] = useState<string[] | null>(null);
 
-  /** 复用技法②的位图缓存（首次进入本页时可能与技法②同时发起，promise 会合并） */
-  useEffect(() => {
-    let alive = true;
-    loadTraceLayers()
-      .then(res => {
-        if (alive) setLayers(res);
-      })
-      .catch(err => console.error('[trace] 示例播放器位图加载失败', err));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
   /**
-   * 读 30 段真实方向序列
+   * 空闲注入整份原作 SVG（45 组草稿 + 30 段成品，约 4.8MB）
    *
-   * 功能：技法③的画布会在挂载后注入真 #trace-art，本组件直接从那份 DOM 读每段的
-   *      方向 class（零额外请求），让示例时间轴带用真值着色；读不到就退回四色循环。
+   * 功能：把 trace-body.svg 原样注入迷你舞台 —— 与幕 2 同一份资源、同一套 keyframes，
+   *      所以这里的 45 组逐笔描线与 30 段 wipe/dab 定向揭示都是真动画，不是三阶段近似；
+   *      注入时把 id="trace-art" / href="#trace-art" 改名，避免与页面上另外两份副本撞 id。
    *
    * 参数：无
-   * 返回值：无（卸载时停止重试链）
+   * 返回值：无（异步：完成后置 ready，并读出 30 段的真实方向）
+   *
+   * 异常：请求或解析失败时静默降级（舞台留白，下方时间轴带照常演）
+   *
+   * 注意事项：用 requestIdleCallback 注入，不拖首屏也不与滚动抢主线程（无该 API 时退回延时）
    */
   useEffect(() => {
     let stopped = false;
-    let attempt = 0;
-    const tryRead = () => {
+    const host = artHostRef.current;
+    if (!host) return;
+    const inject = () => {
       if (stopped) return;
-      const groups = document.querySelectorAll('.trace-art-layer g.trace-pg');
-      if (groups.length > 0) {
-        setDirs(
-          Array.from(groups).map(
-            g => (DIR_META.find(m => g.classList.contains(m.cls)) ?? DIR_META[0]).key
-          )
-        );
-        return;
-      }
-      attempt += 1;
-      if (attempt < 120) requestAnimationFrame(tryRead);
+      fetch(ART_SVG_URL)
+        .then(r => r.text())
+        .then(text => {
+          if (stopped) return;
+          host.innerHTML = text
+            .replace(/id="trace-art"/g, 'id="trace-art-mini"')
+            .replace(/href="#trace-art"/g, 'href="#trace-art-mini"');
+          const groups = host.querySelectorAll('g.trace-pg');
+          setDirs(
+            Array.from(groups).map(
+              g => (DIR_META.find(m => g.classList.contains(m.cls)) ?? DIR_META[0]).key
+            )
+          );
+          setReady(true);
+          // 注入后多扫几帧，把新注册的 5.9k 条动画一起接上
+          pendingCaptureRef.current = Math.max(pendingCaptureRef.current, 40);
+        })
+        .catch(err => console.error('[trace] 示例播放器注入失败', err));
     };
-    requestAnimationFrame(tryRead);
+    const idleWin = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    };
+    if (typeof idleWin.requestIdleCallback === 'function') {
+      idleWin.requestIdleCallback(inject, { timeout: 4000 });
+    } else {
+      window.setTimeout(inject, 1200);
+    }
     return () => {
       stopped = true;
     };
@@ -1956,7 +1978,21 @@ function CodeGallery() {
    * 注意事项：接管状态下不回写滑块 value（否则会和用户的手抢位置）
    */
   const apply = useCallback((t: number) => {
-    for (const a of animsRef.current) a.currentTime = t;
+    const list = animsRef.current;
+    // 每帧最多写这么多条：拖动/回卷造成的大跳变会让大量动画需要"补写状态"，
+    // 分摊到相邻几帧完成，避免单帧长任务
+    let budget = 3000;
+    for (const item of list) {
+      // 一条动画的观感只取决于 clamp(t, 延迟, 延迟+时长)：
+      // 未开始 → 写延迟点（停在 0% 关键帧），已结束 → 写收尾点（停在 100%），
+      // 中间 → 就写 t。这样跳变后不会留下"该结束却停在半途"的残影。
+      const target =
+        t <= item.delay ? item.delay : t >= item.delay + item.frag ? item.delay + item.frag : t;
+      if (item.last === target) continue;
+      if (budget-- <= 0) break;
+      item.last = target;
+      item.anim.currentTime = target;
+    }
     const p = t / ACT_MS;
     if (readoutRef.current) {
       readoutRef.current.textContent = `p = ${p.toFixed(2)} → currentTime = ${Math.round(t)}ms`;
@@ -1965,7 +2001,7 @@ function CodeGallery() {
       if (miniRef.current.mode === 'auto') rangeRef.current.value = String(Math.round(t));
       rangeRef.current.style.setProperty('--p', `${(p * 100).toFixed(1)}%`);
     }
-    if (headRef.current) headRef.current.style.top = `${(p * 100).toFixed(2)}%`;
+    if (headRef.current) headRef.current.style.left = `${(p * 100).toFixed(2)}%`;
   }, []);
 
   /** 视口可见性：离屏时不推进时间（与页面其它 demo 同一套省电约定） */
@@ -1995,21 +2031,28 @@ function CodeGallery() {
   const captureMini = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
-    const anims = document
-      .getAnimations()
-      .filter(
-        (a): a is CSSAnimation =>
-          a instanceof CSSAnimation &&
-          (a.effect as KeyframeEffect | null)?.target instanceof Element &&
-          root.contains((a.effect as KeyframeEffect).target as Element)
-      );
-    if (!anims.length) return;
+    const known = new Set(animsRef.current.map(i => i.anim));
     const st = miniRef.current;
-    anims.forEach(a => {
+    let added = 0;
+    for (const a of document.getAnimations()) {
+      if (!(a instanceof CSSAnimation)) continue;
+      const target = (a.effect as KeyframeEffect | null)?.target;
+      if (!(target instanceof Element) || !root.contains(target)) continue;
+      if (known.has(a)) continue;
+      // 顺带把延迟与时长记下来（窗口判断与"跳变补写"都用它）
+      const timing = (a.effect as KeyframeEffect | null)?.getComputedTiming?.();
       a.pause();
       a.currentTime = st.t;
-    });
-    animsRef.current = anims;
+      animsRef.current.push({
+        anim: a,
+        delay: typeof timing?.delay === 'number' ? timing.delay : 0,
+        frag: typeof timing?.duration === 'number' ? timing.duration : 0,
+        last: Number.NaN,
+      });
+      added += 1;
+    }
+    // 这一轮有新增（通常是 4.8MB SVG 刚注入）就再多扫几帧，避免漏掉后注册的动画
+    if (added > 0) pendingCaptureRef.current = Math.max(pendingCaptureRef.current, 3);
   }, []);
 
   /**
@@ -2039,7 +2082,10 @@ function CodeGallery() {
       const now = performance.now();
       const dt = Math.min(50, Math.max(now - st.last, 1));
       st.last = now;
-      if (!animsRef.current.length) captureMini();
+      if (pendingCaptureRef.current > 0) {
+        pendingCaptureRef.current -= 1;
+        captureMini();
+      }
       if (animsRef.current.length && st.visible && st.mode === 'auto') {
         if (st.phase === 'play') {
           st.t += dt;
@@ -2103,39 +2149,38 @@ function CodeGallery() {
           <span ref={readoutRef} className="trace-mini-t">p = 0.00 → currentTime = 0ms</span>
         </div>
         <div className="trace-mini-body">
-          {/* 左栏：真作品位图三层，随 t 交叉淡入（草稿 → 墨线 → 成品） */}
+          {/* 舞台：整份原作 SVG（45 组逐笔草稿 + 30 段 wipe/dab 定向揭示），由下方同一套桥接驱动 */}
           <div className="trace-mini-stage">
-            <div className="trace-mini-layer trace-mini-layer--sketch">
-              {layers && <img src={layers.sketch} alt="" draggable={false} />}
-            </div>
-            <div className="trace-mini-layer trace-mini-layer--ink">
-              {layers && <img src={layers.ink} alt="" draggable={false} />}
-            </div>
-            <div className="trace-mini-layer trace-mini-layer--art">
-              {layers && <img src={layers.art} alt="" draggable={false} />}
-            </div>
-            {!layers && <span className="trace-mini-wait">加载原作位图…</span>}
+            <div ref={artHostRef} className="trace-mini-art trace-playing" />
+            {!ready && <span className="trace-mini-wait">正在解析原作 4.8MB SVG…</span>}
           </div>
-          {/* 右栏：竖排时间轴带（0 → 14.65s），30 格用真实方向色 */}
+          {/* 横向时间轴带：45 格打稿（.2s + i×.05s）+ 上墨段 + 30 格上色（4.1s + i×0.3s）+ 定格段 */}
           <div className="trace-mini-axis" aria-hidden="true">
-            <span
-              className="trace-mini-seg trace-mini-seg--sketch"
-              style={{ top: '0%', height: `${((TONE_AT / ACT_TOTAL) * 100).toFixed(2)}%` }}
-            />
+            {Array.from({ length: SKETCH_BATCHES }, (_, i) => (
+              <span
+                key={`s${i}`}
+                className="trace-mini-cell trace-mini-cell--sketch"
+                style={{
+                  left: miniPct(SKETCH_T0 + i * SKETCH_STEP),
+                  width: miniPct(SKETCH_FRAG),
+                  ['--i' as string]: i,
+                }}
+              />
+            ))}
             <span
               className="trace-mini-seg trace-mini-seg--ink"
               style={{
-                top: `${((TONE_AT / ACT_TOTAL) * 100).toFixed(2)}%`,
-                height: `${(((PAINT_T0 - TONE_AT) / ACT_TOTAL) * 100).toFixed(2)}%`,
+                left: miniPct(TONE_AT),
+                width: miniPct(PAINT_T0 - TONE_AT),
               }}
             />
             {Array.from({ length: ART_LAYERS }, (_, i) => (
               <span
-                key={i}
-                className={`trace-mini-cell d-${dirs ? dirs[i] : DIR_META[i % DIR_META.length].key}`}
+                key={`p${i}`}
+                className={`trace-mini-cell trace-mini-cell--art d-${dirs ? dirs[i] : DIR_META[i % DIR_META.length].key}`}
                 style={{
-                  top: `${(((PAINT_T0 + i * PAINT_STEP) / ACT_TOTAL) * 100).toFixed(2)}%`,
-                  height: `${((PAINT_FRAG / ACT_TOTAL) * 100).toFixed(2)}%`,
+                  left: miniPct(PAINT_T0 + i * PAINT_STEP),
+                  width: miniPct(PAINT_FRAG),
                   ['--i' as string]: i,
                 }}
               />
@@ -2143,8 +2188,8 @@ function CodeGallery() {
             <span
               className="trace-mini-seg trace-mini-seg--settle"
               style={{
-                top: `${((ACT_END / ACT_TOTAL) * 100).toFixed(2)}%`,
-                height: `${(((ACT_TOTAL - ACT_END) / ACT_TOTAL) * 100).toFixed(2)}%`,
+                left: miniPct(ACT_END),
+                width: miniPct(ACT_TOTAL - ACT_END),
               }}
             />
             <span ref={headRef} className="trace-mini-head" />
@@ -2173,12 +2218,13 @@ root.classList.add('trace-playing');
 
 /* 2. 抓取画布内全部 CSSAnimation，统一接管 */
 const anims = document.getAnimations()
-  .filter(a => a instanceof CSSAnimation && root.contains(a.effect.target));
+  .filter(a => a instanceof CSSAnimation
+    && root.contains(a.effect.target));
 anims.forEach(a => { a.pause(); a.currentTime = 0; });
 
 /* 3. 滚动进度 → 动画时间（含 animation-delay 语义） */
 const p = clamp(滚动距离 / 可滚距离, 0, 1);
-anims.forEach(a => a.currentTime = p * 14650);   // 14.65s = 整条时间轴`}
+anims.forEach(a => a.currentTime = p * 14650);   // 14.65s = 整条轴`}
       </pre>
     </section>
   );

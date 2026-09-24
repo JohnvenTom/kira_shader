@@ -3962,19 +3962,19 @@ a.trace-proc-file:hover {
   margin-bottom: 10vh;
 }
 .trace-code--big {
-  grid-column: 6 / 13;
+  grid-column: 7 / 13;
   margin-top: 20px;
-  font-size: 13.5px;
-  line-height: 1.9;
-  padding: 26px 30px;
+  font-size: 12.5px;
+  line-height: 1.95;
+  padding: 26px 24px;
 }
 
 /* ====================================================================
  * 第五幕 · 代码对照：左侧"同款桥接"示例播放器（自动循环 + 按住滑块接管）
- * 两栏同步走同一个虚拟时间 t：左栏画面（真作品位图三层）、右栏竖排时间轴带
+ * 舞台里是整份原作 SVG，下方横排时间轴带，两者同步走同一个虚拟时间 t
  * ==================================================================== */
 .trace-mini {
-  grid-column: 2 / 6;
+  grid-column: 2 / 7;
   margin-top: 20px;
   background: #101415;
   border: 1px solid rgba(94, 234, 200, 0.18);
@@ -3995,39 +3995,49 @@ a.trace-proc-file:hover {
   white-space: nowrap;
 }
 .trace-mini-body {
-  display: grid;
-  grid-template-columns: 1fr 66px;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 12px;
 }
-/* 左栏：舞台（白纸 + 三层位图，比例与成品图一致） */
+/* 舞台：白纸 + 整份原作 SVG（45 组草稿逐笔 + 30 段定向揭示），比例与成品图一致 */
 .trace-mini-stage {
   position: relative;
+  width: 100%;
   aspect-ratio: 1600 / 1095;
   background: #ffffff;
   overflow: hidden;
   contain: paint;
 }
-.trace-mini-layer {
+.trace-mini-art {
   position: absolute;
   inset: 0;
 }
-.trace-mini-layer img {
+.trace-mini-art svg {
   display: block;
   width: 100%;
   height: 100%;
-  user-select: none;
-  -webkit-user-drag: none;
 }
-/* 三层的初始态（t=0）：草稿满幅、墨线与成品未入场。
-   这里刻意用 forwards 而不是 both —— 多层动画叠加时 both 的 backwards 填充
-   会让后一条动画把先一条的起始态盖掉（原作也是这么处理的） */
-.trace-mini-layer--sketch {
-  opacity: 1;
+/* 时间轴带的 45 + 30 格：动画自创建即静止（与主播放区同一套防抢跑约定），
+   等 WAAPI 接管后完全由 currentTime 驱动 */
+.trace-mini-playing .trace-mini-cell--sketch,
+.trace-mini-playing .trace-mini-cell--art {
+  /* !important 必需：animation 简写会把 play-state 重置回 running */
+  animation-play-state: paused !important;
 }
-.trace-mini-layer--ink,
-.trace-mini-layer--art {
-  opacity: 0;
+/* 打稿 45 批：.2s + i×.05s、单笔 .7s（与舞台里的真动画同一组数字） */
+.trace-mini-playing .trace-mini-cell--sketch {
+  animation: mini-cell-fill 0.7s ease both;
+  animation-delay: calc(0.2s + var(--i) * 0.05s);
+}
+/* 上色 30 层：4.1s + i×0.3s、单层 .55s */
+.trace-mini-playing .trace-mini-cell--art {
+  animation: mini-cell-fill 0.55s cubic-bezier(0.45, 0.05, 0.25, 1) both;
+  animation-delay: calc(4.1s + var(--i) * 0.3s);
+}
+@keyframes mini-cell-fill {
+  from { opacity: 0.16; }
+  to { opacity: 1; }
 }
 .trace-mini-wait {
   position: absolute;
@@ -4040,44 +4050,10 @@ a.trace-proc-file:hover {
   letter-spacing: 0.14em;
   color: #7c8a84;
 }
-/* 三层的时间轴（与主播放区同一组真值：2.8s 调子 / 12.45s 收笔 / 4.1s 起逐段上色）
-   注意动画自创建即静止（animation-play-state: paused）—— 与主播放区同一套防抢跑约定：
-   接管（WAAPI 设 currentTime）之前，这几条动画不会自己先跑起来 */
-.trace-mini-playing .trace-mini-layer--sketch,
-.trace-mini-playing .trace-mini-layer--ink,
-.trace-mini-playing .trace-mini-layer--art,
-.trace-mini-playing .trace-mini-cell {
-  /* !important 必需：animation 简写会把 play-state 重置回 running */
-  animation-play-state: paused !important;
-}
-.trace-mini-playing .trace-mini-layer--sketch {
-  animation: mini-sk-out 1s ease both 2.8s;
-}
-.trace-mini-playing .trace-mini-layer--ink {
-  animation: mini-ink-in 0.8s ease-out 2.8s forwards, mini-ink-out 1.4s ease-in 12.45s forwards;
-}
-.trace-mini-playing .trace-mini-layer--art {
-  animation: mini-art-in 9.25s linear 4.1s both;
-}
-@keyframes mini-sk-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-@keyframes mini-ink-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes mini-ink-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-@keyframes mini-art-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-/* 右栏：竖排时间轴带（0 → 14.65s），30 格按真实方向色依次点亮 */
+/* 横向时间轴带（0 → 14.65s）：45 格打稿 + 上墨段 + 30 格上色 + 定格段 */
 .trace-mini-axis {
   position: relative;
+  height: 16px;
   background: rgba(255, 255, 255, 0.03);
   border-top: 1px solid rgba(94, 234, 200, 0.14);
   border-bottom: 1px solid rgba(94, 234, 200, 0.14);
@@ -4085,10 +4061,15 @@ a.trace-proc-file:hover {
 .trace-mini-seg,
 .trace-mini-cell {
   position: absolute;
-  left: 6px;
-  right: 6px;
+  top: 5px;
+  height: 6px;
 }
-.trace-mini-seg--sketch {
+.trace-mini-cell {
+  background: var(--dc, #7c8a84);
+  opacity: 0.16;
+}
+/* 打稿格用灰（与技法② 的草稿色同一支），上色格用各自的方向色 */
+.trace-mini-cell--sketch {
   background: #8b93a0;
 }
 .trace-mini-seg--ink {
@@ -4098,26 +4079,13 @@ a.trace-proc-file:hover {
   background: #2fbf9a;
   opacity: 0.5;
 }
-.trace-mini-cell {
-  background: var(--dc, #7c8a84);
-  opacity: 0.16;
-}
-/* 30 格各自按 4.1s + i×0.3s 点亮（与制作流程 04 的甘特同一组数字） */
-.trace-mini-playing .trace-mini-cell {
-  animation: mini-cell-fill 0.55s cubic-bezier(0.45, 0.05, 0.25, 1) both;
-  animation-delay: calc(4.1s + var(--i) * 0.3s);
-}
-@keyframes mini-cell-fill {
-  from { opacity: 0.16; }
-  to { opacity: 1; }
-}
-/* 时间轴带上的播放头 */
+/* 播放头：随 t 横移的竖线 */
 .trace-mini-head {
   position: absolute;
-  left: 0;
-  right: 0;
   top: 0;
-  height: 1px;
+  bottom: 0;
+  left: 0;
+  width: 1px;
   background: #7dfade;
 }
 /* 底部滑块：既是自动播放的进度显示，也是"按住接管"的输入 */
@@ -4375,9 +4343,6 @@ a.trace-proc-file:hover {
     grid-column: 1 / 13;
     margin-top: 0;
     margin-bottom: 22px;
-  }
-  .trace-mini-body {
-    grid-template-columns: 1fr 74px;
   }
   /* 窄屏：标题行改为上下两行，避免说明文案从词中间折行 */
   .trace-mini-bar {
