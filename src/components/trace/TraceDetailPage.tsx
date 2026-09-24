@@ -692,6 +692,9 @@ const PAINT_FRAG = 0.55;
 /** 定格与总时长（s）：末层收尾 13.35、整体 14.65（= 工具的 t.end / t.total） */
 const ACT_END = 13.35;
 const ACT_TOTAL = 14.65;
+/** 同一条总时长的毫秒写法：CSS 动画延迟与 WAAPI currentTime 都以毫秒计，
+ *  示例播放器（第五幕）的虚拟时间统一用它，避免秒/毫秒混用 */
+const ACT_MS = ACT_TOTAL * 1000;
 /** 调子淡入 / 上墨加深的时刻（s，工具的 t.tone / t.ink） */
 const TONE_AT = 2.8;
 const INK_AT = 3.6;
@@ -1850,17 +1853,241 @@ function TechClipPath() {
 }
 
 /**
- * 代码对照区 — 核心逻辑总览
+ * 代码对照区 — 核心逻辑总览（右侧五行桥接 + 左侧可接管的示例播放器）
  *
- * 功能：把滚动驱动的最小实现（本页用的 WAAPI 接管）以代码画廊形式展示，
- * 关键行高亮，帮助观众理解"滚动 ↔ 时间轴"的桥接只有五行。
+ * 功能：把滚动驱动的最小实现（本页用的 WAAPI 接管）以代码画廊形式展示，关键行高亮；
+ *      左侧配一个"同款桥接"的迷你播放器做对照，两栏同步走同一个虚拟时间 t：
+ *      - 默认自动循环：沿 14.65s 真时间轴演一遍（草稿 → 上墨 → 逐段拼合 → 定格 → 回卷）
+ *      - 按住滑块即接管成手动推拉（可定格看 animation-delay 语义、可倒推看"回滚即倒带"），
+ *        松手恢复自动
+ *      - 画面用技法②已栅格化并缓存的三张真作品位图（草稿 / 墨线 / 成品），
+ *        右侧竖排时间轴带的 30 格用技法③注入的 DOM 读出的**真实方向序列**着色
  *
  * 参数：无
  * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 迷你舞台用与右边代码**同一套机制**驱动：先挂 class 让 CSS 动画自创建，
+ *    再用 WAAPI 全部 pause、逐帧写 currentTime = t —— 所以右边那段代码在左边是活的
+ *  - rAF 循环只在模块进入视口时推进；离屏或处于接管状态时不动
+ *  - 时间轴带的 30 格位置直接由 PAINT_T0 + i × PAINT_STEP 算出，与制作流程 04 的甘特同源
  */
 function CodeGallery() {
+  const sectionRef = useRef<HTMLElement>(null);
+  // 迷你播放器的根（WAAPI 只抓它内部的动画）
+  const rootRef = useRef<HTMLDivElement>(null);
+  // 滑块（既是手动输入，也是自动播放时的进度显示）
+  const rangeRef = useRef<HTMLInputElement>(null);
+  // 读数：p = 0.37 → currentTime = 5420ms
+  const readoutRef = useRef<HTMLSpanElement>(null);
+  // 时间轴带上的播放头
+  const headRef = useRef<HTMLSpanElement>(null);
+  // 已接管的 CSSAnimation（迷你舞台内全部）
+  const animsRef = useRef<CSSAnimation[]>([]);
+  // 循环状态机：t=虚拟时间，phase=阶段，left=停留剩余，last=上一帧，mode=自动/被接管
+  const miniRef = useRef({
+    t: 0,
+    phase: 'play' as 'play' | 'hold' | 'rewind',
+    left: 0,
+    last: 0,
+    mode: 'auto' as 'auto' | 'drag',
+    visible: false,
+  });
+  // 真作品位图（技法②已缓存过，这里直接复用，不重复栅格化）
+  const [layers, setLayers] = useState<TraceLayerBitmaps | null>(null);
+  // 30 段真实方向序列（从技法③注入的 DOM 读；读不到就用兜底循环）
+  const [dirs, setDirs] = useState<string[] | null>(null);
+
+  /** 复用技法②的位图缓存（首次进入本页时可能与技法②同时发起，promise 会合并） */
+  useEffect(() => {
+    let alive = true;
+    loadTraceLayers()
+      .then(res => {
+        if (alive) setLayers(res);
+      })
+      .catch(err => console.error('[trace] 示例播放器位图加载失败', err));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 读 30 段真实方向序列
+   *
+   * 功能：技法③的画布会在挂载后注入真 #trace-art，本组件直接从那份 DOM 读每段的
+   *      方向 class（零额外请求），让示例时间轴带用真值着色；读不到就退回四色循环。
+   *
+   * 参数：无
+   * 返回值：无（卸载时停止重试链）
+   */
+  useEffect(() => {
+    let stopped = false;
+    let attempt = 0;
+    const tryRead = () => {
+      if (stopped) return;
+      const groups = document.querySelectorAll('.trace-art-layer g.trace-pg');
+      if (groups.length > 0) {
+        setDirs(
+          Array.from(groups).map(
+            g => (DIR_META.find(m => g.classList.contains(m.cls)) ?? DIR_META[0]).key
+          )
+        );
+        return;
+      }
+      attempt += 1;
+      if (attempt < 120) requestAnimationFrame(tryRead);
+    };
+    requestAnimationFrame(tryRead);
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  /**
+   * 把虚拟时间分发到迷你舞台 + 读数 + 播放头
+   *
+   * 功能：这一帧要做的事，就是右边第 3 行代码：把 t 写进全部动画的 currentTime，
+   *      顺带把读数（p 与 ms）、滑块位置/填充、时间轴带播放头同步到同一个 t。
+   *
+   * 参数：
+   *  - t {number} 虚拟时间（ms，0~14650）
+   * 返回值：void
+   *
+   * 注意事项：接管状态下不回写滑块 value（否则会和用户的手抢位置）
+   */
+  const apply = useCallback((t: number) => {
+    for (const a of animsRef.current) a.currentTime = t;
+    const p = t / ACT_MS;
+    if (readoutRef.current) {
+      readoutRef.current.textContent = `p = ${p.toFixed(2)} → currentTime = ${Math.round(t)}ms`;
+    }
+    if (rangeRef.current) {
+      if (miniRef.current.mode === 'auto') rangeRef.current.value = String(Math.round(t));
+      rangeRef.current.style.setProperty('--p', `${(p * 100).toFixed(1)}%`);
+    }
+    if (headRef.current) headRef.current.style.top = `${(p * 100).toFixed(2)}%`;
+  }, []);
+
+  /** 视口可见性：离屏时不推进时间（与页面其它 demo 同一套省电约定） */
+  useEffect(() => {
+    const sec = sectionRef.current;
+    if (!sec) return;
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) miniRef.current.visible = e.isIntersecting;
+    });
+    io.observe(sec);
+    return () => io.disconnect();
+  }, []);
+
+  /**
+   * 接管迷你舞台内的全部 CSS 动画（幂等，可自愈）
+   *
+   * 功能：抓取该容器内的 CSSAnimation，统一 pause 并把 currentTime 锁到当前虚拟时间，
+   *      之后完全由循环/滑块驱动。
+   *
+   * 参数：无
+   * 返回值：void
+   *
+   * 注意事项：CSS 层已把 mini 动画置为 animation-play-state: paused（自创建即静止），
+   *          所以即使接管晚了几帧也不会"抢跑"；放在帧循环里反复调用是为了自愈
+   *          （首次样式重算、HMR 重建动画等情况都能被下一次调用接上）
+   */
+  const captureMini = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const anims = document
+      .getAnimations()
+      .filter(
+        (a): a is CSSAnimation =>
+          a instanceof CSSAnimation &&
+          (a.effect as KeyframeEffect | null)?.target instanceof Element &&
+          root.contains((a.effect as KeyframeEffect).target as Element)
+      );
+    if (!anims.length) return;
+    const st = miniRef.current;
+    anims.forEach(a => {
+      a.pause();
+      a.currentTime = st.t;
+    });
+    animsRef.current = anims;
+  }, []);
+
+  /**
+   * 挂 class 让迷你舞台的 CSS 动画自创建（真正的接管在帧循环里由 captureMini 完成）
+   */
+  useEffect(() => {
+    rootRef.current?.classList.add('trace-mini-playing');
+  }, []);
+
+  /**
+   * 自动循环（不绑滚轮）：正向演完 14.65s → 停留 → 快速回卷 → 再来
+   *
+   * 功能：每一帧按 dt 推进虚拟时间并按阶段流转，再交给 apply 分发；
+   *      被滑块接管（mode = 'drag'）或模块离屏时这一帧不推进。
+   *      动画还没接管上时（首帧样式重算/重建）先尝试接管，接上再推进。
+   *
+   * 参数：无
+   * 返回值：无（卸载时取消帧循环）
+   *
+   * 注意事项：dt 上限 50ms，避免后台标签页切回时大步跳变
+   */
+  useEffect(() => {
+    let raf = 0;
+    const st = miniRef.current;
+    st.last = performance.now();
+    const frame = () => {
+      const now = performance.now();
+      const dt = Math.min(50, Math.max(now - st.last, 1));
+      st.last = now;
+      if (!animsRef.current.length) captureMini();
+      if (animsRef.current.length && st.visible && st.mode === 'auto') {
+        if (st.phase === 'play') {
+          st.t += dt;
+          if (st.t >= ACT_MS) {
+            st.t = ACT_MS;
+            st.phase = 'hold';
+            st.left = LOOP_HOLD_MS;
+          }
+        } else if (st.phase === 'hold') {
+          st.left -= dt;
+          if (st.left <= 0) st.phase = 'rewind';
+        } else {
+          st.t -= dt * (ACT_MS / LOOP_REWIND_MS);
+          if (st.t <= 0) {
+            st.t = 0;
+            st.phase = 'play';
+          }
+        }
+        apply(st.t);
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [apply, captureMini]);
+
+  /** 滑块按下即接管（暂停自动推进），拖动写 t；松手/失焦交还自动 */
+  const onRangeDown = useCallback(() => {
+    miniRef.current.mode = 'drag';
+  }, []);
+  const onRangeInput = useCallback(
+    (e: React.FormEvent<HTMLInputElement>) => {
+      const st = miniRef.current;
+      st.mode = 'drag';
+      st.t = Number(e.currentTarget.value);
+      apply(st.t);
+    },
+    [apply]
+  );
+  const onRangeRelease = useCallback(() => {
+    const st = miniRef.current;
+    st.mode = 'auto';
+    st.phase = 'play';
+    st.last = performance.now();
+  }, []);
+
   return (
-    <section className="trace-act trace-act--code">
+    <section ref={sectionRef} className="trace-act trace-act--code">
       <header className="trace-explain-header">
         <span className="trace-kicker">UNDER THE HOOD</span>
         <h2 className="trace-explain-title">滚动驱动 · 最小实现</h2>
@@ -1868,6 +2095,78 @@ function CodeGallery() {
           本页把 14.65 秒的 CSS 动画时间轴直接交给滚轮——桥接只有五行
         </p>
       </header>
+
+      {/* 示例：左侧播放器用的就是右边这几行桥接（自动循环，按住滑块可接管） */}
+      <div ref={rootRef} className="trace-mini">
+        <div className="trace-mini-bar">
+          <span>示例 · 拖动即接管</span>
+          <span ref={readoutRef} className="trace-mini-t">p = 0.00 → currentTime = 0ms</span>
+        </div>
+        <div className="trace-mini-body">
+          {/* 左栏：真作品位图三层，随 t 交叉淡入（草稿 → 墨线 → 成品） */}
+          <div className="trace-mini-stage">
+            <div className="trace-mini-layer trace-mini-layer--sketch">
+              {layers && <img src={layers.sketch} alt="" draggable={false} />}
+            </div>
+            <div className="trace-mini-layer trace-mini-layer--ink">
+              {layers && <img src={layers.ink} alt="" draggable={false} />}
+            </div>
+            <div className="trace-mini-layer trace-mini-layer--art">
+              {layers && <img src={layers.art} alt="" draggable={false} />}
+            </div>
+            {!layers && <span className="trace-mini-wait">加载原作位图…</span>}
+          </div>
+          {/* 右栏：竖排时间轴带（0 → 14.65s），30 格用真实方向色 */}
+          <div className="trace-mini-axis" aria-hidden="true">
+            <span
+              className="trace-mini-seg trace-mini-seg--sketch"
+              style={{ top: '0%', height: `${((TONE_AT / ACT_TOTAL) * 100).toFixed(2)}%` }}
+            />
+            <span
+              className="trace-mini-seg trace-mini-seg--ink"
+              style={{
+                top: `${((TONE_AT / ACT_TOTAL) * 100).toFixed(2)}%`,
+                height: `${(((PAINT_T0 - TONE_AT) / ACT_TOTAL) * 100).toFixed(2)}%`,
+              }}
+            />
+            {Array.from({ length: ART_LAYERS }, (_, i) => (
+              <span
+                key={i}
+                className={`trace-mini-cell d-${dirs ? dirs[i] : DIR_META[i % DIR_META.length].key}`}
+                style={{
+                  top: `${(((PAINT_T0 + i * PAINT_STEP) / ACT_TOTAL) * 100).toFixed(2)}%`,
+                  height: `${((PAINT_FRAG / ACT_TOTAL) * 100).toFixed(2)}%`,
+                  ['--i' as string]: i,
+                }}
+              />
+            ))}
+            <span
+              className="trace-mini-seg trace-mini-seg--settle"
+              style={{
+                top: `${((ACT_END / ACT_TOTAL) * 100).toFixed(2)}%`,
+                height: `${(((ACT_TOTAL - ACT_END) / ACT_TOTAL) * 100).toFixed(2)}%`,
+              }}
+            />
+            <span ref={headRef} className="trace-mini-head" />
+          </div>
+        </div>
+        <input
+          ref={rangeRef}
+          type="range"
+          className="trace-mini-range"
+          min={0}
+          max={ACT_MS}
+          step={10}
+          defaultValue={0}
+          aria-label="拖动接管时间轴（松手恢复自动循环）"
+          onPointerDown={onRangeDown}
+          onPointerUp={onRangeRelease}
+          onPointerCancel={onRangeRelease}
+          onInput={onRangeInput}
+          onBlur={onRangeRelease}
+        />
+      </div>
+
       <pre className="trace-code trace-code--big">
 {`/* 1. 挂 class 启动全部 CSS 动画（原作品 keyframes 一行未改） */
 root.classList.add('trace-playing');

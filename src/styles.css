@@ -3969,6 +3969,191 @@ a.trace-proc-file:hover {
   padding: 26px 30px;
 }
 
+/* ====================================================================
+ * 第五幕 · 代码对照：左侧"同款桥接"示例播放器（自动循环 + 按住滑块接管）
+ * 两栏同步走同一个虚拟时间 t：左栏画面（真作品位图三层）、右栏竖排时间轴带
+ * ==================================================================== */
+.trace-mini {
+  grid-column: 2 / 6;
+  margin-top: 20px;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+}
+.trace-mini-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #56766c;
+  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+}
+.trace-mini-t {
+  color: #7dfade;
+  white-space: nowrap;
+}
+.trace-mini-body {
+  display: grid;
+  grid-template-columns: 1fr 66px;
+  gap: 10px;
+  padding: 12px;
+}
+/* 左栏：舞台（白纸 + 三层位图，比例与成品图一致） */
+.trace-mini-stage {
+  position: relative;
+  aspect-ratio: 1600 / 1095;
+  background: #ffffff;
+  overflow: hidden;
+  contain: paint;
+}
+.trace-mini-layer {
+  position: absolute;
+  inset: 0;
+}
+.trace-mini-layer img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+/* 三层的初始态（t=0）：草稿满幅、墨线与成品未入场。
+   这里刻意用 forwards 而不是 both —— 多层动画叠加时 both 的 backwards 填充
+   会让后一条动画把先一条的起始态盖掉（原作也是这么处理的） */
+.trace-mini-layer--sketch {
+  opacity: 1;
+}
+.trace-mini-layer--ink,
+.trace-mini-layer--art {
+  opacity: 0;
+}
+.trace-mini-wait {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 45%;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: #7c8a84;
+}
+/* 三层的时间轴（与主播放区同一组真值：2.8s 调子 / 12.45s 收笔 / 4.1s 起逐段上色）
+   注意动画自创建即静止（animation-play-state: paused）—— 与主播放区同一套防抢跑约定：
+   接管（WAAPI 设 currentTime）之前，这几条动画不会自己先跑起来 */
+.trace-mini-playing .trace-mini-layer--sketch,
+.trace-mini-playing .trace-mini-layer--ink,
+.trace-mini-playing .trace-mini-layer--art,
+.trace-mini-playing .trace-mini-cell {
+  /* !important 必需：animation 简写会把 play-state 重置回 running */
+  animation-play-state: paused !important;
+}
+.trace-mini-playing .trace-mini-layer--sketch {
+  animation: mini-sk-out 1s ease both 2.8s;
+}
+.trace-mini-playing .trace-mini-layer--ink {
+  animation: mini-ink-in 0.8s ease-out 2.8s forwards, mini-ink-out 1.4s ease-in 12.45s forwards;
+}
+.trace-mini-playing .trace-mini-layer--art {
+  animation: mini-art-in 9.25s linear 4.1s both;
+}
+@keyframes mini-sk-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes mini-ink-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mini-ink-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes mini-art-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* 右栏：竖排时间轴带（0 → 14.65s），30 格按真实方向色依次点亮 */
+.trace-mini-axis {
+  position: relative;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(94, 234, 200, 0.14);
+  border-bottom: 1px solid rgba(94, 234, 200, 0.14);
+}
+.trace-mini-seg,
+.trace-mini-cell {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+}
+.trace-mini-seg--sketch {
+  background: #8b93a0;
+}
+.trace-mini-seg--ink {
+  background: #cfdad6;
+}
+.trace-mini-seg--settle {
+  background: #2fbf9a;
+  opacity: 0.5;
+}
+.trace-mini-cell {
+  background: var(--dc, #7c8a84);
+  opacity: 0.16;
+}
+/* 30 格各自按 4.1s + i×0.3s 点亮（与制作流程 04 的甘特同一组数字） */
+.trace-mini-playing .trace-mini-cell {
+  animation: mini-cell-fill 0.55s cubic-bezier(0.45, 0.05, 0.25, 1) both;
+  animation-delay: calc(4.1s + var(--i) * 0.3s);
+}
+@keyframes mini-cell-fill {
+  from { opacity: 0.16; }
+  to { opacity: 1; }
+}
+/* 时间轴带上的播放头 */
+.trace-mini-head {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: #7dfade;
+}
+/* 底部滑块：既是自动播放的进度显示，也是"按住接管"的输入 */
+.trace-mini-range {
+  --p: 0%;
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: calc(100% - 24px);
+  margin: 0 12px 12px;
+  height: 16px;
+  background: transparent;
+  cursor: ew-resize;
+}
+.trace-mini-range::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    #2fbf9a var(--p, 0%),
+    rgba(155, 190, 180, 0.25) var(--p, 0%)
+  );
+}
+.trace-mini-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  margin-top: -5.5px;
+  background: #7dfade;
+  border: 0;
+}
+.trace-mini-range:focus-visible {
+  outline: 1px solid rgba(125, 250, 222, 0.6);
+  outline-offset: 2px;
+}
+
 /* === 第五幕：结尾（终章页：左侧纵向主轴线 + 右下 Fin. 出血装饰）=== */
 .trace-act--end {
   position: relative;
@@ -4184,6 +4369,20 @@ a.trace-proc-file:hover {
   .trace-code--big {
     grid-column: 1 / 13;
     margin-top: 0;
+  }
+  /* 窄屏：示例播放器整行（在代码块之前），时间轴带略加宽更好读 */
+  .trace-mini {
+    grid-column: 1 / 13;
+    margin-top: 0;
+    margin-bottom: 22px;
+  }
+  .trace-mini-body {
+    grid-template-columns: 1fr 74px;
+  }
+  /* 窄屏：标题行改为上下两行，避免说明文案从词中间折行 */
+  .trace-mini-bar {
+    flex-direction: column;
+    gap: 4px;
   }
   .trace-end-zh {
     grid-column: 1 / 13;
