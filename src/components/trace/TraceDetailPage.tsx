@@ -53,14 +53,15 @@ function goBackToCollection(flashRef: React.RefObject<HTMLDivElement | null>) {
 /**
  * TraceDetailPage - trace 作品滚动叙事展示页（#trace 独立路由）
  *
- * 功能：三幕滚动叙事：
+ * 功能：六幕滚动叙事：
  *   1. 首屏：作品名 + 提示
  *   2. 主播放区（sticky 定格）：滚动进度 0~1 映射到 14.65s 动画时间轴，
  *      WAAPI 统一接管全部 CSSAnimation 的 currentTime，实现滚动=画笔、可回退倒放；
  *      侧边阶段指示器随进度点亮四个阶段
- *   3. 原理拆解区：三个技法小节各带独立随滚 demo（描边 / 分层时间轴 / clip-path 揭示）
- *   4. 代码对照区：核心 CSS 摘录 + 注释
- *   5. 结尾：返回按钮白闪回 #film
+ *   3. 制作流程：五段滚入讲清这幅画怎么被生成（真产物 + 真数字，不引 WASM）
+ *   4. 原理拆解区：三个技法小节各带独立随滚 demo（描边 / 分层时间轴 / clip-path 揭示）
+ *   5. 代码对照区：核心 CSS 摘录 + 注释
+ *   6. 结尾：返回按钮白闪回 #film
  *
  * 参数：无
  * 返回值：React.ReactElement
@@ -421,7 +422,10 @@ const snapDamp = useCallback(() => {
         </div>
       </section>
 
-      {/* === 第三幕：原理拆解 === */}
+      {/* === 第三幕：制作流程（从一张位图到这幅动画） === */}
+      <ProcessAct />
+
+      {/* === 第四幕：原理拆解 === */}
       <section className="trace-act trace-act--explain">
         <header className="trace-explain-header">
           <span className="trace-kicker">HOW IT WORKS</span>
@@ -436,10 +440,10 @@ const snapDamp = useCallback(() => {
         <TechClipPath />
       </section>
 
-      {/* === 第四幕：代码对照 === */}
+      {/* === 第五幕：代码对照 === */}
       <CodeGallery />
 
-      {/* === 第五幕：结尾返回 === */}
+      {/* === 第六幕：结尾返回 === */}
       <section className="trace-act trace-act--end">
         <p className="trace-end-zh">画作已完结</p>
         <button
@@ -654,6 +658,604 @@ function loadTraceLayers(): Promise<TraceLayerBitmaps> {
     throw err;
   });
   return traceLayersPromise;
+}
+
+/* ====================================================================
+ * 幕 2.5 · 制作流程（PROCESS）
+ *
+ * 讲解"这幅画是怎么被生成出来的"：五段滚入 + 五张真实产物卡。
+ * 全部数字取自本页已有的真产物（trace.png / trace-body.svg / trace-thumb.html），
+ * 页面不引入 VTracer WASM —— 展示的是"跑过一次的结果"，不是实时转换。
+ * ==================================================================== */
+
+/** 原始位图路径（被描摹的那张 PNG，与本页作品一一对应） */
+const RASTER_URL = '/asset/textures/projects/trace.png';
+/** 工具导出的自包含动画 HTML（本页这幅画的母体） */
+const EXPORT_HTML_URL = '/asset/trace/trace-thumb.html';
+
+/** 打稿批次真值：原作 .trace-skb 分组数（工具按墨量均衡分批的产物） */
+const SKETCH_BATCHES = 45;
+/** 打稿节奏（s）：起笔 .2、每批 +.05、单笔 .7（对应 CSS calc(.2s + var(--i)*.05s)） */
+const SKETCH_T0 = 0.2;
+const SKETCH_STEP = 0.05;
+const SKETCH_FRAG = 0.7;
+/** 上色层数真值：原作 .trace-pg 分组数（即工具的「层数」参数） */
+const ART_LAYERS = 30;
+/** 上色节奏（s）：T₀ 4.1、每层 +.3、单段 .55（对应 CSS calc(4.1s + var(--i)*0.3s)） */
+const PAINT_T0 = 4.1;
+const PAINT_STEP = 0.3;
+const PAINT_FRAG = 0.55;
+/** 定格与总时长（s）：末层收尾 13.35、整体 14.65（= 工具的 t.end / t.total） */
+const ACT_END = 13.35;
+const ACT_TOTAL = 14.65;
+/** 调子淡入 / 上墨加深的时刻（s，工具的 t.tone / t.ink） */
+const TONE_AT = 2.8;
+const INK_AT = 3.6;
+
+/** 甘特图几何（viewBox 坐标）：左侧留轴标，右侧留末层条的宽度 */
+const GANTT_VBW = 480;
+const GANTT_VBH = 348;
+const GANTT_X0 = 40;
+const GANTT_W = 424;
+
+/**
+ * 时间（s）→ 甘特图 x 坐标
+ *
+ * 参数：
+ *  - t {number} 时间（秒），0~14.65
+ * 返回值：number viewBox 坐标系内的 x
+ */
+function ganttX(t: number): number {
+  return GANTT_X0 + (t / ACT_TOTAL) * GANTT_W;
+}
+
+/** 四种揭示方向的展示元数据（顺序即图例顺序，色同时用于层网格与甘特条） */
+const DIR_META: { key: string; cls: string; glyph: string; zh: string; color: string }[] = [
+  { key: 'wipe-r', cls: 'trace-wipe-r', glyph: '→', zh: '右扫', color: '#2fbf9a' },
+  { key: 'wipe-l', cls: 'trace-wipe-l', glyph: '←', zh: '左扫', color: '#6fd6bd' },
+  { key: 'wipe-d', cls: 'trace-wipe-d', glyph: '↓', zh: '下扫', color: '#7c8a84' },
+  { key: 'dab', cls: 'trace-dab', glyph: '◉', zh: '点染', color: '#cfdad6' },
+];
+
+/**
+ * 方向 key → 展示色（取不到时退回第一种方向色）
+ *
+ * 参数：
+ *  - key {string | undefined} 方向 key（wipe-r / wipe-l / wipe-d / dab）
+ * 返回值：string 十六进制颜色
+ */
+function dirColor(key: string | undefined): string {
+  return (DIR_META.find(m => m.key === key) ?? DIR_META[0]).color;
+}
+
+/** 注入 SVG 后从 DOM 量出来的真实结构（卡 02 的读数、卡 03 的层网格都由它渲染） */
+type ProcessArtInfo = {
+  /** 路径总数 */
+  paths: number;
+  /** .trace-pg 分组数 */
+  groups: number;
+  /** 每层的路径数（按 DOM 顺序，即绘制顺序） */
+  per: number[];
+  /** 每层的揭示方向 key（按 DOM 顺序） */
+  dirs: string[];
+  /** 四种方向各占多少层 */
+  dirCount: Record<string, number>;
+};
+
+/**
+ * 制作流程的单个阶段外壳（左：序号 + 文案；右：产物卡）
+ *
+ * 功能：统一五段的行结构（12 栏网格：序号 1 栏 / 文案 2~6 栏 / 产物卡 7~13 栏），
+ *      并由 drive() 在滚到该段时给外层加 is-on 点亮序号与连接线。
+ *
+ * 参数：
+ *  - n        {string}           段序号（"01"~"05"）
+ *  - zh       {string}           阶段中文名
+ *  - en       {string}           阶段英文名（小字 kicker）
+ *  - lead     {React.ReactNode}  阶段说明（2~3 句）
+ *  - facts    {string[]}         真值脚注（每行一条，等宽小字）
+ *  - children {React.ReactNode}  右侧产物卡内容
+ * 返回值：React.ReactElement
+ */
+function ProcessStage({ n, zh, en, lead, facts, children }: {
+  n: string;
+  zh: string;
+  en: string;
+  lead: React.ReactNode;
+  facts: string[];
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="trace-proc-stage">
+      <div className="trace-proc-num">{n}</div>
+      <div className="trace-proc-copy">
+        <span className="trace-proc-en">{en}</span>
+        <h3>{zh}</h3>
+        <p>{lead}</p>
+        <ul className="trace-proc-facts">
+          {facts.map(f => (
+            <li key={f}>{f}</li>
+          ))}
+        </ul>
+      </div>
+      <div className="trace-proc-card">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * 幕 2.5 — 制作流程（从一张位图到这幅动画）
+ *
+ * 功能：用五段"滚入 + 产物卡"讲清这幅画的生成链：
+ *      01 输入位图 → 02 矢量化描摹 → 03 分组成层 → 04 编舞时间轴 → 05 导出，
+ *      幕末附一张「同一工具的现在」注脚，交代后来改掉/新增的部分。
+ *
+ *      演出分三处，全部由滚动驱动（复用页面既有的 elProgress + trace:scroll 广播）：
+ *      - 五段各自滚到 30% 时点亮序号与竖线
+ *      - 卡 03 的 30 格层网格随进度逐格点亮（= 层的登场顺序）
+ *      - 卡 04 的甘特播放头沿 14.65s 时间轴移动并刷新读数
+ *      卡 02 另有两条独立交互：鼠标悬停高亮光标下的那条真实路径；
+ *      鼠标不在卡上时每 0.7s 自动换一条高亮（尊重 prefers-reduced-motion）。
+ *
+ * 参数：无
+ * 返回值：React.ReactElement
+ *
+ * 注意事项：
+ *  - 注入的成品层（2.4MB / 5891 条 path）是静态展示，不挂 .trace-playing、
+ *    不参与 WAAPI 时间轴；高亮只改单条 path 的 class，重绘范围被限制在局部
+ *  - 滚动帧里先读完五段进度再统一写样式，避免读-写交替引发多次强制布局
+ *  - 注入容器（.trace-proc-vec-art）不能有 React 子节点：innerHTML 会覆盖它们，
+ *    导致 React 二次渲染时找不到自己创建的节点
+ */
+function ProcessAct() {
+  const sectionRef = useRef<HTMLElement>(null);
+  // 真 SVG 的注入点
+  const artHostRef = useRef<HTMLDivElement>(null);
+  // 甘特播放头（整组平移，一次属性写入）
+  const ganttHeadRef = useRef<SVGGElement>(null);
+  // 甘特读数（"6.42s"）
+  const ganttTxtRef = useRef<HTMLSpanElement>(null);
+  // 卡 02 的路径读数（"#132 · #A88086"）
+  const vecTagRef = useRef<HTMLSpanElement>(null);
+  // 量出来的真实结构（注入完成后才有值）
+  const [art, setArt] = useState<ProcessArtInfo | null>(null);
+  // 注入后的路径元素表 + 当前高亮的那条
+  const pathsRef = useRef<SVGPathElement[]>([]);
+  const hotRef = useRef<SVGPathElement | null>(null);
+  // 鼠标是否压在卡 02 上（压住时暂停自动轮播，交还给用户）
+  const hoverRef = useRef(false);
+  // 自动轮播的游标
+  const cycleRef = useRef(0);
+  // 五段 stage 元素与它们的点亮状态（只在状态翻转时写 DOM）
+  const stageElsRef = useRef<HTMLElement[]>([]);
+  const stageOnRef = useRef<number[]>([]);
+  // 30 格层网格与当前点亮格数
+  const cellElsRef = useRef<HTMLElement[]>([]);
+  const cellLitRef = useRef(-1);
+
+  /**
+   * 挂载后收集 stage / 层网格元素（一次性查询，之后滚动只做属性写入）
+   */
+  useEffect(() => {
+    const sec = sectionRef.current;
+    if (!sec) return;
+    stageElsRef.current = Array.from(sec.querySelectorAll<HTMLElement>('.trace-proc-stage'));
+    cellElsRef.current = Array.from(sec.querySelectorAll<HTMLElement>('.trace-proc-cell'));
+  }, []);
+
+  /**
+   * 注入真成品层（#trace-art）并量出真实结构
+   *
+   * 功能：取 trace-body.svg，切出成品层 <g id="trace-art">（30 段 .trace-pg），
+   *      包成独立 svg 注入产物卡做静态全展示；随后从 DOM 读出真值：
+   *      路径总数、分组数、每层路径数与揭示方向 —— 卡 02 的读数与
+   *      卡 03 的层网格全部由这些真值渲染，因此屏幕上不会出现编造的参数。
+   *
+   * 参数：无
+   * 返回值：无（异步，完成后 setArt 触发读数区重渲染）
+   *
+   * 异常：请求失败 / 标记缺失时静默降级（卡内留占位提示，不影响滚动）
+   *
+   * 注意事项：
+   *  - 解析 2.4MB 需要一两百毫秒，注入后立刻量一次 DOM 即可
+   *  - 该容器由 innerHTML 接管，React 侧只能给它空子节点（见组件头注释）
+   */
+  useEffect(() => {
+    let stopped = false;
+    fetch(ART_SVG_URL)
+      .then(r => r.text())
+      .then(text => {
+        if (stopped) return;
+        const host = artHostRef.current;
+        if (!host) return;
+        const start = text.indexOf(ART_GROUP_MARK);
+        if (start < 0) throw new Error('trace-art group not found');
+        const frag = text.slice(start).replace(/<\/svg>[\s\S]*$/, '');
+        host.innerHTML = `<svg viewBox="0 0 ${ART_W} ${ART_H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">${frag}</svg>`;
+
+        const groups = Array.from(host.querySelectorAll<SVGGElement>('g.trace-pg'));
+        const per: number[] = [];
+        const dirs: string[] = [];
+        const dirCount: Record<string, number> = {};
+        for (const g of groups) {
+          per.push(g.querySelectorAll('path').length);
+          const key = (DIR_META.find(m => g.classList.contains(m.cls)) ?? DIR_META[0]).key;
+          dirs.push(key);
+          dirCount[key] = (dirCount[key] ?? 0) + 1;
+        }
+        const paths = Array.from(host.querySelectorAll<SVGPathElement>('path'));
+        pathsRef.current = paths;
+        setArt({ paths: paths.length, groups: groups.length, per, dirs, dirCount });
+      })
+      .catch(err => console.error('[trace] 制作流程卡注入失败', err));
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  /**
+   * 高亮某条真实路径（并把上一条恢复原样）
+   *
+   * 功能：只改这两条 path 的 class —— 近 6000 条路径的 SVG 里，
+   *      把重绘范围限制在单条路径是"逐条高亮"能跑得动的前提；
+   *      同时把编号与填充色写进读数。
+   *
+   * 参数：
+   *  - p {SVGPathElement | null} 要高亮的路径；传 null 表示清空
+   * 返回值：void
+   */
+  const highlight = useCallback((p: SVGPathElement | null) => {
+    const prev = hotRef.current;
+    if (prev === p) return;
+    if (prev) prev.classList.remove('is-hot');
+    hotRef.current = p;
+    if (vecTagRef.current) {
+      if (p) {
+        const i = pathsRef.current.indexOf(p);
+        vecTagRef.current.textContent = `#${i} · ${p.getAttribute('fill') ?? '—'}`;
+      } else {
+        vecTagRef.current.textContent = `全部 ${pathsRef.current.length} 条路径`;
+      }
+    }
+    if (p) p.classList.add('is-hot');
+  }, []);
+
+  /**
+   * 卡 02 路径轮播：无鼠标接管时每 0.7s 换一条高亮
+   *
+   * 功能：让"这幅画其实是几千条独立路径"这件事自己动起来；
+   *      步长取一圈约 43 步，高亮在画面上跳着走，不会只扫一条边；
+   *      卡离开视口或鼠标压在卡上时暂停（不写样式、不重绘）。
+   *
+   * 参数：无
+   * 返回值：无（卸载时断开观察者与定时器）
+   *
+   * 注意事项：prefers-reduced-motion 下不自动轮播，悬停高亮仍然可用
+   */
+  useEffect(() => {
+    if (!art) return;
+    const list = pathsRef.current;
+    const host = artHostRef.current;
+    if (!list.length || !host) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    let visible = false;
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) visible = e.isIntersecting;
+    });
+    io.observe(host);
+    const stride = Math.max(1, Math.floor(list.length / 43));
+    const timer = window.setInterval(() => {
+      if (!visible || hoverRef.current) return;
+      cycleRef.current = (cycleRef.current + stride) % list.length;
+      highlight(list[cycleRef.current]);
+    }, 700);
+    return () => {
+      io.disconnect();
+      window.clearInterval(timer);
+    };
+  }, [art, highlight]);
+
+  /**
+   * 滚动驱动这一幕的三处演出
+   *
+   * 功能：
+   *  1. 五段各自滚到 30% 进度时给 stage 打 is-on（点亮序号与竖线）
+   *  2. 卡 03：30 格层网格按进度逐格点亮，直观呈现"层是按顺序登场的"
+   *  3. 卡 04：播放头沿 0~14.65s 移动，读数同步刷新
+   *
+   * 参数：无
+   * 返回值：void
+   *
+   * 注意事项：先读完五段进度再统一写样式（读-写分离），
+   *          否则每写一次样式都会让下一次 getBoundingClientRect 触发强制布局
+   */
+  const drive = useCallback(() => {
+    const stages = stageElsRef.current;
+    if (!stages.length) return;
+
+    const ps: number[] = [];
+    for (const el of stages) ps.push(elProgress(el, 0.8));
+
+    for (let i = 0; i < stages.length; i++) {
+      const on = ps[i] > 0.3 ? 1 : 0;
+      if (stageOnRef.current[i] !== on) {
+        stageOnRef.current[i] = on;
+        stages[i].classList.toggle('is-on', on === 1);
+      }
+    }
+
+    const t = Math.max(0, Math.min(ACT_TOTAL, (ps[3] ?? 0) * ACT_TOTAL));
+    const x = GANTT_X0 + (t / ACT_TOTAL) * GANTT_W;
+    if (ganttHeadRef.current) ganttHeadRef.current.setAttribute('transform', `translate(${x.toFixed(1)} 0)`);
+    if (ganttTxtRef.current) ganttTxtRef.current.textContent = `${t.toFixed(2)}s`;
+
+    const cells = cellElsRef.current;
+    const lit = Math.round((ps[2] ?? 0) * cells.length);
+    if (cellLitRef.current !== lit) {
+      cellLitRef.current = lit;
+      for (let i = 0; i < cells.length; i++) cells[i].classList.toggle('is-lit', i < lit);
+    }
+  }, []);
+
+  useTraceScroll(drive);
+
+  /** 卡 02 的鼠标接管：光标压在哪条 path 上就高亮哪条（事件目标即命中结果，无需再算） */
+  const onVecMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      hoverRef.current = true;
+      const el = e.target as Element;
+      highlight(el instanceof SVGPathElement ? el : null);
+    },
+    [highlight]
+  );
+  const onVecLeave = useCallback(() => {
+    hoverRef.current = false;
+    highlight(null);
+  }, [highlight]);
+
+  /** 注入后的层网格读数（未就绪时用真值兜底：45 批 / 30 层是产物的确定结构） */
+  const pathCount = art ? art.paths : 5891;
+  const ganttW = Math.round((SKETCH_FRAG / ACT_TOTAL) * GANTT_W);
+  const paintW = Math.round((PAINT_FRAG / ACT_TOTAL) * GANTT_W);
+
+  return (
+    <section ref={sectionRef} className="trace-act trace-act--process">
+      <header className="trace-proc-head">
+        <span className="trace-kicker">PROCESS</span>
+        <h2 className="trace-proc-title">从一张位图到这幅动画</h2>
+        <p className="trace-proc-sub">
+          这幅画的矢量结构、分层与时间轴都不是手搓的，而是 svg-trace-studio 一次跑出来的。
+          五步，每一步都能在本页核到真值。
+        </p>
+      </header>
+
+      <ProcessStage
+        n="01"
+        zh="输入一张位图"
+        en="INPUT · RASTER"
+        lead={<>起点是一张普通位图，没有任何分层信息。工具整条流水线跑在浏览器里：VTracer 编译成
+          WASM 内联在单个 HTML 文件中，图片不出本机。</>}
+        facts={['输入 trace.png · 1064 × 728 · 617 KB', '离线运行 · 无网络请求', '坐标系另算：描摹输出 1600 × 1095']}
+      >
+        <figure className="trace-proc-raster">
+          <img src={RASTER_URL} alt="被描摹的原始位图" draggable={false} />
+          <figcaption>悬停放大 4× —— 位图是一格格像素</figcaption>
+        </figure>
+      </ProcessStage>
+
+      <ProcessStage
+        n="02"
+        zh="矢量化描摹"
+        en="TRACE · VTracer WASM"
+        lead={<>VTracer 把像素栅格转成彩色矢量路径：一次输出 {pathCount} 条 path、{art ? art.groups : ART_LAYERS} 组。
+          风格由参数决定 —— 分层结构（叠层 / 挖剪）、曲线模式（样条 / 折线 / 像素）、
+          颜色精度、斑点过滤、层差、预放大。</>}
+        facts={[
+          `${pathCount} 条 path · ${art ? art.groups : ART_LAYERS} 组 · 1600 × 1095`,
+          '每条 path 自带填充色，形状即轮廓',
+          '参数：分层结构 / 曲线模式 / 颜色精度 / 斑点过滤 / 层差 / 预放大',
+        ]}
+      >
+        <div className="trace-proc-vec">
+          <div className="trace-proc-vec-bar">
+            <span>描摹结果（静态展示，不播动画）</span>
+            <span ref={vecTagRef} className="trace-proc-vec-tag">
+              全部 {pathCount} 条路径
+            </span>
+          </div>
+          <div
+            ref={artHostRef}
+            className="trace-proc-vec-art"
+            onPointerMove={onVecMove}
+            onPointerLeave={onVecLeave}
+          />
+          {!art && <span className="trace-proc-wait">正在解析原作 4.8MB SVG…</span>}
+          <span className="trace-proc-vec-hint">悬停任一处 → 高亮的是一条独立路径（自动轮播时同理）</span>
+        </div>
+      </ProcessStage>
+
+      <ProcessStage
+        n="03"
+        zh="分组成层"
+        en="LAYERS · 30 GROUPS"
+        lead={<>按"墨量"（路径数据长度）把全部 path 均衡切成 {ART_LAYERS} 层，每层随机绑一个揭示方向。
+          注意均衡的是墨量而不是条数 —— 所以层内路径数 {art ? `${Math.min(...art.per)} → ${Math.max(...art.per)}` : '4 → 644'} 条不等，
+          后面几层塞的全是碎细节。层叠顺序就是绘制顺序，后画的自然后盖前画；方向决定这一层从哪边进场。</>}
+        facts={[
+          `分层权重 = 路径数据长度（墨量），均衡切 ${ART_LAYERS} 份`,
+          `方向分布：${DIR_META.map(m => `${m.zh} ${art ? (art.dirCount[m.key] ?? 0) : '—'}`).join(' / ')}`,
+          '层叠顺序 = 绘制顺序（后画盖先画）',
+        ]}
+      >
+        <div className="trace-proc-groups">
+          <div className="trace-proc-grid">
+            {Array.from({ length: ART_LAYERS }, (_, i) => {
+              const key = art?.dirs[i];
+              const meta = DIR_META.find(m => m.key === key);
+              return (
+                <div
+                  key={i}
+                  className={`trace-proc-cell d-${key ?? 'dab'}`}
+                  title={`第 ${i + 1} 层 · ${meta ? meta.zh : '方向未知'} · ${art ? art.per[i] : '—'} 条路径`}
+                >
+                  <span className="trace-proc-cell-i">{String(i).padStart(2, '0')}</span>
+                  <span className="trace-proc-cell-g">{meta ? meta.glyph : ''}</span>
+                  <span className="trace-proc-cell-n">{art ? art.per[i] : '—'}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="trace-proc-legend">
+            {DIR_META.map(m => (
+              <span key={m.key} className={`d-${m.key}`}>
+                <i />
+                {m.zh} {art ? (art.dirCount[m.key] ?? 0) : '—'}
+              </span>
+            ))}
+          </div>
+        </div>
+      </ProcessStage>
+
+      <ProcessStage
+        n="04"
+        zh="编舞时间轴"
+        en="CHOREOGRAPHY · 14.65s"
+        lead={<>两层编排叠在一条时间轴上：先按墨量分批打稿，{SKETCH_BATCHES} 批每批差 {SKETCH_STEP}s、
+          单笔 {SKETCH_FRAG}s 勾出；{TONE_AT}s 调子淡入、{INK_AT}s 上墨加深，
+          然后 {PAINT_T0}s 起逐层上色，每层差 {PAINT_STEP}s、单层 {PAINT_FRAG}s，
+          {ACT_END}s 收尾定格，总时长 {ACT_TOTAL}s。滚动就是这条轴的播放头。</>}
+        facts={[
+          `打稿：${SKETCH_T0}s + i × ${SKETCH_STEP}s · 单笔 ${SKETCH_FRAG}s · ${SKETCH_BATCHES} 批`,
+          `上墨：${TONE_AT}s 调子 → ${INK_AT}s 加深 → ${PAINT_T0}s 上色`,
+          `上色：i × ${PAINT_STEP}s 递延 · 单层 ${PAINT_FRAG}s · 定格 ${ACT_END}s / 总长 ${ACT_TOTAL}s`,
+        ]}
+      >
+        <div className="trace-proc-gantt">
+          <div className="trace-proc-gantt-bar">
+            <span>时间轴 · 总长 {ACT_TOTAL}s</span>
+            <span ref={ganttTxtRef} className="trace-proc-gantt-t">0.00s</span>
+          </div>
+          <svg viewBox={`0 0 ${GANTT_VBW} ${GANTT_VBH}`} className="trace-proc-gantt-svg" role="img" aria-label="打稿与上色的时间轴甘特图">
+            {/* 打稿：45 批依次起笔（每批 +.05s，长 .7s） */}
+            {Array.from({ length: SKETCH_BATCHES }, (_, i) => (
+              <rect
+                key={`s${i}`}
+                x={ganttX(SKETCH_T0 + i * SKETCH_STEP)}
+                y={16 + i * 2.4}
+                width={ganttW}
+                height={1.6}
+                fill="#454a4d"
+              />
+            ))}
+            <text x={GANTT_VBW - 10} y={12} textAnchor="end" className="trace-proc-gantt-lb">
+              打稿 · {SKETCH_BATCHES} 批
+            </text>
+            {/* 两个时刻线（调子淡入 / 上墨加深）：线只画不各自标字，
+                标注统一放在上墨线右侧，避免两条线的标签相距 23px 互相压字 */}
+            {[TONE_AT, INK_AT].map(t => (
+              <line
+                key={t}
+                x1={ganttX(t)}
+                y1={16}
+                x2={ganttX(t)}
+                y2={128}
+                stroke="rgba(125,250,222,.35)"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+              />
+            ))}
+            <text x={ganttX(INK_AT) + 8} y={124} className="trace-proc-gantt-lb">
+              {TONE_AT}s 调子淡入
+            </text>
+            <text x={ganttX(INK_AT) + 8} y={136} className="trace-proc-gantt-lb">
+              {INK_AT}s 上墨加深
+            </text>
+            {/* 上色：30 层依次登场（每层 +.3s，长 .55s），颜色 = 该层的揭示方向 */}
+            {Array.from({ length: ART_LAYERS }, (_, i) => (
+              <rect
+                key={`p${i}`}
+                x={ganttX(PAINT_T0 + i * PAINT_STEP)}
+                y={152 + i * 5.4}
+                width={paintW}
+                height={4.2}
+                fill={dirColor(art?.dirs[i])}
+              />
+            ))}
+            <text x={GANTT_VBW - 10} y={148} textAnchor="end" className="trace-proc-gantt-lb">
+              上色 · {ART_LAYERS} 层（按揭示方向着色）
+            </text>
+            {/* 轴刻度：末刻（总时长）不标字，直接写在标题栏，避免与 13.35s 挤在一起 */}
+            {[0, PAINT_T0, ACT_END, ACT_TOTAL].map((t, i, arr) => (
+              <g key={`x${t}`}>
+                <line x1={ganttX(t)} y1={GANTT_VBH - 22} x2={ganttX(t)} y2={GANTT_VBH - 18} stroke="rgba(155,190,180,.5)" strokeWidth={1} />
+                {i < arr.length - 1 && (
+                  <text x={ganttX(t)} y={GANTT_VBH - 6} textAnchor="middle" className="trace-proc-gantt-lb">
+                    {t}s
+                  </text>
+                )}
+              </g>
+            ))}
+            {/* 播放头：随滚动平移整组（只画竖线，读数在卡片标题栏，避免圆点压住块标签） */}
+            <g ref={ganttHeadRef} transform="translate(0 0)">
+              <line x1={0} y1={8} x2={0} y2={GANTT_VBH - 18} stroke="#7dfade" strokeWidth={1} />
+            </g>
+          </svg>
+        </div>
+      </ProcessStage>
+
+      <ProcessStage
+        n="05"
+        zh="导出可直接打开的文件"
+        en="EXPORT · SELF-CONTAINED"
+        lead={<>工具不产出"工程"，产出能双击的自包含文件：静态 HTML 只放成品图、动画 HTML 带上整条时间轴、
+          纯 CSS 绘图包把图层摊成 <code>--fill</code> + <code>clip-path: path()</code> 的分层结构。
+          本页这幅画的母体就是它导出的动画 HTML。</>}
+        facts={['动画 HTML · 4.83 MB · 含 45 + 30 组、5891 条 path', '无外部依赖 · 双击即播', '另一路：纯 CSS 包（zip）可继续手改图层']}
+      >
+        <div className="trace-proc-export">
+          <a className="trace-proc-file is-hero" href={EXPORT_HTML_URL} target="_blank" rel="noreferrer">
+            <span className="trace-proc-file-name">trace-animated.html</span>
+            <span className="trace-proc-file-meta">动画 HTML · 4.83 MB · 45 + 30 组 · 5891 条 path</span>
+            <span className="trace-proc-file-tag">本页作品的母体 · 打开看看 ↗</span>
+          </a>
+          <div className="trace-proc-file">
+            <span className="trace-proc-file-name">static.html</span>
+            <span className="trace-proc-file-meta">静态 HTML · 只放成品图，无动画时间轴</span>
+          </div>
+          <div className="trace-proc-file">
+            <span className="trace-proc-file-name">css-pack.zip</span>
+            <span className="trace-proc-file-meta">纯 CSS 绘图包 · --fill + clip-path: path() 分层</span>
+          </div>
+        </div>
+      </ProcessStage>
+
+      <footer className="trace-proc-foot">
+        <span className="trace-proc-foot-tag">同一工具的现在</span>
+        <p>
+          本页作品是它某个版本的快照。之后这些部分被改掉或新增，才成了今天的样子：
+        </p>
+        <ul>
+          <li>
+            <b>上色</b>：clip-path 分段揭示已回退 —— 它在 SVG 上逐帧重栅格化会抖，
+            现在改成 opacity 落点 + 0.08s 时间槽合并，把每帧的重绘量压下来。
+          </li>
+          <li>
+            <b>打稿</b>：从"按墨量均分 45 批"改成按墨量取 top-32、按空间最近邻逐笔勾，
+            手抖微扰直接烘焙进坐标（不用滤镜，避免每帧重算噪声）。
+          </li>
+          <li>
+            <b>描摹</b>：新增子路径拆分 —— VTracer 常把同色多块并成一条 path，
+            拆开后大色块也能一部分一部分地出现。
+          </li>
+          <li>
+            <b>后处理</b>：另有 piece-cutter 把图层切成互不重叠的矢量块（上层从下层挖空），
+            再挂鼠标划过的块状排斥。
+          </li>
+        </ul>
+      </footer>
+    </section>
+  );
 }
 
 /**

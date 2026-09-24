@@ -3190,6 +3190,423 @@ body.trace-page #root {
   letter-spacing: 0.08em;
 }
 
+/* ====================================================================
+ * 第三幕 · 制作流程（PROCESS）：五段滚入 + 五张真产物卡
+ * 与原理拆解共用同一套栏位语言：序号 1 栏 / 文案 2~6 栏 / 产物卡 7~13 栏
+ * ==================================================================== */
+.trace-act--process {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 10vh 4vw 12vh;
+}
+.trace-proc-head {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  margin-bottom: 10vh;
+  align-items: end;
+}
+.trace-proc-head .trace-kicker {
+  grid-column: 2 / 6;
+  justify-self: start;
+  text-align: left;
+}
+.trace-proc-title {
+  grid-column: 6 / 13;
+  font-family: var(--font-serif-cn);
+  font-size: clamp(30px, 4.6vw, 52px);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  color: #f0f5f2;
+}
+.trace-proc-sub {
+  grid-column: 7 / 12;
+  margin-top: 18px;
+  font-size: 14px;
+  color: #8c9b94;
+  letter-spacing: 0.08em;
+}
+/* 单个阶段：一行一阶段，底部细线分节；竖线把五个序号串成一条流水线 */
+.trace-proc-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: 24px;
+  padding-bottom: 8vh;
+  margin-bottom: 8vh;
+  border-bottom: 1px solid rgba(47, 191, 154, 0.09);
+}
+.trace-proc-stage::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: 46px;
+  bottom: 0;
+  width: 1px;
+  background: rgba(47, 191, 154, 0.14);
+  transition: background 0.6s ease;
+}
+.trace-proc-stage.is-on::before {
+  background: rgba(47, 191, 154, 0.42);
+}
+.trace-proc-num {
+  grid-column: 1 / 2;
+  font-family: var(--font-retro);
+  font-size: 30px;
+  line-height: 1;
+  color: #3d5a52;
+  transition: color 0.4s ease, text-shadow 0.4s ease;
+}
+.trace-proc-stage.is-on .trace-proc-num {
+  color: #2fbf9a;
+  text-shadow: 0 0 18px rgba(47, 191, 154, 0.45);
+}
+.trace-proc-copy {
+  grid-column: 2 / 7;
+}
+.trace-proc-en {
+  display: block;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.26em;
+  color: #5d8a7c;
+}
+.trace-proc-copy h3 {
+  margin-bottom: 14px;
+  font-family: var(--font-serif-cn);
+  font-size: clamp(21px, 2.3vw, 27px);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: #e8edea;
+}
+.trace-proc-copy p {
+  font-size: 14.5px;
+  line-height: 1.9;
+  color: #b9c6c0;
+}
+.trace-proc-copy code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: #7dfade;
+  background: rgba(47, 191, 154, 0.08);
+  padding: 1px 6px;
+}
+/* 真值脚注：等宽小字 + 左侧细线，与正文拉开层级 */
+.trace-proc-facts {
+  list-style: none;
+  margin-top: 16px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(47, 191, 154, 0.18);
+}
+.trace-proc-facts li {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.95;
+  letter-spacing: 0.04em;
+  color: #7c8a84;
+}
+.trace-proc-card {
+  grid-column: 7 / 13;
+}
+
+/* 卡 01：原始位图（悬停放大到像素级） */
+.trace-proc-raster {
+  position: relative;
+  margin: 0;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+  overflow: hidden;
+}
+.trace-proc-raster img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.trace-proc-raster:hover img {
+  transform: scale(4);
+  image-rendering: pixelated;
+}
+.trace-proc-raster figcaption {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #7dfade;
+  background: rgba(8, 12, 13, 0.74);
+  border-top: 1px solid rgba(94, 234, 200, 0.22);
+  border-right: 1px solid rgba(94, 234, 200, 0.22);
+  pointer-events: none;
+}
+
+/* 卡 02：真成品层（静态展示 + 逐条高亮） */
+.trace-proc-vec {
+  position: relative;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+}
+.trace-proc-vec-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #56766c;
+  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+}
+.trace-proc-vec-tag {
+  color: #7dfade;
+}
+/* 画布：白纸 + contain:paint 隔离重绘（高亮单条 path 不会牵连整页） */
+.trace-proc-vec-art {
+  position: relative;
+  aspect-ratio: 1600 / 1095;
+  background: #ffffff;
+  contain: paint;
+}
+.trace-proc-vec-art svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* 卡里这份是静态展品：压掉全局动画 CSS 落在 .trace-pg 上的 will-change
+   （否则这 30 组会各占一个合成层，还可能在滚动中触发无谓的图层提升） */
+.trace-proc-vec-art,
+.trace-proc-vec-art * {
+  animation: none !important;
+  will-change: auto !important;
+}
+/* 高亮：给这一条 path 描一圈亮青边（描边画在填充之上，形状轮廓一眼可见） */
+.trace-proc-vec-art path.is-hot {
+  stroke: #7dfade;
+  stroke-width: 4;
+}
+.trace-proc-wait {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46%;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: #7c8a84;
+}
+.trace-proc-vec-hint {
+  display: block;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #56766c;
+}
+
+/* 卡 03：30 格层网格（随滚动逐格点亮）+ 方向图例 */
+.trace-proc-groups {
+  padding: 14px;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+}
+.trace-proc-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+.trace-proc-cell {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    'i g'
+    'n n';
+  align-items: center;
+  gap: 0 6px;
+  padding: 6px 7px;
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 2px solid var(--dc, rgba(255, 255, 255, 0.08));
+  opacity: 0.32;
+  transition: opacity 0.35s ease, background 0.35s ease;
+}
+.trace-proc-cell.is-lit {
+  opacity: 1;
+  background: rgba(47, 191, 154, 0.07);
+}
+.trace-proc-cell-i {
+  grid-area: i;
+  font-family: var(--font-retro);
+  font-size: 15px;
+  line-height: 1;
+  color: #cfdad6;
+}
+.trace-proc-cell-g {
+  grid-area: g;
+  font-size: 11px;
+  line-height: 1;
+  text-align: right;
+  color: var(--dc, #7c8a84);
+}
+.trace-proc-cell-n {
+  grid-area: n;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #7c8a84;
+}
+/* 方向色：层网格上边线、图例色块、甘特条三处共用同一套 */
+.d-wipe-r {
+  --dc: #2fbf9a;
+}
+.d-wipe-l {
+  --dc: #6fd6bd;
+}
+.d-wipe-d {
+  --dc: #7c8a84;
+}
+.d-dab {
+  --dc: #cfdad6;
+}
+.trace-proc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(94, 234, 200, 0.12);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #8c9b94;
+}
+.trace-proc-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.trace-proc-legend i {
+  display: block;
+  width: 14px;
+  height: 4px;
+  background: var(--dc, #7c8a84);
+}
+
+/* 卡 04：甘特时间轴（打稿 45 批 + 上色 30 层 + 滚动播放头） */
+.trace-proc-gantt {
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.18);
+}
+.trace-proc-gantt-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #56766c;
+  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+}
+.trace-proc-gantt-t {
+  color: #7dfade;
+}
+.trace-proc-gantt-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 10px 12px 6px;
+}
+.trace-proc-gantt-lb {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  fill: #6b7a74;
+}
+
+/* 卡 05：三种导出产物（第一张是这幅画的母体，可点开看） */
+.trace-proc-export {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trace-proc-file {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 14px 16px;
+  background: #101415;
+  border: 1px solid rgba(94, 234, 200, 0.14);
+  text-decoration: none;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+.trace-proc-file-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: #eef5f1;
+}
+.trace-proc-file-meta {
+  grid-column: 1 / 3;
+  font-size: 12.5px;
+  color: #8c9b94;
+}
+.trace-proc-file-tag {
+  align-self: center;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #7dfade;
+}
+.trace-proc-file.is-hero {
+  background: rgba(47, 191, 154, 0.06);
+  border-color: rgba(47, 191, 154, 0.45);
+}
+a.trace-proc-file:hover {
+  background: rgba(47, 191, 154, 0.1);
+  border-color: #2fbf9a;
+}
+
+/* 幕末注脚：同一工具的现在（虚线框，与正文拉开语气） */
+.trace-proc-foot {
+  margin-top: 4vh;
+  padding: 22px 26px 24px;
+  background: rgba(47, 191, 154, 0.03);
+  border: 1px dashed rgba(94, 234, 200, 0.22);
+}
+.trace-proc-foot-tag {
+  display: inline-block;
+  margin-bottom: 16px;
+  padding: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: #2fbf9a;
+  border: 1px solid rgba(47, 191, 154, 0.3);
+}
+.trace-proc-foot p {
+  margin-bottom: 14px;
+  font-size: 13.5px;
+  color: #8c9b94;
+}
+.trace-proc-foot ul {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px 28px;
+}
+.trace-proc-foot li {
+  font-size: 13px;
+  line-height: 1.85;
+  color: #9fb3ab;
+}
+.trace-proc-foot b {
+  font-weight: 500;
+  color: #eef5f1;
+}
+
 /* 单个技法小节：12 栏网格，head 与 body 各占一行 */
 .trace-tech {
   position: relative;
@@ -3677,6 +4094,32 @@ body.trace-page #root {
   .trace-demo-layers-bar span {
     font-size: 9px;
     letter-spacing: 0.04em;
+  }
+  /* 制作流程：还原为单列堆叠，去掉流水线竖线，层网格降到 3 列 */
+  .trace-proc-head .trace-kicker,
+  .trace-proc-title,
+  .trace-proc-sub {
+    grid-column: 1 / 13;
+  }
+  .trace-proc-stage {
+    grid-template-columns: 1fr;
+  }
+  .trace-proc-num,
+  .trace-proc-copy,
+  .trace-proc-card {
+    grid-column: 1;
+  }
+  .trace-proc-copy {
+    margin-bottom: 22px;
+  }
+  .trace-proc-stage::before {
+    display: none;
+  }
+  .trace-proc-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .trace-proc-foot ul {
+    grid-template-columns: 1fr;
   }
   .trace-tech-body .trace-tech-demo,
   .trace-tech-body .trace-tech-copy,
