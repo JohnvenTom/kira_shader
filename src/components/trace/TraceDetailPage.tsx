@@ -85,8 +85,8 @@ export default function TraceDetailPage() {
   // 主播放区定格容器 ref（滚动进度驱动其内部画布）
   const pinInnerRef = useRef<HTMLDivElement>(null);
 
-  // 已注入的 CSSAnimation 列表（滚动时逐帧统一设置 currentTime）
-  const animsRef = useRef<CSSAnimation[]>([]);
+  // 已注入的动画列表（含各自的延迟与时长，供"只写变化项"判断；last 记录上次写入值）
+  const animsRef = useRef<{ anim: CSSAnimation; delay: number; frag: number; last: number }[]>([]);
   // 阻尼系统状态：p=显示进度（阻尼后），v=跟踪速度，target=滚动位置目标进度
   const dampRef = useRef({ p: 0, v: 0, target: 0, raf: 0, running: false, lastFrame: 0 });
   // SVG 文本状态（fetch 完成后触发注入）
@@ -140,16 +140,27 @@ export default function TraceDetailPage() {
   }, []);
 
   /**
-   * === 滚动阻尼系统（缓入缓出速度线）===
-   *
-   * 交互模型：滚动位置只更新"目标进度" target，显示进度 p 以
-   * 临界阻尼二阶系统（Unity SmoothDamp）追踪 target：
-   *  - 滚得快时动画落后半拍再加速追上（缓入，且速度受位移驱动、越大越快）
-   *  - 接近目标时自动减速、无过冲地停稳（缓出）
-   *  - 停手后约 DAMP_SMOOTH_TIME*2 内收敛静止，随后停帧省资源
-   * 这样滚轮不再 1:1 直连动画，一格滚动的视觉位移被阻尼"稀释"，
-   * 慢滚可精修、快甩有丝滑滑行感，回滚同样倒放可逆。
-   */
+ * === 页面滚动：保持原生滚动，不做 JS 接管（实测结论，勿轻易改回）===
+ *
+ * 曾经试过在 window 层接管 wheel、逐帧 scrollTo 做"页面级缓入缓出"，结果滚动卡到 4fps。
+ * 原因不在脚本（滚动事件链只占 0.5~0.7ms），而在光栅化：本页有 4 份近 6000 条 path 的 SVG
+ * （合计约 3.5 万条 path），每块新进入视野的图块重新光栅化要几十~上百毫秒/帧（实测 279ms/帧）。
+ *  - 原生滚动：光栅化由合成线程并行做，滚动本身始终顺滑，掉帧只表现为"内容晚一拍出现"
+ *  - JS 驱动滚动：滚动被主线程的光栅化拖住 → 肉眼可见的卡顿
+ * 所以"缓入缓出"只作用在**动画进度**上（见 DAMP_SMOOTH_TIME），页面滚动保持即时跟手。
+ */
+
+/**
+ * === 滚动阻尼系统（缓入缓出速度线）===
+ *
+ * 交互模型：滚动位置只更新"目标进度" target，显示进度 p 以
+ * 临界阻尼二阶系统（Unity SmoothDamp）追踪 target：
+ *  - 滚得快时动画落后半拍再加速追上（缓入，且速度受位移驱动、越大越快）
+ *  - 接近目标时自动减速、无过冲地停稳（缓出）
+ *  - 停手后约 DAMP_SMOOTH_TIME*2 内收敛静止，随后停帧省资源
+ * 这样滚轮不再 1:1 直连动画，一格滚动的视觉位移被阻尼"稀释"，
+ * 慢滚可精修、快甩有丝滑滑行感，回滚同样倒放可逆。
+ */
 const DAMP_SMOOTH_TIME = 0.55; // 秒：阻尼时间常数，越大跟随越钝、滑行感越明显
 
 /**
@@ -165,7 +176,18 @@ const DAMP_SMOOTH_TIME = 0.55; // 秒：阻尼时间常数，越大跟随越钝�
  */
 const distribute = useCallback((p: number) => {
   const t = p * T_TOTAL;
-  for (const a of animsRef.current) a.currentTime = t;
+  // 只写"状态真的变了"的动画：主播放区有近 6000 条 per-path 动画，
+  // 每帧全量写 currentTime 会让整幅画每帧重排重绘（实测滑行时帧间隔 ~200ms）。
+  // 单条动画的观感只取决于 clamp(t, 延迟, 延迟+时长)：未开始写延迟点、已结束写收尾点。
+  let budget = 3000;
+  for (const item of animsRef.current) {
+    const target =
+      t <= item.delay ? item.delay : t >= item.delay + item.frag ? item.delay + item.frag : t;
+    if (item.last === target) continue;
+    if (budget-- <= 0) break;
+    item.last = target;
+    item.anim.currentTime = target;
+  }
 
   const idx = PHASES.findIndex(ph => t >= ph.start && t < ph.end);
   const resolved = idx === -1 ? (t >= T_TOTAL ? PHASES.length - 1 : 0) : idx;
@@ -288,12 +310,18 @@ const snapDamp = useCallback(() => {
             rootEl.contains((a.effect as KeyframeEffect).target as Element)
         );
       if (anims.length > 0) {
-        // 统一暂停并归零，等待滚动接管
-        anims.forEach(a => {
+        // 统一暂停并归零，等待滚动接管；顺带记下每条动画的延迟与时长
+        animsRef.current = anims.map(a => {
           a.pause();
           a.currentTime = 0;
+          const timing = (a.effect as KeyframeEffect | null)?.getComputedTiming?.();
+          return {
+            anim: a,
+            delay: typeof timing?.delay === 'number' ? timing.delay : 0,
+            frag: typeof timing?.duration === 'number' ? timing.duration : 0,
+            last: Number.NaN,
+          };
         });
-        animsRef.current = anims;
         // 初始帧直接快照定位（scrollY 可能不在 0，不做阻尼爬升）
         snapDamp();
         return;
