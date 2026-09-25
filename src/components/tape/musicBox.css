@@ -1,0 +1,167 @@
+/* ============================================================
+   MusicBoxDock —— 右下角音乐盒角标（#tape 整页以外全站常驻）
+   ------------------------------------------------------------
+   设计取向与 OHM TAPE 档案终端一套：直角、发丝线、微标签、等宽读数；
+   底色用站内的深色令牌，播放态用磁带机的铜色（#d0783a）作强调。
+   所有选择器都限定在 .music-dock 内，不影响站内其他元素。
+   ============================================================ */
+
+.music-dock {
+  position: fixed;
+  right: 26px;
+  bottom: 26px;
+  z-index: 55;                   /* 高于胶片页 UI（z-50），低于详情覆盖层（z-60） */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  font-family: var(--font-sans);
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+
+/* 详情覆盖层打开时淡出：钢琴页右下是踏板、黑洞页右下有 footer，会撞 */
+body:has(.film-detail-overlay.visible) .music-dock {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+/* ---------- 常驻条：磁带图标 + 播放钮 ---------- */
+.music-dock-bar {
+  display: flex;
+  align-items: stretch;
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px solid rgba(252, 249, 243, 0.16);
+  backdrop-filter: blur(9px);
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+.music-dock:hover .music-dock-bar {
+  border-color: rgba(208, 120, 58, 0.55);
+}
+.music-dock.is-playing .music-dock-bar {
+  border-color: rgba(208, 120, 58, 0.42);
+}
+
+.music-dock-main {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(252, 249, 243, 0.86);
+  padding: 9px 11px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: color 0.25s ease;
+}
+.music-dock-main:hover { color: #fcf9f3; }
+.music-dock.is-empty .music-dock-main { color: rgba(252, 249, 243, 0.45); }
+
+/* 播放时两只轮毂转起来（转的是磁带，不是整个角标） */
+.music-dock-reel {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.music-dock.is-playing .music-dock-reel { animation: music-dock-spin 3.4s linear infinite; }
+.music-dock.is-playing .music-dock-reel--b { animation-duration: 2.6s; }
+@keyframes music-dock-spin { to { transform: rotate(360deg); } }
+
+/* 播放钮常驻：只有"信息层"靠悬停浮出。
+   曾经做成 hover 才展开（宽度 0），结果是触屏与首次访问都找不到播放入口 —— 对一枚
+   音乐盒角标来说，播放钮就是它的主体功能，不该藏起来 */
+.music-dock-toggle {
+  appearance: none;
+  border: 0;
+  border-left: 1px solid rgba(252, 249, 243, 0.14);
+  background: transparent;
+  color: rgba(252, 249, 243, 0.86);
+  padding: 0 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.music-dock-toggle:hover { color: #d0783a; }
+.music-dock-toggle:disabled { cursor: default; color: rgba(252, 249, 243, 0.3); }
+.music-dock.is-playing .music-dock-toggle { color: #d0783a; }
+
+/* ---------- 悬停信息层 ---------- */
+.music-dock-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 8px 11px 9px;
+  background: rgba(10, 10, 10, 0.82);
+  border: 1px solid rgba(252, 249, 243, 0.14);
+  backdrop-filter: blur(9px);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  max-width: 62vw;
+}
+.music-dock:hover .music-dock-panel,
+.music-dock:focus-within .music-dock-panel {
+  opacity: 1;
+  transform: translateY(0);
+}
+.music-dock-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #fcf9f3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.music-dock-credits {
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(252, 249, 243, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.music-dock-time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: rgba(252, 249, 243, 0.62);
+}
+.music-dock-time u { text-decoration: none; color: rgba(252, 249, 243, 0.3); padding: 0 2px; }
+.music-dock.is-playing .music-dock-time { color: #d0783a; }
+
+/* ---------- 细进度线 ---------- */
+.music-dock-prog {
+  width: 100%;
+  min-width: 44px;
+  height: 1px;
+  background: rgba(252, 249, 243, 0.14);
+  overflow: hidden;
+}
+.music-dock-prog i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #d0783a;
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 0.35s linear;
+}
+.music-dock.is-empty .music-dock-prog i { background: rgba(252, 249, 243, 0.2); }
+
+/* ---------- 窄屏：只留图标与播放钮，信息层靠悬停也没意义 ---------- */
+@media (max-width: 560px) {
+  .music-dock { right: 14px; bottom: 14px; }
+  .music-dock-panel { display: none; }
+}
+
+/* ---------- 减少动效：不转轮毂 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .music-dock.is-playing .music-dock-reel { animation: none; }
+  .music-dock, .music-dock-bar, .music-dock-panel, .music-dock-toggle { transition: none; }
+}

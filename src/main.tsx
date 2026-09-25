@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
 import TraceDetailPage from './components/trace/TraceDetailPage';
+import { TapePage } from './components/tape/TapePage';
+import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import './styles.css';
 
 /**
@@ -43,6 +45,7 @@ function useHashRoute() {
  *  - #film           → KiraFilmDemo（多 section 滚动版，起始帧由 sessionStorage 恢复决定）
  *  - #home/#work/#about/#contact → KiraFilmDemo（起始帧由锚点映射决定，不再退出胶片页）
  *  - #trace          → TraceDetailPage（trace 作品展示页）
+ *  - #tape           → TapePage（磁带机整页，hash 后可带查询串，如 #tape?p=1）
  *
  * 参数：无
  * 返回值：无
@@ -56,18 +59,32 @@ function useHashRoute() {
  */
 function Root() {
   const hash = useHashRoute();
-  if (hash === '#trace') return <TraceDetailPage key="trace" />;
-  const hashSection = FILM_SECTION_BY_HASH[hash];   // #film 时为 undefined
-  const isFilm = hash === '#film' || hashSection !== undefined;
-  // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
+  const isTape = hash.split('?')[0] === '#tape';
+  // 页面本体：三者互斥
+  const page = isTape
+    // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
+    // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
+    ? <TapePage key="tape" />
+    : hash === '#trace'
+      ? <TraceDetailPage key="trace" />
+      : (
+        // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
+        <React.StrictMode>
+          {hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined ? (
+            <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
+          ) : (
+            <App key="app" />
+          )}
+        </React.StrictMode>
+      );
   return (
-    <React.StrictMode>
-      {isFilm ? (
-        <KiraFilmDemo key="film" hashSection={hashSection} />
-      ) : (
-        <App key="app" />
-      )}
-    </React.StrictMode>
+    <>
+      {page}
+      {/* 音乐盒角标：全站常驻（#tape 自身除外，那页里它没有意义）。
+          放在这里是为了让它跨路由保持在同一个位置、不被卸载 —— 它订阅的是
+          tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断 */}
+      {!isTape && <MusicBoxDock />}
+    </>
   );
 }
 
