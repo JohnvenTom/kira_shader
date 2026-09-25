@@ -730,28 +730,31 @@ function ScreenDisplay({
  */
 const curvedUniforms = {
   uActiveCenterX: { value: 0 },
-  uCurvatureNear: { value: -0.002 },   // 当前 section：轻微弯曲（保持可读）
-  uCurvatureFar: { value: -0.04 },      // 远离 section：非常夸张的卷曲
+  // 弯曲方向（向内弯曲）：curvature > 0 → z = cur·dx² 随 |dx| 变大而变正，
+  // 即"越远离当前帧越靠近观众"——胶片像一张弧形银幕把观众包进来，
+  // 两端在视口边缘向外/向下扫出，当前帧退到最深处（旧的负值版本是相反的"微笑形"）
+  uCurvatureNear: { value: 0.002 },    // 当前 section：轻微弯曲（保持可读）
+  uCurvatureFar: { value: 0.04 },      // 远离 section：明显卷曲
   uFalloff: { value: 3.0 },              // 3 单位内从 near 过渡到 far（过渡更快）
 };
 
 /**
  * dirt mesh 专用 uniforms（弯曲量受限）
  *
- * 功能：左右延伸（dirt）mesh 用这套 uniform，弯曲强度比胶片边缘小，
- *      确保 dirt 弯曲后 z 永远在屏幕（z=0）之后，不会遮挡屏幕内容
+ * 功能：左右延伸（dirt）mesh 用这套 uniform，弯曲强度比胶片边缘小得多，
+ *      确保 dirt 的 z 永远落在画面区（屏幕）之后，不会遮挡画面内容
  *
- * 设计原理：
- *  - 屏幕在 worldX=[-2,14]，右延伸在 worldX=[12,14]，重叠区域 dx=12~14
- *  - 胶片边缘弯曲：z = -0.04 × 14² = -7.84（远离相机）
- *  - dirt 弯曲需 < 0（向后退），且 |z| < 0.08（mesh 初始 z）确保不跑到屏幕前
- *  - 用 uCurvatureFar=-0.005：z = -0.005 × 14² = -0.98，加 mesh z=-0.08 = -1.06
- *    仍在屏幕 z=0 之后，但弯曲量足够看出卷曲效果
+ * 设计原理（向内弯曲版本）：
+ *  - 画面区与 dirt 都按 z = cur·dx² 朝观众卷，谁弯得多谁就更靠前
+ *  - 画面区用 uCurvatureFar=0.04：dx=6.4 时 z ≈ +1.64
+ *  - dirt 用 0.006：dx=6.4 时 z ≈ +0.25，加 mesh 自身 z=-0.08 → 仍远在画面区之后 ✓
+ *  - 因此"限制 dirt 弯曲量"仍然是必要的：两张面用同一套曲率时，
+ *    dirt 会与画面区同深度甚至压到前面（旧版用 -0.006 也是同一个理由，只是方向相反）
  */
 const dirtCurvedUniforms = {
   uActiveCenterX: curvedUniforms.uActiveCenterX,  // 共享 active center
-  uCurvatureNear: { value: -0.0005 },  // 当前 section：几乎平直
-  uCurvatureFar: { value: -0.006 },     // 远离 section：轻微卷曲（受限）
+  uCurvatureNear: { value: 0.0005 },  // 当前 section：几乎平直
+  uCurvatureFar: { value: 0.006 },     // 远离 section：轻微卷曲（受限）
   uFalloff: { value: 3.0 },
 };
 
@@ -807,7 +810,7 @@ function applyCurvedShader(
          // 距离 active center 越远，弯曲强度越大（near → far 平滑过渡）
          float mixFactor = smoothstep(0.0, uFalloff, dist);
          float cur = mix(uCurvatureNear, uCurvatureFar, mixFactor);
-         // 二次曲线弯曲：curvature<0 → 中间凸向相机，两端凹向远处（微笑形）
+         // 二次曲线弯曲：curvature>0 → 两端朝观众卷过来（把观众包进胶片）
          float dz = cur * dx * dx;
          transformed.z += dz;
          #include <project_vertex>`
