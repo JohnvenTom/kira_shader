@@ -16,6 +16,30 @@ import { CanvasContextGuard } from './components/CanvasContextGuard';
 import gsap from 'gsap';
 
 /**
+ * 顶部导航锚点 → 胶片页帧索引
+ *
+ * 功能：把 NavBar 的四个锚点映射到胶片页的画面帧，使锚点在胶片页内"跳帧"，
+ *      而不是落到 main.tsx 的 else 分支把胶片页整个换掉（旧缺陷：点导航就退出胶片页）
+ *
+ * 字段：
+ *  - '#home'    → 0 CREATIVE STUDIO
+ *  - '#work'    → 1 SELECTED WORK
+ *  - '#about'   → 2 ABOUT US
+ *  - '#contact' → 3 CONTACT
+ *
+ * 注意事项：
+ *  - 站点落地页（App / ComputerScene）仍由"无 hash 或其他未知 hash"渲染，
+ *    因此这里只接管这四个锚点，不影响默认入口
+ *  - '#film'（带 sessionStorage 恢复语义）不在表内：它交给 initialRestore 决定初始帧
+ */
+export const FILM_SECTION_BY_HASH: Record<string, number> = {
+  '#home': 0,
+  '#work': 1,
+  '#about': 2,
+  '#contact': 3,
+};
+
+/**
  * 把字符串拆成逐字 span（用于逐字浮现动画）
  *
  * 功能：将传入的字符串按字符拆分，每个字符包进一个 <span class="hero-char">，
@@ -120,7 +144,7 @@ function normalizeWheelDelta(e: WheelEvent): number {
  *    此时屏幕被闪光完全掩盖，用户感知不到内容切换
  *  - 文字 UI 在 onSectionChange 触发时整体淡入淡出过渡（CSS transition）
  */
-export default function KiraFilmDemo() {
+export default function KiraFilmDemo({ hashSection }: { hashSection?: number } = {}) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // 惯性推进系统状态（速度门控 + 自动回退，双向）：
   // - v       滚轮瞬时速度 EMA（px/ms），超过 SCROLL_V_ON 视为"快速滚"
@@ -169,7 +193,10 @@ export default function KiraFilmDemo() {
 
   // 当前 section 索引（由 FilmScene 的 onSectionChange 回调更新；
   // 初始值取自返回恢复数据，从 trace 页回来时 mount 即定位）
-  const [sectionIndex, setSectionIndex] = useState(initialRestore?.section ?? 0);
+  // 起始帧：NavBar 锚点指定的帧优先（#work/#about/#contact 等），
+  // 否则用 sessionStorage 的恢复数据（从 trace 页白闪返回），最后兜底 0
+  const startSection = hashSection ?? initialRestore?.section ?? 0;
+  const [sectionIndex, setSectionIndex] = useState(startSection);
   // 文字 UI 是否可见（section 切换时短暂隐藏再淡入）
   const [textVisible, setTextVisible] = useState(true);
   // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
@@ -245,6 +272,39 @@ export default function KiraFilmDemo() {
     }
   }, [initialRestore]);
 
+  /**
+   * NavBar 锚点跳帧（#home / #work / #about / #contact）
+   *
+   * 功能：监听 hashchange，把锚点映射到的帧号写进 dragOffsetRef，
+   *      FilmScene 的帧循环会把相机平滑地滑到那一帧（不重新 mount，无白闪）。
+   *      若当前停留在详情覆盖层，先退出（否则镜头推进状态会和跳帧互相打架）。
+   *
+   * 参数：无（监听 window 的 hashchange）
+   * 返回值：无（返回清理函数，移除监听）
+   *
+   * 异常：无
+   *
+   * 注意事项：
+   *  - 只在 hash 命中 FILM_SECTION_BY_HASH 时生效；#film / #trace 等不动
+   *  - 直接改 ref 而不走惯性系统：跳帧是"定位"而不是"滚一下"，
+   *    不应留下残余能量导致镜头继续漂移
+   */
+  useEffect(() => {
+    const onHashNav = () => {
+      const idx = FILM_SECTION_BY_HASH[window.location.hash];
+      if (idx === undefined) return;
+      dragOffsetRef.current = -idx * 4;
+      const st = scrollStateRef.current;
+      st.energy = 0;
+      st.display = 0;
+      setScrollProgress(0);
+      detailOpenRef.current = false;
+      setDetailOpen(false);
+    };
+    window.addEventListener('hashchange', onHashNav);
+    return () => window.removeEventListener('hashchange', onHashNav);
+  }, []);
+
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
@@ -252,7 +312,7 @@ export default function KiraFilmDemo() {
   // 鼠标拖动偏移（世界坐标 x，负值表示胶片向左移动）
   // 范围 0 ~ -(SECTIONS.length-1)*4（section 0 在 x=0，最后一个 section 在 x=-(N-1)*4）
   // 初始值取恢复 section 的中心位置（从 trace 页返回时 mount 即定位）
-  const dragOffsetRef = useRef(-(initialRestore?.section ?? 0) * 4);
+  const dragOffsetRef = useRef(-startSection * 4);
 
   // 后处理参数（参考 shader.se 的胶片质感）
   // bloomIntensity 1.2 + 4 sin 波动态闪烁，sepia 0.25 略偏暖，
@@ -664,7 +724,7 @@ export default function KiraFilmDemo() {
             mouseRef={mouseRef}
             dragOffsetRef={dragOffsetRef}
             onSectionChange={handleSectionChange}
-            initialSection={initialRestore?.section ?? 0}
+            initialSection={startSection}
           />
           <FilmPostProcessing params={filmParams} />
           <CanvasContextGuard />

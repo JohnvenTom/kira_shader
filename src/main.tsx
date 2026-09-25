@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import KiraFilmDemo from './KiraFilmDemo';
+import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
 import TraceDetailPage from './components/trace/TraceDetailPage';
 import './styles.css';
 
@@ -39,23 +39,36 @@ function useHashRoute() {
  * 应用入口
  *
  * 功能：根据 URL hash 决定渲染哪个 demo
- *  - 无 hash / #home → App（ComputerScene 版）
- *  - #film           → KiraFilmDemo（多 section 滚动版）
+ *  - 无 hash / 其他未知 hash → App（ComputerScene 版落地页）
+ *  - #film           → KiraFilmDemo（多 section 滚动版，起始帧由 sessionStorage 恢复决定）
+ *  - #home/#work/#about/#contact → KiraFilmDemo（起始帧由锚点映射决定，不再退出胶片页）
  *  - #trace          → TraceDetailPage（trace 作品展示页）
  *
  * 参数：无
  * 返回值：无
  * 异常：若 #root 不存在会抛出 TypeError
  *
- * 注意事项：hash 切换会触发完整重渲染（组件树替换），
- *          适合不同 demo 间切换；若想保留状态请用路由库
+ * 注意事项：
+ *  - 四个导航锚点现在也渲染胶片页：胶片页内的跳帧由 KiraFilmDemo 的 hashchange 监听完成
+ *    （组件 key 固定为 'film'，不重新 mount，所以切锚点不会重放白闪入场）
+ *  - hash 切换会触发完整重渲染（组件树替换），
+ *    适合不同 demo 间切换；若想保留状态请用路由库
  */
 function Root() {
   const hash = useHashRoute();
   if (hash === '#trace') return <TraceDetailPage key="trace" />;
-  const isFilm = hash === '#film';
+  const hashSection = FILM_SECTION_BY_HASH[hash];   // #film 时为 undefined
+  const isFilm = hash === '#film' || hashSection !== undefined;
   // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
-  return <React.StrictMode>{isFilm ? <KiraFilmDemo key="film" /> : <App key="app" />}</React.StrictMode>;
+  return (
+    <React.StrictMode>
+      {isFilm ? (
+        <KiraFilmDemo key="film" hashSection={hashSection} />
+      ) : (
+        <App key="app" />
+      )}
+    </React.StrictMode>
+  );
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<Root />);

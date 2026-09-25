@@ -154,6 +154,15 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
+ * 非当前帧的 DOM 内容不透明度（A 方案：帧内内容归属必须清楚）
+ *
+ * 背景：所有 section 的 DOM 内容（文字/轮播卡）都按各自帧位摆在 3D 空间里，
+ *      若邻帧也全亮，观众会看到"同一块屏幕上叠着两帧内容"，读不出卡片属于哪一帧。
+ * 取值：0.1（几乎不可见，但保留"胶片上还有别的画面"的暗示；设 0 会变成只剩当前帧的干净版）
+ */
+const NEIGHBOR_FRAME_OPACITY = 0.1;
+
+/**
  * 屏幕文字组件（用 R3F <Html> 投影到 3D 屏幕平面）
  *
  * 功能：
@@ -177,20 +186,29 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  */
 function ScreenText({
   sectionIndex,
+  activeSection,
   transitionFlashRef,
 }: {
   sectionIndex: number;
+  activeSection: number;
   transitionFlashRef: React.MutableRefObject<number>;
 }) {
   const section = SECTIONS[sectionIndex];
   const containerRef = useRef<HTMLDivElement>(null);
+  // 当前不透明度（用 ref 做平滑逼近，避免拖动换帧时邻帧"啪"地变亮/变暗）
+  const opacityRef = useRef(1);
 
-  // 每帧：根据 transitionFlash 调整透明度（闪光时淡出掩盖切换）
-  useFrame(() => {
+  // 每帧：按"是否当前帧"与 transitionFlash 计算目标不透明度，再平滑逼近
+  //  - 当前帧：完全不透明；flash 峰值时淡出（被白色屏幕掩盖切换瞬间）
+  //  - 邻帧：压暗到 NEIGHBOR_FRAME_OPACITY —— A 方案要求"帧内内容归属清楚"，
+  //    否则相邻两帧的文字/卡片同时全亮，观众读不出这块内容属于哪一帧
+  useFrame((_, delta) => {
     if (!containerRef.current) return;
     const flash = transitionFlashRef.current;
-    // 闪光峰值时文字完全透明（被白色屏幕掩盖）
-    containerRef.current.style.opacity = `${1 - flash}`;
+    const isCurrent = sectionIndex === activeSection;
+    const target = (isCurrent ? 1 : NEIGHBOR_FRAME_OPACITY) * (1 - flash);
+    opacityRef.current += (target - opacityRef.current) * Math.min(delta * 6, 1);
+    containerRef.current.style.opacity = `${opacityRef.current}`;
   });
 
   // scale：让 DOM 的 1024px 对应 3D 空间的 4 单位（屏幕 plane 宽度）
@@ -244,8 +262,10 @@ function ScreenText({
  *  - position z=0.01 略高于屏幕平面，避免 z-fighting
  */
 function WorkCarousel({
+  activeSection,
   transitionFlashRef,
 }: {
+  activeSection: number;
   transitionFlashRef: React.MutableRefObject<number>;
 }) {
   // 当前显示的项目索引（0~3）
@@ -273,11 +293,19 @@ function WorkCarousel({
     return () => clearInterval(timer);
   }, []);
 
-  // 每帧：根据 transitionFlash 调整透明度（闪光时淡出掩盖切换）
-  useFrame(() => {
+  // 当前不透明度（ref 平滑逼近：拖动换帧时卡片不会"啪"地亮/暗）
+  const opacityRef = useRef(1);
+
+  // 每帧：按"是否当前帧"与 transitionFlash 计算目标不透明度，再平滑逼近
+  // 注意：本帧索引是固定的 1（轮播只挂在 SELECTED WORK 那一帧上），
+  //      因此"是否当前帧"= activeSection === 1
+  useFrame((_, delta) => {
     if (!containerRef.current) return;
     const flash = transitionFlashRef.current;
-    containerRef.current.style.opacity = `${1 - flash}`;
+    const isCurrent = activeSection === 1;
+    const target = (isCurrent ? 1 : NEIGHBOR_FRAME_OPACITY) * (1 - flash);
+    opacityRef.current += (target - opacityRef.current) * Math.min(delta * 6, 1);
+    containerRef.current.style.opacity = `${opacityRef.current}`;
   });
 
   const current = PROJECTS[currentIdx];
@@ -372,7 +400,6 @@ function ScreenDisplay({
   sectionIndex: number;
   transitionFlashRef: React.MutableRefObject<number>;
 }) {
-  const matRef = useRef<THREE.MeshStandardMaterial>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const rectLightRef = useRef<THREE.RectAreaLight>(null);
 
@@ -421,8 +448,8 @@ function ScreenDisplay({
     const h = canvas.height;        // 768
     const frameW = 1024;            // 每个 section 占 1024 宽
 
-    // 1. 整体背景：深色填充
-    ctx.fillStyle = '#050507';
+    // 1. 整体背景：深色填充（S4 抬了一档：画面区要能从页面背景 #0a0a0a 里被认出来）
+    ctx.fillStyle = '#0b0a12';
     ctx.fillRect(0, 0, totalW, h);
 
     // 2. 逐个 section 绘制
@@ -433,8 +460,8 @@ function ScreenDisplay({
       const cx = xOff + frameW / 2;
       const cy = h / 2;
       const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, frameW / 1.5);
-      bgGrad.addColorStop(0, '#1a1a1f');
-      bgGrad.addColorStop(1, '#050507');
+      bgGrad.addColorStop(0, '#22222c');
+      bgGrad.addColorStop(1, '#0b0a12');
       ctx.fillStyle = bgGrad;
       ctx.fillRect(xOff, 0, frameW, h);
 
@@ -494,6 +521,33 @@ function ScreenDisplay({
       for (let y = 0; y < h; y += 8) {
         ctx.fillRect(xOff, y, frameW, 1);
       }
+
+      // 2.8 画面帧边框（A 方案：让"这一帧的画面边界"可见）
+      //     - 屏幕贴图同时作为 emissiveMap，会被 emissive（accentColor）相乘，
+      //       所以这里用近白色绘制，屏幕上呈现为该帧主色的描边
+      //     - 边框位置与该帧在胶片上的画面范围一致，配合 3D 里的帧分隔线读帧范围
+      //     - 用直角矩形 + 四角加粗（取景框角标），呼应页面复古风，不用圆角
+      const inset = 10;
+      const bx = xOff + inset;
+      const by = inset;
+      const bw = frameW - inset * 2;
+      const bh = h - inset * 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 7;
+      const tick = 52;
+      ctx.beginPath();
+      // 左上角
+      ctx.moveTo(bx, by + tick); ctx.lineTo(bx, by); ctx.lineTo(bx + tick, by);
+      // 右上角
+      ctx.moveTo(bx + bw - tick, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + tick);
+      // 右下角
+      ctx.moveTo(bx + bw, by + bh - tick); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw - tick, by + bh);
+      // 左下角
+      ctx.moveTo(bx + tick, by + bh); ctx.lineTo(bx, by + bh); ctx.lineTo(bx, by + bh - tick);
+      ctx.stroke();
     });
 
     // 3. 帧分隔线：每个 section 之间画一条竖线（标识胶片画面帧边界）
@@ -543,22 +597,38 @@ function ScreenDisplay({
   );
   const whiteColor = useMemo(() => new THREE.Color('#ffffff'), []);
 
-  // 屏幕平面不应用弯曲 shader：屏幕需要保持平直，确保内容（含日期/文字）清晰可见
-  // 之前应用了 applyCurvedShader，导致屏幕在远离当前 section 的区域弯曲很大，
-  // 跑到 dirt mesh 后面，被 dirt 遮挡（屏幕日期/文字看不见）
-  // 胶片边缘/基底/左右延伸保留弯曲，屏幕平直，视觉上胶片卷曲但画面帧清晰
+  // 屏幕材质（A 方案：画面区必须与胶片一起弯）
+  //  - 旧版让屏幕保持平直，结果两端的齿孔带按 dz = cur·dx² 弯回去、屏幕边界却纹丝不动，
+  //    画面边界与胶片带越靠边越错开（"底部那条胶片斜插"的观感就来自这里）
+  //  - 现在屏幕与胶基/齿孔带共用同一份 curvedUniforms → 三者始终贴合
+  //  - 前提：几何体必须有 X 方向细分（见 JSX 的 planeGeometry 32 段），
+  //    否则只有四角被弯、平面会变成"折线四边形"穿出胶片（旧版正是这样被 dirt 挡住的）
+  //  - map 与 emissiveMap 同一张贴图：画面内容全走自发光，color 压到近黑，
+  //    避免胶片那两盏暖/冷光把面板染黄（见 S1 结论）
+  const screenMat = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      map: texture,
+      color: '#141414',
+      emissive: '#ffffff',
+      emissiveMap: texture,
+      emissiveIntensity: 1.5,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    });
+    applyCurvedShader(m);
+    return m;
+  }, [texture]);
 
   // 每帧：根据 transitionFlash 调整 emissive 强度（闪光掩盖切换）
-  //        + 平滑更新每个 section group 的 rotateY（模拟胶片弯曲卷曲）
+  //        + 让每个 section group（承载 DOM 文字/卡片）贴合同一套胶片曲面
   useFrame((_, delta) => {
-    if (!matRef.current) return;
     const flash = transitionFlashRef.current;
     // 基础 emissive 0.9 + 闪光时拉到 4.0
-    matRef.current.emissiveIntensity = 0.9 + flash * 4.0;
+    screenMat.emissiveIntensity = 0.9 + flash * 4.0;
     if (flash > 0.001) {
-      matRef.current.emissive.lerpColors(accentColorObj, whiteColor, flash);
+      screenMat.emissive.lerpColors(accentColorObj, whiteColor, flash);
     } else {
-      matRef.current.emissive.copy(accentColorObj);
+      screenMat.emissive.copy(accentColorObj);
     }
 
     // RectAreaLight 同步
@@ -571,21 +641,25 @@ function ScreenDisplay({
       }
     }
 
-    // 平滑更新每个 section group 的旋转（模拟胶片弯曲）
-    // 当前 section：rotateY=0（正面朝相机）
-    // 左侧 section（i < sectionIndex）：rotateY > 0（向右旋转）
-    // 右侧 section（i > sectionIndex）：rotateY < 0（向左旋转）
-    // 距离越远旋转越大，模拟胶片卷曲效果
+    // 平滑更新每个 section group 的位置与旋转，让 DOM 内容贴着胶片曲面
+    // 关键：公式必须与 applyCurvedShader 里的顶点弯曲完全一致，否则 DOM 会"浮"在片面上方
+    //  - 曲面：z = cur·dx²，cur = mix(near, far, smoothstep(0, uFalloff, |dx|))
+    //  - 切线斜率：dz/dx = 2·cur·dx → 绕 Y 的贴合角 = −atan(2·cur·dx)
+    //    （旋转 +θ 会把局部 +X 轴压向 −Z，与"越远离当前帧越退后"一致）
+    // 旧实现用 offset*0.25 rad / −|offset|*0.2 这套近似值，在邻帧处与真实曲面差约 0.44 world，
+    // 卡片看起来是"贴上去的 UI 卡"而不是画面内容
     const lerpFactor = Math.min(delta * 4, 1);  // 帧率无关 lerp
+    const nearCur = curvedUniforms.uCurvatureNear.value;
+    const farCur = curvedUniforms.uCurvatureFar.value;
+    const falloff = curvedUniforms.uFalloff.value;
     sectionGroupRefs.current.forEach((grp, i) => {
       if (!grp) return;
-      const offset = i - sectionIndex;  // -3 ~ +3
-      // 旋转角度：每偏移 1 单位旋转 0.25 rad（约 14°）
-      // 两侧 section 旋转明显，模拟胶片弯曲卷曲
-      const targetRotateY = offset * 0.25;
-      // 远离的 section 稍微后退（z 负方向），增强深度感
-      const targetZ = -Math.abs(offset) * 0.2;
-      // lerp 平滑过渡（切换 section 时旋转有缓动）
+      const dx = (i - sectionIndex) * 4;  // 该帧中心到当前帧中心的 world 距离
+      const mixFactor = smoothstep(0, falloff, Math.abs(dx));
+      const cur = nearCur + (farCur - nearCur) * mixFactor;
+      const targetZ = cur * dx * dx;
+      const targetRotateY = -Math.atan(2 * cur * dx);
+      // lerp 平滑过渡（切换 section 时贴面关系有缓动）
       grp.rotation.y += (targetRotateY - grp.rotation.y) * lerpFactor;
       grp.position.z += (targetZ - grp.position.z) * lerpFactor;
     });
@@ -610,32 +684,15 @@ function ScreenDisplay({
           section i（canvas i*1024~(i+1)*1024）对应 3D [-2+4i, 2+4i]，中心 4i
           注意：plane 宽高比必须等于 canvas 纹理宽高比（N*1024 : 768 = N*4 : 3），
           否则纹理被非等比拉伸，圆环等图形会变形 */}
-      <mesh ref={meshRef} position={[SECTIONS.length * 4 / 2 - 2, 0, 0]} rotation={[0, 0, 0]}>
-        <planeGeometry args={[SECTIONS.length * 4, 3]} />
-        <meshStandardMaterial
-          ref={matRef}
-          map={texture}
-          /* color 从默认白改到近黑（S1）：屏幕是自发光器件，画面内容由 emissiveMap 承担；
-             原来自色 albedo 会把新加的胶片暖光也吃进来，整块面板被染成黄褐。
-             压到近黑后，灯光的漫反射贡献趋近于 0（不改变 emissive 与闪光机制），
-             屏幕保持"自己发光"的干净观感 */
-          color="#141414"
-          emissive={SECTIONS[sectionIndex].accentColor}
-          emissiveMap={texture}
-          emissiveIntensity={1.5}
-          toneMapped={false}
-          side={THREE.DoubleSide}
-        />
+      <mesh ref={meshRef} position={[SECTIONS.length * 4 / 2 - 2, 0, 0]} rotation={[0, 0, 0]} material={screenMat}>
+        {/* 32 段 X 细分：弯曲由 vertex shader 施加，段数不足会退化成"折线四边形"穿出胶片 */}
+        <planeGeometry args={[SECTIONS.length * 4, 3, 32, 1]} />
       </mesh>
       {/* 屏幕内容（Html 投影到胶片各画面帧）：
-          渲染所有 4 个 section 的文字/轮播，每个位置 x = i * 4
-          当前 sectionIndex 的实例完全可见，其他实例透明度降低（侧边预览）
-          每个 section 的 group 加 rotateY 旋转模拟弯曲：
-            - 当前 section（i === sectionIndex）：旋转 0（正面朝向相机）
-            - 左侧 section：rotateY 正值（向右旋转，远离相机）
-            - 右侧 section：rotateY 负值（向左旋转，远离相机）
-            - 距离越远，旋转角度越大（模拟胶片卷曲）
-          旋转量由 useFrame 平滑过渡（lerp 到目标值），避免 section 切换突变 */}
+          渲染所有 section 的文字/轮播，每个位置 x = i * 4
+          当前帧完全不透明，邻帧压暗到 NEIGHBOR_FRAME_OPACITY（A 方案：帧归属清楚）
+          每个 section 的 group 由 useFrame 贴合同一套胶片曲面（z = cur·dx² + 切线角），
+          因此 DOM 内容看起来是"胶片上的画面"而不是浮在上面的 UI 层 */}
       {SECTIONS.map((_, i) => (
         <group
           key={i}
@@ -643,9 +700,9 @@ function ScreenDisplay({
           position={[i * 4, 0, 0]}
         >
           {i === 1 ? (
-            <WorkCarousel transitionFlashRef={transitionFlashRef} />
+            <WorkCarousel activeSection={sectionIndex} transitionFlashRef={transitionFlashRef} />
           ) : (
-            <ScreenText sectionIndex={i} transitionFlashRef={transitionFlashRef} />
+            <ScreenText sectionIndex={i} activeSection={sectionIndex} transitionFlashRef={transitionFlashRef} />
           )}
         </group>
       ))}
@@ -668,7 +725,8 @@ function ScreenDisplay({
  * 注意事项：
  *  - 用模块级单例，确保 FilmStrip 中所有材质共享同一份
  *  - useFrame 中 lerp 更新 uActiveCenterX，避免 section 切换时弯曲突变
- *  - 屏幕平面（ScreenDisplay）不使用这套 uniform，保持平直确保内容清晰
+ *  - 屏幕平面（ScreenDisplay）与胶基/齿孔带共用这套 uniform：画面区必须跟胶片一起弯，
+ *    否则两端的齿孔带和画面边界会错开（A 方案）
  */
 const curvedUniforms = {
   uActiveCenterX: { value: 0 },
@@ -985,10 +1043,12 @@ function FilmStrip({ activeSectionX }: { activeSectionX: number }) {
     const h = canvas.height;  // 644
 
     // 1. 片基：琥珀色垂直渐变（与 filmBaseMat 的色相呼应，让"面"能被看见）
+    //    S4 亮度重平衡：整条抬亮约一档（实测片基带行均值 21 vs 背景 10，只有 2 倍，
+    //    偏暗；抬一档后配合 S1 的暖主光，片基的"面"与受光形体更明确）
     const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
-    bgGrad.addColorStop(0, '#3a2410');
-    bgGrad.addColorStop(0.5, '#7a5426');
-    bgGrad.addColorStop(1, '#3a2410');
+    bgGrad.addColorStop(0, '#452b14');
+    bgGrad.addColorStop(0.5, '#8a5f2c');
+    bgGrad.addColorStop(1, '#452b14');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, w, h);
 
@@ -2650,8 +2710,8 @@ export function FilmScene({
           2. 冷色低位补光：从右下补一点，避免暗侧糊成一片，并与暖主光形成冷暖对比
              （单一光源只会平）。
           强度说明：待 S2 把片基贴图提亮后按实际观感回调（当前值偏大为提亮预留）。 */}
-      <directionalLight color="#ffca8f" intensity={2.5} position={[-7, 2.8, 3.6]} />
-      <directionalLight color="#8fb0ff" intensity={0.8} position={[8, -3, 3.2]} />
+      <directionalLight color="#ffca8f" intensity={3.0} position={[-7, 2.8, 3.6]} />
+      <directionalLight color="#8fb0ff" intensity={1.0} position={[8, -3, 3.2]} />
 
       {/* 胶片条（35mm 电影胶片风格，替代电脑外壳）
           activeSectionX：当前 section 中心 world x（section i → i*4）
