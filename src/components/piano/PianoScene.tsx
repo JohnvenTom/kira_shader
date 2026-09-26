@@ -397,12 +397,20 @@ export function PianoScene({
         varying float vNear;
         void main() {
           vec3 p = position;
-          p.x += sin(uTime * 0.11 + aSeed * 3.1) * 0.55 + sin(uTime * 0.31 + aSeed) * 0.12;
-          p.y += sin(uTime * 0.07 + aSeed * 1.7) * 0.38;
-          p.z += cos(uTime * 0.09 + aSeed * 2.3) * 0.45;
-          // 呼吸：每颗粒子自有相位的慢频深调制(亮度与尺寸同步胀缩)
-          float breath = 0.5 + 0.5 * sin(uTime * (0.35 + fract(aSeed) * 0.45) + aSeed * 7.0);
-          vTw = 0.30 + 0.70 * breath;
+          // 随机飘动：三频正弦叠加,频率/相位由种子派生,每颗粒子轨迹不规则不重复
+          float s1 = fract(aSeed * 0.731);
+          float s2 = fract(aSeed * 0.397);
+          float s3 = fract(aSeed * 0.913);
+          p.x += sin(uTime * (0.08 + s1 * 0.10) + aSeed * 3.1) * 0.55
+               + sin(uTime * (0.21 + s2 * 0.25) + s2 * 9.0) * 0.18;
+          p.y += sin(uTime * (0.05 + s2 * 0.08) + aSeed * 1.7) * 0.38
+               + sin(uTime * (0.17 + s1 * 0.20) + s3 * 7.0) * 0.14;
+          p.z += cos(uTime * (0.07 + s3 * 0.09) + aSeed * 2.3) * 0.45
+               + sin(uTime * (0.13 + s1 * 0.16) + s2 * 11.0) * 0.15;
+          // 随机呼吸：双频干涉,深浅快慢各不相同,亮度忽明忽暗不循环
+          float breath = 0.5 + 0.5 * sin(uTime * (0.30 + s1 * 0.50) + aSeed * 7.0)
+                       * (0.55 + 0.45 * sin(uTime * (0.13 + s2 * 0.11) + s3 * 5.0));
+          vTw = 0.25 + 0.75 * breath;
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           vNear = -mv.z;
           float size = (2.2 + fract(aSeed * 0.717) * 4.0) * (140.0 / max(-mv.z, 0.001));
