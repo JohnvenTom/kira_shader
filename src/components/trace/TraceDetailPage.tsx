@@ -178,11 +178,15 @@ const distribute = useCallback((p: number) => {
   const t = p * T_TOTAL;
   // 只写"状态真的变了"的动画：主播放区有近 6000 条 per-path 动画，
   // 每帧全量写 currentTime 会让整幅画每帧重排重绘（实测滑行时帧间隔 ~200ms）。
-  // 单条动画的观感只取决于 clamp(t, 延迟, 延迟+时长)：未开始写延迟点、已结束写收尾点。
+  // 单条动画的观感只取决于 clamp(t, 延迟, 延迟+时长)：已结束写收尾点、中间写 t；
+  // 未开始必须写 0（before 相位）而不是延迟点——forwards 填充在延迟前不生效，
+  // 写延迟点会把动画强制推进活动相位起点、from 帧随即生效
+  // （ink 的 from{opacity:.38} 曾让彩色底稿从 0% 就可见，母体同期是白纸）。
+  // both 填充的动画写 0 与写延迟点观感一致（backwards 填充渲染同一 0% 帧）。
   let budget = 3000;
   for (const item of animsRef.current) {
     const target =
-      t <= item.delay ? item.delay : t >= item.delay + item.frag ? item.delay + item.frag : t;
+      t < item.delay ? 0 : t >= item.delay + item.frag ? item.delay + item.frag : t;
     if (item.last === target) continue;
     if (budget-- <= 0) break;
     item.last = target;
@@ -2012,10 +2016,11 @@ function CodeGallery() {
     let budget = 3000;
     for (const item of list) {
       // 一条动画的观感只取决于 clamp(t, 延迟, 延迟+时长)：
-      // 未开始 → 写延迟点（停在 0% 关键帧），已结束 → 写收尾点（停在 100%），
-      // 中间 → 就写 t。这样跳变后不会留下"该结束却停在半途"的残影。
+      // 未开始 → 写 0（before 相位，forwards 填充不生效；写延迟点会强制 from 帧
+      // 生效，ink 的 from{opacity:.38} 曾让底稿在循环起点就可见），中间 → 写 t，
+      // 已结束 → 写收尾点。这样跳变后不会留下"该结束却停在半途"的残影。
       const target =
-        t <= item.delay ? item.delay : t >= item.delay + item.frag ? item.delay + item.frag : t;
+        t < item.delay ? 0 : t >= item.delay + item.frag ? item.delay + item.frag : t;
       if (item.last === target) continue;
       if (budget-- <= 0) break;
       item.last = target;
