@@ -2654,6 +2654,10 @@ body.camera-debug-mode .scroll-container {
   flex: 1 1 calc(50% - 4px);
   text-align: center;
 }
+.piano-btn.third {
+  flex: 1 1 calc(33.33% - 5px);
+  text-align: center;
+}
 
 /* 音量/混响滑杆 */
 .piano-slider {

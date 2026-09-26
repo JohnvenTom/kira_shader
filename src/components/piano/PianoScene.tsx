@@ -27,6 +27,7 @@ import * as THREE from 'three';
 import { buildPiano, NOTE_NAMES, type PianoModel } from './pianoModel';
 import { PianoAudio } from './pianoAudio';
 import { createOrbit, type OrbitController } from './pianoOrbit';
+import { PIANO_STYLES, type PianoStyleName } from './pianoGrade';
 
 /** 视角预设（与原项目一致的六个机位） */
 export const PIANO_VIEWS: Record<string, { theta: number; phi: number; radius: number; target: THREE.Vector3 }> = {
@@ -99,6 +100,8 @@ export interface PianoSceneProps {
   hintElRef: React.RefObject<HTMLDivElement>;
   /** toast 提示元素（八度切换等） */
   toastElRef: React.RefObject<HTMLDivElement>;
+  /** 风格名（影棚/暗房/动画）：雾/地面/灯光/曝光逐帧阻尼过渡 */
+  styleName?: PianoStyleName;
 }
 
 /** 白键最大按压角（弧度） */
@@ -231,9 +234,13 @@ export function PianoScene({
   statElRef,
   hintElRef,
   toastElRef,
+  styleName = 'studio',
 }: PianoSceneProps) {
   const { camera, gl, scene } = useThree();
   const cam = camera as THREE.PerspectiveCamera;
+  // 风格名的 ref 版本（帧循环里读取，切换走阻尼不重渲染）
+  const styleRef = useRef<PianoStyleName>(styleName);
+  styleRef.current = styleName;
 
   /* ---------------- 内部状态（ref，避免每帧重渲染） ---------------- */
   const stateRef = useRef({
@@ -324,12 +331,20 @@ export function PianoScene({
   }, [gl, scene]);
 
   /* ---------------- 地面 + 接地阴影 ---------------- */
+  // 地面材质引用（风格切换时颜色阻尼过渡）
+  const groundMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  // 灯光引用（风格切换时强度阻尼过渡）
+  const hemiLightRef = useRef<THREE.HemisphereLight>(null);
+  const keyLightRef = useRef<THREE.DirectionalLight>(null);
+  const fillLightRef = useRef<THREE.DirectionalLight>(null);
+  const rimLightRef = useRef<THREE.DirectionalLight>(null);
   const groundGroup = useMemo(() => {
     const group = new THREE.Group();
     const mat = new THREE.MeshPhysicalMaterial({
       color: 0xdfe3ea, roughness: 0.44, metalness: 0.0,
       clearcoat: 0.30, clearcoatRoughness: 0.45, envMapIntensity: 0.45,
     });
+    groundMatRef.current = mat;
     const ground = new THREE.Mesh(new THREE.CircleGeometry(16, 72), mat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -352,6 +367,22 @@ export function PianoScene({
     add(-0.045, -1.90, 0.52, 0.52, 0.75);
     add(0, -0.12, 0.62, 0.50, 0.45);
     return group;
+  }, []);
+
+  /* ---------------- 风格切换：场景侧目标（线性空间颜色缓存） ---------------- */
+  const sceneStyleTargets = useMemo(() => {
+    const out = {} as Record<PianoStyleName, { fog: THREE.Color; ground: THREE.Color; exposure: number; key: number; hemi: number; fill: number }>;
+    for (const [name, S] of Object.entries(PIANO_STYLES) as [PianoStyleName, (typeof PIANO_STYLES)[PianoStyleName]][]) {
+      out[name] = {
+        fog: new THREE.Color().setRGB(S.scene.fog[0], S.scene.fog[1], S.scene.fog[2], THREE.SRGBColorSpace),
+        ground: new THREE.Color().setRGB(S.scene.ground[0], S.scene.ground[1], S.scene.ground[2], THREE.SRGBColorSpace),
+        exposure: S.scene.exposure,
+        key: S.scene.key,
+        hemi: S.scene.hemi,
+        fill: S.scene.fill,
+      };
+    }
+    return out;
   }, []);
 
   /* ---------------- DOM 小工具（音符显示 / toast / 提示淡出） ---------------- */
@@ -866,6 +897,20 @@ export function PianoScene({
       controlsRef.current?.update(dt);
     }
 
+    // === 风格过渡：雾 / 地面 / 灯光 / 曝光整套阻尼走向目标风格 ===
+    // （与 PianoPostProcessing 的 Grade uniforms 阻尼同节奏，观感对齐磁带页 setTheme）
+    {
+      const S = sceneStyleTargets[styleRef.current];
+      const k = 1 - Math.exp(-dt * 5.0);
+      scene.fog?.color.lerp(S.fog, k);
+      groundMatRef.current?.color.lerp(S.ground, k);
+      gl.toneMappingExposure += (S.exposure - gl.toneMappingExposure) * k;
+      keyLightRef.current && (keyLightRef.current.intensity += (3.10 * S.key - keyLightRef.current.intensity) * k);
+      hemiLightRef.current && (hemiLightRef.current.intensity += (0.30 * S.hemi - hemiLightRef.current.intensity) * k);
+      fillLightRef.current && (fillLightRef.current.intensity += (0.34 * S.fill - fillLightRef.current.intensity) * k);
+      rimLightRef.current && (rimLightRef.current.intensity += (0.42 * S.fill - rimLightRef.current.intensity) * k);
+    }
+
     // === FPS / 三角面 / 发声数统计（0.5s 更新一次） ===
     st.frames++;
     st.fpsTime += dt;
@@ -888,10 +933,11 @@ export function PianoScene({
       <primitive object={groundGroup} />
 
       {/* 半球环境光 */}
-      <hemisphereLight args={[0xffffff, 0xb4bcc9, 0.30]} />
+      <hemisphereLight ref={hemiLightRef} args={[0xffffff, 0xb4bcc9, 0.30]} />
 
       {/* 主光（投影） */}
       <directionalLight
+        ref={keyLightRef}
         castShadow
         intensity={3.10}
         color={0xffffff}
@@ -910,8 +956,8 @@ export function PianoScene({
       />
 
       {/* 补光 + 轮廓光 */}
-      <directionalLight intensity={0.34} color={0xeef3ff} position={[-3.2, 2.2, -1.4]} />
-      <directionalLight intensity={0.42} color={0xffffff} position={[-0.6, 1.4, -4.2]} />
+      <directionalLight ref={fillLightRef} intensity={0.34} color={0xeef3ff} position={[-3.2, 2.2, -1.4]} />
+      <directionalLight ref={rimLightRef} intensity={0.42} color={0xffffff} position={[-0.6, 1.4, -4.2]} />
     </>
   );
 }

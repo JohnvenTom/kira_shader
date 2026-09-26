@@ -5,9 +5,9 @@
  *  - 独立滚动容器驱动 PianoScene 的苹果风格镜头旅程（滚动推进运镜），
  *    镜头结束后进入自由交互：轨道拖动 / 滚轮缩放 / 点击琴键弹奏
  *  - 完整复刻原独立项目的 UI：
- *      · 左缘抽屉控制面板（六个视角机位 / 琴盖 / 键盘盖 / 自动旋转 / 半音键对比 /
- *        演示曲《致爱丽丝》/ 重置 / 音量 / 混响），贴屏幕左缘，收起后滑出左缘、
- *        仅留右缘细把手
+ *      · 左缘抽屉控制面板（风格三件套 / 六个视角机位 / 琴盖 / 键盘盖 / 自动旋转 /
+ *        半音键对比 / 演示曲《致爱丽丝》/ 重置 / 音量 / 混响），贴屏幕左缘，
+ *        收起后滑出左缘、仅留右缘细把手
  *      · 右下三条屏幕踏板（弱音 / 选择延音 / 延音），按住生效
  *      · 左下音符读数（弹奏时实时显示音名）与 FPS/三角面统计
  *      · 底部操作提示（拖动/缩放/滑奏/电脑键盘弹奏），首次弹奏后变淡
@@ -36,6 +36,15 @@ import {
   type PianoApi,
   type PianoUiSnapshot,
 } from './PianoScene';
+import { PianoPostProcessing } from './PianoPostProcessing';
+import type { PianoStyleName } from './pianoGrade';
+
+/** 风格按钮定义（与磁带页 暗房/影棚/动画 三件套对齐，默认影棚） */
+const STYLE_BUTTONS: { key: PianoStyleName; label: string }[] = [
+  { key: 'studio', label: '影棚' },
+  { key: 'noir', label: '暗房' },
+  { key: 'toon', label: '动画' },
+];
 
 /** 视角机位按钮定义（与 PIANO_VIEWS 一一对应） */
 const VIEW_BUTTONS: { key: string; label: string }[] = [
@@ -88,6 +97,8 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
   const [volume, setVolume] = useState(0.85);
   // 混响滑杆值（默认拉满 = 滑杆上限，与 pianoAudio 初始 wet 增益一致）
   const [reverb, setReverb] = useState(0.8);
+  // 风格化 shader 当前风格（影棚 / 暗房 / 动画，切换逐帧阻尼渐变）
+  const [style, setStyle] = useState<PianoStyleName>('studio');
 
   /**
    * 内部滚动事件处理
@@ -245,7 +256,9 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
             statElRef={statElRef}
             hintElRef={hintElRef}
             toastElRef={toastElRef}
+            styleName={style}
           />
+          <PianoPostProcessing styleName={style} />
           <CanvasContextGuard />
         </Canvas>
       </div>
@@ -284,8 +297,21 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
             ≡
           </button>
 
-          {/* 控制面板（复刻原项目）：视角 / 琴体 / 演奏 / 音量 / 混响 */}
+          {/* 控制面板（复刻原项目）：风格 / 视角 / 琴体 / 演奏 / 音量 / 混响 */}
           <div className="piano-panel">
+            <h2>风格</h2>
+            <div className="piano-row">
+              {STYLE_BUTTONS.map((s) => (
+                <button
+                  key={s.key}
+                  className={`piano-btn third ${style === s.key ? 'on' : ''}`}
+                  onClick={() => setStyle(s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
             <h2>视角</h2>
             <div className="piano-row">
               {VIEW_BUTTONS.map((b) => (
