@@ -118,8 +118,9 @@ function init(): AudioContext | null {
   conv = ctx.createConvolver();
   conv.buffer = makeIR(2.6, 2.4);
 
-  dry = ctx.createGain(); dry.gain.value = 0.82;
-  wet = ctx.createGain(); wet.gain.value = 0.26;
+  // 初始混响拉满（wet=0.8），干路按 setReverb(0.8) 的公式同步 = 0.95 - 0.48
+  dry = ctx.createGain(); dry.gain.value = 0.47;
+  wet = ctx.createGain(); wet.gain.value = 0.8;
 
   dry.connect(master);
   wet.connect(conv); conv.connect(master);

@@ -2489,7 +2489,7 @@ body.camera-debug-mode .scroll-container {
   top: 84px;
   right: 5vw;
   text-align: right;
-  opacity: clamp(1, calc(1.1 - var(--piano-progress) * 1.9), 1);
+  opacity: clamp(0, calc(1.1 - var(--piano-progress) * 1.9), 1);
   transform: translateY(calc(var(--piano-progress) * -26px));
   transition: opacity 0.15s linear;
 }
@@ -2538,25 +2538,54 @@ body.camera-debug-mode .scroll-container {
   text-transform: uppercase;
   pointer-events: none;
   animation: piano-hint-pulse 2.4s ease-in-out infinite;
-  opacity: clamp(1, calc(1.2 - var(--piano-progress) * 3.4), 1);
+  opacity: clamp(0, calc(1.2 - var(--piano-progress) * 3.4), 1);
 }
 @keyframes piano-hint-pulse {
   0%, 100% { transform: translate(-50%, 0); }
   50% { transform: translate(-50%, 6px); }
 }
 
-/* 控制面板：毛玻璃白卡片，交互模式淡入 */
-.piano-panel {
+/* 控制抽屉：毛玻璃白卡片贴屏幕左缘，交互模式从左滑入；
+   收起时整体滑出左缘，只在屏幕左上角留下右缘的细竖条把手 */
+.piano-drawer {
   position: absolute;
   top: 68px;
-  right: 24px;
+  left: 0;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-14px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.45s cubic-bezier(0.4, 0.01, 0.2, 1),
+    visibility 0s linear 0.55s;
+}
+/* 旅程期间若已收起，直接藏到 -100%，避免重新进入交互时闪现滑出动画 */
+.piano-drawer.collapsed {
+  transform: translateX(-100%);
+}
+.piano-content-layer.interactive .piano-drawer {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+  transition:
+    opacity 0.5s ease,
+    transform 0.45s cubic-bezier(0.4, 0.01, 0.2, 1),
+    visibility 0s;
+}
+.piano-content-layer.interactive .piano-drawer.collapsed {
+  transform: translateX(-100%);
+}
+.piano-panel {
   width: 230px;
   padding: 16px 16px 14px;
   background: rgba(255, 255, 255, 0.6);
   backdrop-filter: blur(18px) saturate(1.4);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
   border: 1px solid rgba(255, 255, 255, 0.85);
-  border-radius: 18px;
+  border-left: 0;
+  border-radius: 0 18px 18px 0;
   box-shadow:
     0 18px 50px rgba(90, 100, 120, 0.14),
     0 2px 6px rgba(90, 100, 120, 0.06),
@@ -2565,22 +2594,9 @@ body.camera-debug-mode .scroll-container {
   overflow-y: auto;
   max-height: calc(100vh - 200px);
   scrollbar-width: none;
-  opacity: 0;
-  transform: translateX(14px);
-  transition:
-    opacity 0.5s ease,
-    transform 0.45s cubic-bezier(0.4, 0.01, 0.2, 1);
 }
 .piano-panel::-webkit-scrollbar {
   display: none;
-}
-.piano-content-layer.interactive .piano-panel {
-  opacity: 1;
-  transform: translateX(0);
-}
-.piano-panel.collapsed {
-  transform: translateX(calc(100% + 26px));
-  opacity: 0;
 }
 .piano-panel h2 {
   font-size: 10.5px;
@@ -2680,39 +2696,33 @@ body.camera-debug-mode .scroll-container {
   cursor: pointer;
 }
 
-/* 面板折叠按钮（圆形，位于面板原位） */
+/* 抽屉把手：细竖条贴在面板右缘，收起后随抽屉一起停在屏幕左上角；
+   用面板 on 态同款深色胶囊，保证在浅色摄影棚背景上可辨识 */
 .piano-collapse-btn {
   position: absolute;
-  top: 68px;
-  right: 24px;
-  z-index: 6;
-  width: 34px;
-  height: 34px;
+  left: 100%;
+  top: 14px;
+  width: 22px;
+  height: 56px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: 0 10px 10px 0;
   display: flex;
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
-  color: #454a55;
+  color: #fff;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(180, 188, 200, 0.42);
-  box-shadow:
-    0 1px 2px rgba(90, 100, 120, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: linear-gradient(#3c4250, #2b303b);
+  border: 1px solid #2b303b;
+  border-left: 0;
+  box-shadow: 0 4px 14px rgba(40, 46, 58, 0.28);
   pointer-events: auto;
-  opacity: 0;
-  transition: opacity 0.5s ease 0.1s, background 0.18s, transform 0.12s;
-}
-.piano-content-layer.interactive .piano-collapse-btn {
-  opacity: 1;
+  transition: background 0.18s;
 }
 .piano-collapse-btn:hover {
-  background: #fff;
-  transform: translateY(-1px);
+  background: linear-gradient(#4a5162, #353b48);
 }
 
 /* 屏幕踏板：按住生效，交互模式淡入 */
@@ -2849,15 +2859,16 @@ body.camera-debug-mode .scroll-container {
     top: 64px;
     right: 18px;
   }
+  .piano-drawer {
+    top: 56px;
+  }
   .piano-panel {
     width: 200px;
-    top: 56px;
-    right: 14px;
     padding: 13px;
   }
   .piano-collapse-btn {
-    top: 56px;
-    right: 14px;
+    width: 20px;
+    height: 48px;
   }
   .piano-note-read {
     left: 18px;

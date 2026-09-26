@@ -5,8 +5,9 @@
  *  - 独立滚动容器驱动 PianoScene 的苹果风格镜头旅程（滚动推进运镜），
  *    镜头结束后进入自由交互：轨道拖动 / 滚轮缩放 / 点击琴键弹奏
  *  - 完整复刻原独立项目的 UI：
- *      · 右上控制面板（六个视角机位 / 琴盖 / 键盘盖 / 自动旋转 / 半音键对比 /
- *        演示曲《致爱丽丝》/ 重置 / 音量 / 混响），可折叠
+ *      · 左缘抽屉控制面板（六个视角机位 / 琴盖 / 键盘盖 / 自动旋转 / 半音键对比 /
+ *        演示曲《致爱丽丝》/ 重置 / 音量 / 混响），贴屏幕左缘，收起后滑出左缘、
+ *        仅留右缘细把手
  *      · 右下三条屏幕踏板（弱音 / 选择延音 / 延音），按住生效
  *      · 左下音符读数（弹奏时实时显示音名）与 FPS/三角面统计
  *      · 底部操作提示（拖动/缩放/滑奏/电脑键盘弹奏），首次弹奏后变淡
@@ -83,9 +84,10 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
   const [view, setView] = useState('front');
   // 面板折叠状态
   const [collapsed, setCollapsed] = useState(false);
-  // 音量 / 混响滑杆值（与原项目默认一致）
+  // 音量滑杆值（与原项目默认一致）
   const [volume, setVolume] = useState(0.85);
-  const [reverb, setReverb] = useState(0.26);
+  // 混响滑杆值（默认拉满 = 滑杆上限，与 pianoAudio 初始 wet 增益一致）
+  const [reverb, setReverb] = useState(0.8);
 
   /**
    * 内部滚动事件处理
@@ -270,94 +272,98 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
         {/* 旅程提示：滚动推进运镜 */}
         <div className="piano-scroll-hint">SCROLL TO EXPLORE</div>
 
-        {/* 面板折叠按钮 */}
-        <button
-          className="piano-collapse-btn"
-          title="收起 / 展开面板"
-          onClick={() => setCollapsed((c) => !c)}
-        >
-          ≡
-        </button>
+        {/* 左缘抽屉：面板 + 右缘细把手，收起时整体滑出左缘只留把手 */}
+        <div className={`piano-drawer ${collapsed ? 'collapsed' : ''}`}>
+          {/* 抽屉把手（收起后停在屏幕左上角） */}
+          <button
+            className="piano-collapse-btn"
+            title="收起 / 展开面板"
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            ≡
+          </button>
 
-        {/* 控制面板（复刻原项目）：视角 / 琴体 / 演奏 / 音量 / 混响 */}
-        <div className={`piano-panel ${collapsed ? 'collapsed' : ''}`}>
-          <h2>视角</h2>
-          <div className="piano-row">
-            {VIEW_BUTTONS.map((b) => (
-              <button
-                key={b.key}
-                className={`piano-btn half ${view === b.key ? 'on' : ''}`}
-                onClick={() => handleViewClick(b.key)}
-              >
-                {b.label}
+          {/* 控制面板（复刻原项目）：视角 / 琴体 / 演奏 / 音量 / 混响 */}
+          <div className="piano-panel">
+            <h2>视角</h2>
+            <div className="piano-row">
+              {VIEW_BUTTONS.map((b) => (
+                <button
+                  key={b.key}
+                  className={`piano-btn half ${view === b.key ? 'on' : ''}`}
+                  onClick={() => handleViewClick(b.key)}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+
+            <h2>琴体</h2>
+            <div className="piano-row">
+              <button className="piano-btn wide on" onClick={() => apiRef.current?.cycleLid()}>
+                {ui.lidLabel}
               </button>
-            ))}
-          </div>
+              <button className="piano-btn wide on" onClick={() => apiRef.current?.toggleFallboard()}>
+                {ui.fallLabel}
+              </button>
+              <button className="piano-btn half" onClick={() => apiRef.current?.toggleRotate()}>
+                {ui.rotateLabel}
+              </button>
+              <button className="piano-btn half" onClick={() => apiRef.current?.toggleContrast()}>
+                {ui.contrastLabel}
+              </button>
+            </div>
 
-          <h2>琴体</h2>
-          <div className="piano-row">
-            <button className="piano-btn wide on" onClick={() => apiRef.current?.cycleLid()}>
-              {ui.lidLabel}
-            </button>
-            <button className="piano-btn wide on" onClick={() => apiRef.current?.toggleFallboard()}>
-              {ui.fallLabel}
-            </button>
-            <button className="piano-btn half" onClick={() => apiRef.current?.toggleRotate()}>
-              {ui.rotateLabel}
-            </button>
-            <button className="piano-btn half" onClick={() => apiRef.current?.toggleContrast()}>
-              {ui.contrastLabel}
-            </button>
-          </div>
+            <h2>演奏</h2>
+            <div className="piano-row">
+              <button
+                className={`piano-btn wide ${ui.demoPlaying ? 'on' : ''}`}
+                onClick={() => apiRef.current?.toggleDemo()}
+              >
+                {ui.demoPlaying ? '停止演奏' : '演奏《致爱丽丝》'}
+              </button>
+              <button className="piano-btn wide" onClick={() => apiRef.current?.reset()}>
+                重置视角与琴音
+              </button>
+            </div>
 
-          <h2>演奏</h2>
-          <div className="piano-row">
-            <button
-              className={`piano-btn wide ${ui.demoPlaying ? 'on' : ''}`}
-              onClick={() => apiRef.current?.toggleDemo()}
-            >
-              {ui.demoPlaying ? '停止演奏' : '演奏《致爱丽丝》'}
-            </button>
-            <button className="piano-btn wide" onClick={() => apiRef.current?.reset()}>
-              重置视角与琴音
-            </button>
-          </div>
-
-          <div className="piano-slider">
-            <label>
-              <span>音量</span>
-              <span>VOL</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1.4}
-              step={0.01}
-              value={volume}
-              onChange={(e) => {
-                const v = parseFloat(e.target.value);
-                setVolume(v);
-                apiRef.current?.setVolume(v);
-              }}
-            />
-          </div>
-          <div className="piano-slider">
-            <label>
-              <span>混响</span>
-              <span>REVERB</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={0.8}
-              step={0.01}
-              value={reverb}
-              onChange={(e) => {
-                const v = parseFloat(e.target.value);
-                setReverb(v);
-                apiRef.current?.setReverb(v);
-              }}
-            />
+            <div className="piano-slider">
+              <label>
+                <span>音量</span>
+                <span>VOL</span>
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={1.4}
+                step={0.01}
+                value={volume}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setVolume(v);
+                  apiRef.current?.setVolume(v);
+                }}
+              />
+            </div>
+            <div className="piano-slider">
+              <label>
+                <span>混响</span>
+                <span>REVERB</span>
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={0.8}
+                step={0.01}
+                value={reverb}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setReverb(v);
+                  apiRef.current?.setReverb(v);
+                }}
+              />
+            </div>
           </div>
         </div>
 
