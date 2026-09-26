@@ -144,9 +144,11 @@ export const PIANO_GRADE_SHADER = {
     uInk: { value: 0.6 },
     uInkWidth: { value: 1.5 },
     uInkColor: { value: new THREE.Color(0x0b0a10) },
-    // 景深 / 移轴（uFocusDist 每帧由相机到钢琴中心的距离驱动）
+    // 景深 / 移轴（uFocusDist 每帧由相机到鼠标命中点的距离驱动）
     uDof: { value: 0.16 },
     uFocusDist: { value: 5.0 },
+    /** 焦深半宽（视空间米数）：|vz-uFocusDist| 小于此值的区域完全清晰 */
+    uFocusRange: { value: 0.25 },
     uDofMax: { value: 0.38 },
     uFocusR: { value: 0.30 },
     uEdge: { value: 0.18 },
@@ -170,7 +172,7 @@ export const PIANO_GRADE_SHADER = {
     uniform mat4 uProjInv;
     uniform float uTime, uGrain, uVig, uCA, uSat, uSplit, uHal;
     uniform float uToon, uLevels, uFlat, uInk, uInkWidth;
-    uniform float uDof, uFocusDist, uDofMax, uFocusR, uEdge;
+    uniform float uDof, uFocusDist, uFocusRange, uDofMax, uFocusR, uEdge;
     uniform vec3 uInkColor;
     uniform vec3 uBgTop, uBgMid, uBgFloor, uSpotColor;
     uniform vec2 uSpot, uTexel;
@@ -219,11 +221,14 @@ export const PIANO_GRADE_SHADER = {
       vec2 d = uv - 0.5;
       float r2 = dot(d, d);
 
-      // 景深：CoC 来自视空间深度与焦点距离之差
+      // 景深：CoC 来自视空间深度与焦点距离之差。
+      // 焦深带（|vz-uFocusDist| < uFocusRange）内完全清晰——"焦点距离一个范围内
+      // 都是清楚的"；带外按原斜率 uDof 线性增长、仍饱和于 uDofMax，
+      // 模糊总量与旧实现一致，只是整体平移出一段清晰范围
       float d0 = texture2D(tDepth, uv).x;
       float vz = 60.0;
       if (d0 < 0.99999) vz = -viewPos(uv, d0).z;
-      float coc = clamp(abs(vz - uFocusDist) * uDof, 0.0, 1.0) * uDofMax;
+      float coc = clamp((abs(vz - uFocusDist) - uFocusRange) * uDof, 0.0, 1.0) * uDofMax;
       // 移轴：边缘离焦(画质优先的镜头感)
       float def = smoothstep(uFocusR, uFocusR + 0.40, length(uv - vec2(0.5))) * uEdge;
       // 焦点平面 blur=0 → disc4 全部采样落在同一 texel,退化为单次取样(锐利);

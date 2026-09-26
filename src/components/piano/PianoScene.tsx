@@ -154,6 +154,11 @@ const BASS_BLOCK: [string | null, number][] = [
 ];
 const UNIT = 0.188;
 
+/** DOF 兜底焦点：钢琴主体中心（鼠标离开画布/悬停 UI/未命中任何表面时回退到这里） */
+const PIANO_FOCUS_DEFAULT = new THREE.Vector3(0, 0.9, -0.6);
+/** 焦点求交用临时向量（避免每帧分配） */
+const focusHitTmp = new THREE.Vector3();
+
 /** 演示曲事件 */
 interface DemoEvent {
   t: number;
@@ -488,11 +493,10 @@ export function PianoScene({
     return mesh;
   }, []);
 
-  /* ---------------- 鼠标焦点拾取：指针指向模型的哪里,景深焦点就在哪里 ---------------- */
+  /* ---------------- 鼠标焦点拾取：指针指向哪个表面,景深焦平面就落在那个距离 ---------------- */
   const pointerNdcRef = useRef(new THREE.Vector2());
+  const pointerInsideRef = useRef(false);
   const raycasterRef = useRef(new THREE.Raycaster());
-  const raycastDueRef = useRef(false);
-  const lastRaycastRef = useRef(0);
   useEffect(() => {
     const el = gl.domElement;
     const onMove = (e: PointerEvent) => {
@@ -501,11 +505,43 @@ export function PianoScene({
         ((e.clientX - r.left) / r.width) * 2 - 1,
         -((e.clientY - r.top) / r.height) * 2 + 1,
       );
-      raycastDueRef.current = true;
+      pointerInsideRef.current = true;
     };
+    // 鼠标离开画布：交回兜底焦点（钢琴主体中心），由后处理阻尼平滑过渡
+    const onLeave = () => { pointerInsideRef.current = false; };
     el.addEventListener('pointermove', onMove);
-    return () => el.removeEventListener('pointermove', onMove);
+    el.addEventListener('pointerleave', onLeave);
+    return () => {
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerleave', onLeave);
+    };
   }, [gl]);
+
+  /* ---------------- 焦点代理几何（一次性构建,替代 13 万三角形全模型求交） ----------------
+     鼠标射线每帧与这三件廉价代理求交,取最近命中：
+       · 琴体盒（AABB）—— 覆盖琴体/琴盖（按闭合姿态计算后向上扩裕量,
+         因为琴盖全开/谱架立起会把顶部抬高约 0.9m）。用盒而不用包围球：
+         相机在球外时球的迎面切点会比真实琴面凸出 0.5m+,把焦点钉在
+         相机鼻尖前；盒的入射面与可见琴面误差 <0.3m,CoC 带内不可见
+       · 键盘盒（AABB）—— 扫过琴键区时焦点贴住键面
+       · 地面平面 y=0 —— 指向地面时地面也参与"指哪清哪"（限距 18m 内,
+         避免指向地平线外把焦点拉到雾深处） */
+  const focusProxy = useMemo(() => {
+    const rootBox = new THREE.Box3().setFromObject(piano.root);
+    rootBox.min.y -= 0.05;
+    // 顶面钳到闭合琴盖高度：默认琴盖全开时 setFromObject 会把掀开的琴盖峰值
+    // （~2.3m）算进盒顶，俯视机位下射线全部命中"看不见的盒顶"（几乎贴着
+    // 相机），焦点被系统性拉近 ~1m。射线穿过开盖区时会命中此平面,其深度
+    // ≈琴弦/铁板面,在焦深带内与真实可见面无差
+    rootBox.max.y = Math.min(rootBox.max.y, 1.45);
+    rootBox.expandByScalar(0.08);
+    const keyBox = new THREE.Box3().setFromObject(piano.keysGroup).expandByScalar(0.04);
+    return {
+      bodyBox: rootBox,
+      keyBox,
+      groundPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+    };
+  }, [piano]);
 
   /* ---------------- 风格切换：场景侧目标（线性空间颜色缓存） ---------------- */
   const sceneStyleTargets = useMemo(() => {
@@ -1062,15 +1098,39 @@ export function PianoScene({
       }
     }
 
-    // === DOF 焦点：鼠标射线命中模型的点(节流 ~120ms,避免 13 万三角形求交过频) ===
+    // === DOF 焦点：每帧轻量代理求交,实时跟手（替代旧的 120ms 节流全模型 raycast） ===
     if (focusRef) {
-      const now = performance.now();
-      if (raycastDueRef.current && now - lastRaycastRef.current > 120) {
-        raycastDueRef.current = false;
-        lastRaycastRef.current = now;
-        raycasterRef.current.setFromCamera(pointerNdcRef.current, cam);
-        const hits = raycasterRef.current.intersectObject(piano.root, true);
-        if (hits.length) focusRef.current.copy(hits[0].point);
+      if (!st.interactive) {
+        // 运镜期间：焦点锁定当前运镜注视点（电影跟焦）,钢琴主体全程清晰
+        focusRef.current.copy(camTmp.target);
+      } else {
+        let hit = false;
+        if (pointerInsideRef.current) {
+          raycasterRef.current.setFromCamera(pointerNdcRef.current, cam);
+          const ray = raycasterRef.current.ray;
+          const p = focusHitTmp;
+          let bestD = Infinity;
+          // 琴体盒：入射面近似可见琴面（顶视时即琴盖面),误差远小于包围球切点
+          if (ray.intersectBox(focusProxy.bodyBox, p)) {
+            bestD = ray.origin.distanceTo(p);
+            focusRef.current.copy(p);
+            hit = true;
+          }
+          // 键盘盒：命中且更近时盖写,扫过琴键时焦点贴住键面
+          if (ray.intersectBox(focusProxy.keyBox, p)) {
+            const d = ray.origin.distanceTo(p);
+            if (d < bestD) { bestD = d; focusRef.current.copy(p); }
+            hit = true;
+          }
+          // 地面平面：同样参与"指哪清哪",但限制在雾内距离,
+          // 指向地平线以外的"地面"时不把焦点拉到雾深处
+          if (ray.intersectPlane(focusProxy.groundPlane, p)) {
+            const d = ray.origin.distanceTo(p);
+            if (d < bestD && d < 18) { bestD = d; focusRef.current.copy(p); hit = true; }
+          }
+        }
+        // 鼠标离开画布 / 悬停 UI / 指向天空（未命中任何表面）→ 兜底焦点
+        if (!hit) focusRef.current.copy(PIANO_FOCUS_DEFAULT);
       }
     }
 

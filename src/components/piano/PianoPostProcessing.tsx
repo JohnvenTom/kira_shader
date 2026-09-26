@@ -77,10 +77,16 @@ export function PianoPostProcessing({
     const depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y);
     depthTexture.minFilter = depthTexture.magFilter = THREE.NearestFilter;
     depthTexture.type = THREE.UnsignedIntType;
+    // 深度纹理直读（samples=0，禁用 MSAA）：
+    // 实测 samples>0 时 MSAA 深度 resolve 在部分驱动栈（SwiftShader / ANGLE-D3D）
+    // 上静默失败——颜色正常解析但深度纹理保持清空值 1.0，Grade 的景深 CoC
+    // 与三渲二墨线全部失真（整页恒定重模糊）。scene 目标必须非多采样，
+    // 场景深度才会直接写入 depthTexture；抗锯齿交给 DPR 超采样与 Grade 的
+    // 颗粒/色散掩蔽。磁带页 post.js 的同款配置存在相同隐患，待后续统一。
     const rt = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, {
       type: THREE.HalfFloatType,
       colorSpace: THREE.LinearSRGBColorSpace,
-      samples: 4,
+      samples: 0,
       depthBuffer: true,
       depthTexture,
       resolveDepthBuffer: true,
@@ -101,11 +107,11 @@ export function PianoPostProcessing({
     const grade = new ShaderPass(PIANO_GRADE_SHADER);
     grade.renderToScreen = true;
     grade.uniforms.tDepth.value = depthTexture;
+    // 焦距初值直接取首帧真实焦点距离,避免从默认 5.0 收敛造成"开场先糊后清"
+    grade.uniforms.uFocusDist.value = camera.position.distanceTo(focusRef.current);
     composer.addPass(grade);
     composerRef.current = composer;
     gradeRef.current = grade;
-    // TODO(debug): 临时量测钩子,验证后删除
-    (window as unknown as Record<string, unknown>).__pp = { grade, composer, camera };
     // 注意：styleName 不进依赖 —— 风格切换走逐帧阻尼，不重建管线
   }, [gl, scene, camera]);
 
@@ -157,8 +163,10 @@ export function PianoPostProcessing({
 
     // 三渲二墨线需要当前帧投影逆矩阵（视空间重建）
     u.uProjInv.value.copy(camera.projectionMatrixInverse);
-    // 景深焦点：相机到"鼠标指向的模型命中点"的距离,阻尼逼近形成"焦点呼吸"
-    const kf = 1 - Math.exp(-dt * 9.0);
+    // 景深焦点：相机到"鼠标指向表面命中点"的距离,阻尼逼近平滑过渡。
+    // lambda=14（约 70ms 收敛）：比旧值 9 明显更跟手,又保留一拍电影对焦的柔顺感,
+    // 鼠标快速扫动时焦点连续滑动,无跳变无闪烁
+    const kf = 1 - Math.exp(-dt * 14.0);
     const focusTarget = camera.position.distanceTo(focusRef.current);
     u.uFocusDist.value += (focusTarget - (u.uFocusDist.value as number)) * kf;
     u.uTime.value += delta;
@@ -166,7 +174,14 @@ export function PianoPostProcessing({
     // 重置后渲染：info 累计整条链（场景+全屏 quad），PianoScene 的统计
     // 在下一帧读到的就是场景真实三角面数而非最后一个 pass 的 2 个
     gl.info.reset();
+    // 关键：渲染期间关闭 autoClear。OutputPass/ShaderPass 不自行管理清屏，
+    // 全局 autoClear=true 会让它们在绑定 rt1 时把 rt1/rt2 共享的深度纹理
+    // 清成远平面 1.0——Grade 的景深 CoC 与墨线深度全部失真（整页恒定模糊）。
+    // RenderPass 有显式 clear（this.clear），场景深度仍然每帧正确写入。
+    const prevAutoClear = gl.autoClear;
+    gl.autoClear = false;
     composer.render();
+    gl.autoClear = prevAutoClear;
   }, 1);
 
   return null;
