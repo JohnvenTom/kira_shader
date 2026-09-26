@@ -67,6 +67,8 @@ export interface PianoScenePreset {
   key: number;
   hemi: number;
   fill: number;
+  /** 漂浮微尘整体透明度 */
+  dust: number;
 }
 
 /** 单一风格完整预设 */
@@ -96,19 +98,19 @@ function rgb(hex: number): [number, number, number] {
 export const PIANO_STYLES: Record<PianoStyleName, PianoStyle> = {
   studio: {
     grade: { grain: 0.030, vig: 0.28, ca: 0.30, hal: 0.025, sat: 1.0, split: 0.20, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5 },
-    scene: { fog: rgb(0xe9ecf1), ground: rgb(0xdfe3ea), exposure: 0.95, key: 1.0, hemi: 1.0, fill: 1.0 },
+    scene: { fog: rgb(0xe9ecf1), ground: rgb(0xdfe3ea), exposure: 0.95, key: 1.0, hemi: 1.0, fill: 1.0, dust: 0.55 },
     bgTop: rgb(0xfdfdfe), bgMid: rgb(0xeceef3), bgFloor: rgb(0xdde1e9),
     spotPos: [0.5, -0.06], spotRadius: 0.62, spotColor: rgb(0xffffff), spotStrength: 0.55,
   },
   noir: {
     grade: { grain: 0.085, vig: 0.95, ca: 0.55, hal: 0.060, sat: 0.22, split: 0.50, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5 },
-    scene: { fog: rgb(0x10141b), ground: rgb(0x14181f), exposure: 0.82, key: 0.92, hemi: 0.45, fill: 0.55 },
+    scene: { fog: rgb(0x10141b), ground: rgb(0x14181f), exposure: 0.82, key: 0.92, hemi: 0.45, fill: 0.55, dust: 0.9 },
     bgTop: rgb(0x05060a), bgMid: rgb(0x10141a), bgFloor: rgb(0x171b22),
     spotPos: [0.5, 0.06], spotRadius: 0.46, spotColor: rgb(0x8ca2c8), spotStrength: 0.30,
   },
   toon: {
     grade: { grain: 0.020, vig: 0.32, ca: 0.15, hal: 0.015, sat: 1.12, split: 0.20, toon: 1, levels: 4, flat: 0.88, ink: 0.60, inkWidth: 1.5 },
-    scene: { fog: rgb(0xeef0f2), ground: rgb(0xdfe2e7), exposure: 1.0, key: 1.06, hemi: 1.15, fill: 1.0 },
+    scene: { fog: rgb(0xeef0f2), ground: rgb(0xdfe2e7), exposure: 1.0, key: 1.06, hemi: 1.15, fill: 1.0, dust: 0.30 },
     bgTop: rgb(0xdfe3e8), bgMid: rgb(0xeef0f2), bgFloor: rgb(0xf8f9fa),
     spotPos: [0.5, -0.04], spotRadius: 0.60, spotColor: rgb(0xffffff), spotStrength: 0.45,
   },

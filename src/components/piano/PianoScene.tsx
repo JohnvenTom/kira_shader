@@ -369,9 +369,64 @@ export function PianoScene({
     return group;
   }, []);
 
+  /* ---------------- 氛围：漂浮微尘（GPU 侧漂移，加法混合萤火质感） ---------------- */
+  const dustRef = useRef<THREE.ShaderMaterial | null>(null);
+  const dust = useMemo(() => {
+    const dustCount = 340;
+    const seeds = new Float32Array(dustCount);
+    const pos = new Float32Array(dustCount * 3);
+    for (let i = 0; i < dustCount; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 7.0;
+      pos[i * 3 + 1] = 0.15 + Math.random() * 4.6;
+      pos[i * 3 + 2] = -3.4 + Math.random() * 5.6;
+      seeds[i] = Math.random() * 100;
+    }
+    const dustGeo = new THREE.BufferGeometry();
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    dustGeo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+    const dustMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uAlpha: { value: 0.55 } },
+      vertexShader: /* glsl */ `
+        attribute float aSeed;
+        uniform float uTime;
+        varying float vTw;
+        varying float vNear;
+        void main() {
+          vec3 p = position;
+          p.x += sin(uTime * 0.11 + aSeed * 3.1) * 0.55 + sin(uTime * 0.31 + aSeed) * 0.12;
+          p.y += sin(uTime * 0.07 + aSeed * 1.7) * 0.38;
+          p.z += cos(uTime * 0.09 + aSeed * 2.3) * 0.45;
+          vTw = 0.55 + 0.45 * sin(uTime * (0.6 + fract(aSeed) * 0.9) + aSeed * 7.0);
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          vNear = -mv.z;
+          // 尺寸 clamp：粒子飘到镜头近处时不至于糊满全屏
+          gl_PointSize = min((2.2 + fract(aSeed * 0.717) * 4.0) * (140.0 / max(-mv.z, 0.001)), 48.0);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uAlpha;
+        varying float vTw;
+        varying float vNear;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          float nearFade = smoothstep(0.3, 1.4, vNear);
+          float a = smoothstep(0.5, 0.05, d) * vTw * uAlpha * nearFade;
+          gl_FragColor = vec4(vec3(1.0, 0.98, 0.92) * a, a);
+        }
+      `,
+    });
+    const points = new THREE.Points(dustGeo, dustMat);
+    points.frustumCulled = false;
+    return points;
+  }, []);
+
   /* ---------------- 风格切换：场景侧目标（线性空间颜色缓存） ---------------- */
   const sceneStyleTargets = useMemo(() => {
-    const out = {} as Record<PianoStyleName, { fog: THREE.Color; ground: THREE.Color; exposure: number; key: number; hemi: number; fill: number }>;
+    const out = {} as Record<PianoStyleName, { fog: THREE.Color; ground: THREE.Color; exposure: number; key: number; hemi: number; fill: number; dust: number }>;
     for (const [name, S] of Object.entries(PIANO_STYLES) as [PianoStyleName, (typeof PIANO_STYLES)[PianoStyleName]][]) {
       out[name] = {
         fog: new THREE.Color().setRGB(S.scene.fog[0], S.scene.fog[1], S.scene.fog[2], THREE.SRGBColorSpace),
@@ -380,6 +435,7 @@ export function PianoScene({
         key: S.scene.key,
         hemi: S.scene.hemi,
         fill: S.scene.fill,
+        dust: S.scene.dust,
       };
     }
     return out;
@@ -909,6 +965,12 @@ export function PianoScene({
       hemiLightRef.current && (hemiLightRef.current.intensity += (0.30 * S.hemi - hemiLightRef.current.intensity) * k);
       fillLightRef.current && (fillLightRef.current.intensity += (0.34 * S.fill - fillLightRef.current.intensity) * k);
       rimLightRef.current && (rimLightRef.current.intensity += (0.42 * S.fill - rimLightRef.current.intensity) * k);
+      // 微尘：透明度随风格，时间推进漂移
+      const dustMat = dustRef.current;
+      if (dustMat) {
+        dustMat.uniforms.uTime.value += dt;
+        dustMat.uniforms.uAlpha.value += (S.dust - dustMat.uniforms.uAlpha.value) * k;
+      }
     }
 
     // === FPS / 三角面 / 发声数统计（0.5s 更新一次） ===
@@ -931,6 +993,7 @@ export function PianoScene({
       {/* 钢琴 + 地面 */}
       <primitive object={piano.root} />
       <primitive object={groundGroup} />
+      <primitive object={dust} />
 
       {/* 半球环境光 */}
       <hemisphereLight ref={hemiLightRef} args={[0xffffff, 0xb4bcc9, 0.30]} />
