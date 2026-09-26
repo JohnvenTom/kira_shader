@@ -53,6 +53,12 @@ export interface PianoGradePreset {
   ink: number;
   /** 墨线采样宽度（texel 倍数） */
   inkWidth: number;
+  /** 景深 CoC 增益（视空间散焦距离 → 模糊圈） */
+  dof: number;
+  /** 景深模糊上限 */
+  dofMax: number;
+  /** 边缘移轴虚化强度 */
+  edge: number;
 }
 
 /** 场景侧风格参数（由 PianoScene 在帧循环里阻尼逼近） */
@@ -99,19 +105,19 @@ function rgb(hex: number): [number, number, number] {
 /** 三种风格预设：影棚（默认，明亮摄影棚+轻胶片）/ 暗房（黑白戏剧光）/ 动画（三渲二） */
 export const PIANO_STYLES: Record<PianoStyleName, PianoStyle> = {
   studio: {
-    grade: { grain: 0.030, vig: 0.28, ca: 0.30, hal: 0.025, sat: 1.0, split: 0.20, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5 },
+    grade: { grain: 0.030, vig: 0.28, ca: 0.30, hal: 0.025, sat: 1.0, split: 0.20, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.07, dofMax: 0.28, edge: 0.15 },
     scene: { fog: rgb(0xe9ecf1), ground: rgb(0xdfe3ea), exposure: 0.95, key: 1.0, hemi: 1.0, fill: 1.0, dust: 0.55, beam: 0.10 },
     bgTop: rgb(0xfdfdfe), bgMid: rgb(0xeceef3), bgFloor: rgb(0xdde1e9),
     spotPos: [0.5, -0.06], spotRadius: 0.62, spotColor: rgb(0xffffff), spotStrength: 0.55,
   },
   noir: {
-    grade: { grain: 0.085, vig: 0.95, ca: 0.55, hal: 0.060, sat: 0.22, split: 0.50, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5 },
+    grade: { grain: 0.085, vig: 0.95, ca: 0.55, hal: 0.060, sat: 0.22, split: 0.50, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.12, dofMax: 0.50, edge: 0.25 },
     scene: { fog: rgb(0x10141b), ground: rgb(0x14181f), exposure: 0.82, key: 0.92, hemi: 0.45, fill: 0.55, dust: 0.6, beam: 0.16 },
     bgTop: rgb(0x05060a), bgMid: rgb(0x10141a), bgFloor: rgb(0x171b22),
     spotPos: [0.5, 0.06], spotRadius: 0.46, spotColor: rgb(0x8ca2c8), spotStrength: 0.30,
   },
   toon: {
-    grade: { grain: 0.020, vig: 0.32, ca: 0.15, hal: 0.015, sat: 1.12, split: 0.20, toon: 1, levels: 4, flat: 0.88, ink: 0.60, inkWidth: 1.5 },
+    grade: { grain: 0.020, vig: 0.32, ca: 0.15, hal: 0.015, sat: 1.12, split: 0.20, toon: 1, levels: 4, flat: 0.88, ink: 0.60, inkWidth: 1.5, dof: 0.06, dofMax: 0.20, edge: 0.35 },
     scene: { fog: rgb(0xeef0f2), ground: rgb(0xdfe2e7), exposure: 1.0, key: 1.06, hemi: 1.15, fill: 1.0, dust: 0.30, beam: 0.06 },
     bgTop: rgb(0xdfe3e8), bgMid: rgb(0xeef0f2), bgFloor: rgb(0xf8f9fa),
     spotPos: [0.5, -0.04], spotRadius: 0.60, spotColor: rgb(0xffffff), spotStrength: 0.45,
@@ -138,6 +144,12 @@ export const PIANO_GRADE_SHADER = {
     uInk: { value: 0.6 },
     uInkWidth: { value: 1.5 },
     uInkColor: { value: new THREE.Color(0x0b0a10) },
+    // 景深 / 移轴（uFocusDist 每帧由相机到钢琴中心的距离驱动）
+    uDof: { value: 0.16 },
+    uFocusDist: { value: 5.0 },
+    uDofMax: { value: 0.38 },
+    uFocusR: { value: 0.30 },
+    uEdge: { value: 0.18 },
     // 程序化背景色板
     uBgTop: { value: new THREE.Color(0xfdfdfe) },
     uBgMid: { value: new THREE.Color(0xeceef3) },
@@ -158,6 +170,7 @@ export const PIANO_GRADE_SHADER = {
     uniform mat4 uProjInv;
     uniform float uTime, uGrain, uVig, uCA, uSat, uSplit, uHal;
     uniform float uToon, uLevels, uFlat, uInk, uInkWidth;
+    uniform float uDof, uFocusDist, uDofMax, uFocusR, uEdge;
     uniform vec3 uInkColor;
     uniform vec3 uBgTop, uBgMid, uBgFloor, uSpotColor;
     uniform vec2 uSpot, uTexel;
@@ -176,6 +189,22 @@ export const PIANO_GRADE_SHADER = {
       return mix(col, uSpotColor, sp * uSpotStrength);
     }
 
+    // 9 tap disc 预乘模糊：rgb 预乘覆盖度后再平均,模糊不会把透明天空的
+    // 黑色带进琴体边缘(直接模糊 straight alpha 会出现黑边)
+    vec4 disc4(vec2 uv, vec2 r) {
+      vec4 t = texture2D(tDiffuse, uv);
+      vec4 s = vec4(t.rgb * t.a, t.a) * 0.22;
+      t = texture2D(tDiffuse, uv + vec2(r.x, 0.0)); s += vec4(t.rgb * t.a, t.a) * 0.10;
+      t = texture2D(tDiffuse, uv - vec2(r.x, 0.0)); s += vec4(t.rgb * t.a, t.a) * 0.10;
+      t = texture2D(tDiffuse, uv + vec2(0.0, r.y)); s += vec4(t.rgb * t.a, t.a) * 0.10;
+      t = texture2D(tDiffuse, uv - vec2(0.0, r.y)); s += vec4(t.rgb * t.a, t.a) * 0.10;
+      t = texture2D(tDiffuse, uv + r * 0.70); s += vec4(t.rgb * t.a, t.a) * 0.095;
+      t = texture2D(tDiffuse, uv - r * 0.70); s += vec4(t.rgb * t.a, t.a) * 0.095;
+      t = texture2D(tDiffuse, uv + vec2(r.x, -r.y) * 0.70); s += vec4(t.rgb * t.a, t.a) * 0.095;
+      t = texture2D(tDiffuse, uv + vec2(-r.x, r.y) * 0.70); s += vec4(t.rgb * t.a, t.a) * 0.095;
+      return s;
+    }
+
     vec3 viewPos(vec2 uv, float d) {
       vec4 p = uProjInv * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
       return p.xyz / p.w;
@@ -190,16 +219,25 @@ export const PIANO_GRADE_SHADER = {
       vec2 d = uv - 0.5;
       float r2 = dot(d, d);
 
+      // 景深：CoC 来自视空间深度与焦点距离之差
+      float d0 = texture2D(tDepth, uv).x;
+      float vz = 60.0;
+      if (d0 < 0.99999) vz = -viewPos(uv, d0).z;
+      float coc = clamp(abs(vz - uFocusDist) * uDof, 0.0, 1.0) * uDofMax;
+      // 移轴：边缘离焦(画质优先的镜头感)
+      float def = smoothstep(uFocusR, uFocusR + 0.40, length(uv - vec2(0.5))) * uEdge;
+      vec2 blur = uTexel * (1.0 + def * 4.6 + coc * 26.0);
+
       // 径向色散：RGB 沿视半径方向分离（画面中心不变形）
       vec2 off = d * r2 * uCA * 0.012;
-      vec4 scene;
-      scene.r = texture2D(tDiffuse, uv + off).r;
-      scene.g = texture2D(tDiffuse, uv).g;
-      scene.b = texture2D(tDiffuse, uv - off).b;
-      scene.a = texture2D(tDiffuse, uv).a;
-
-      // 合成：3D 画面按覆盖度压在程序化背景上，后续整帧统一调色
-      vec3 c = mix(backdrop(uv), scene.rgb, scene.a);
+      vec4 sC = disc4(uv, blur);
+      vec4 sR = disc4(uv + off, blur);
+      vec4 sB = disc4(uv - off, blur);
+      vec3 bg = backdrop(uv);
+      vec3 c;
+      c.r = mix(bg.r, sR.r / max(sR.a, 1e-4), sR.a);
+      c.g = mix(bg.g, sC.g / max(sC.a, 1e-4), sC.a);
+      c.b = mix(bg.b, sB.b / max(sB.a, 1e-4), sB.a);
 
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
 
@@ -216,7 +254,6 @@ export const PIANO_GRADE_SHADER = {
          捕捉部件相接的折痕，视空间深度台阶捕捉对地面/天空的剪影。
          透明区域深度为 1（无几何体），直接跳过避免 NaN。 */
       if (uToon > 0.001) {
-        float d0 = texture2D(tDepth, uv).x;
         if (d0 < 0.99999) {
           vec2 tx = uTexel * uInkWidth;
           float dR = texture2D(tDepth, uv + vec2(tx.x, 0.0)).x;

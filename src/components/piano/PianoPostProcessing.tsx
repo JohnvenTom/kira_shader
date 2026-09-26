@@ -24,6 +24,9 @@ const GRADE_UNIFORM_KEYS = {
   uFlat: 'flat',
   uInk: 'ink',
   uInkWidth: 'inkWidth',
+  uDof: 'dof',
+  uDofMax: 'dofMax',
+  uEdge: 'edge',
 } as const;
 
 /**
@@ -81,8 +84,13 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
     // （磁带页 post.js 有完整注释）
     composer.renderTarget2.depthTexture = depthTexture;
     composer.addPass(new RenderPass(scene, camera));
-    // OutputPass：线性 HalfFloat → ACES 色调映射 + sRGB（Grade 在显示空间工作）
-    composer.addPass(new OutputPass());
+    // OutputPass：线性 HalfFloat → ACES 色调映射 + sRGB（Grade 在显示空间工作）。
+    // 必须禁用其深度写入：rt1/rt2 共享一张深度纹理，全屏 quad 默认会把深度
+    // 写成近平面值(0)，Grade 的景深/墨线深度读数会全部失效
+    const output = new OutputPass();
+    output.material.depthWrite = false;
+    output.material.depthTest = false;
+    composer.addPass(output);
     const grade = new ShaderPass(PIANO_GRADE_SHADER);
     grade.renderToScreen = true;
     grade.uniforms.tDepth.value = depthTexture;
@@ -140,6 +148,10 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
 
     // 三渲二墨线需要当前帧投影逆矩阵（视空间重建）
     u.uProjInv.value.copy(camera.projectionMatrixInverse);
+    // 景深焦点：相机到钢琴中心的距离,阻尼逼近形成"焦点呼吸"
+    const kf = 1 - Math.exp(-dt * 9.0);
+    const focusTarget = camera.position.distanceTo(FOCUS_POINT);
+    u.uFocusDist.value += (focusTarget - (u.uFocusDist.value as number)) * kf;
     u.uTime.value += delta;
 
     // 重置后渲染：info 累计整条链（场景+全屏 quad），PianoScene 的统计
@@ -153,3 +165,5 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
 
 // uSpot 阻尼用（模块级临时向量，避免每帧分配）
 const tmpVec2 = new THREE.Vector2();
+// 景深焦点目标：钢琴中心（世界坐标）
+const FOCUS_POINT = new THREE.Vector3(0, 0.9, -0.6);
