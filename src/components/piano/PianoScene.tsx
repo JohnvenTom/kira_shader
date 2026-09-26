@@ -371,6 +371,7 @@ export function PianoScene({
 
   /* ---------------- 氛围：漂浮微尘（GPU 侧漂移，加法混合萤火质感） ---------------- */
   const dustRef = useRef<THREE.ShaderMaterial | null>(null);
+  const beamRef = useRef<THREE.ShaderMaterial | null>(null);
   const dust = useMemo(() => {
     const dustCount = 340;
     const seeds = new Float32Array(dustCount);
@@ -424,9 +425,56 @@ export function PianoScene({
     return points;
   }, []);
 
+  /* ---------------- 体积光柱：加法混合锥壳，垂直渐变 + 边缘 fresnel 衰减 ---------------- */
+  const beam = useMemo(() => {
+    const beamGeo = new THREE.CylinderGeometry(1.55, 3.1, 5.6, 48, 1, true);
+    const beamMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      // FrontSide：相机进入锥体内部时外壳被剔除，光柱整体隐去
+      side: THREE.FrontSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uAlpha: { value: 0.10 } },
+      vertexShader: /* glsl */ `
+        varying vec2 vUvB;
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          vUvB = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vNormalW = normalize(mat3(modelMatrix) * normal);
+          vViewDir = normalize(cameraPosition - wp.xyz);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform float uAlpha;
+        varying vec2 vUvB;
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          // 顶部亮、底部渐隐；fresnel 让壳边缘柔和融入；缓移噪声带模拟尘雾
+          float vert = smoothstep(0.0, 0.55, vUvB.y) * smoothstep(1.0, 0.72, vUvB.y);
+          float fres = clamp(abs(dot(normalize(vNormalW), normalize(vViewDir))), 0.0, 1.0);
+          float band = 0.82 + 0.18 * sin(vUvB.y * 26.0 - uTime * 0.7);
+          // 俯视穿过锥体时自动减淡(视线越垂直于地面,光柱壳越透明)
+          float down = clamp(abs(normalize(vViewDir).y), 0.0, 1.0);
+          float a = vert * pow(fres, 1.6) * band * uAlpha * mix(1.0, 0.25, down);
+          if (!(a >= 0.0)) discard;
+          gl_FragColor = vec4(vec3(1.0, 0.985, 0.94) * a, a);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(beamGeo, beamMat);
+    mesh.position.set(0, 3.05, -0.7);
+    mesh.renderOrder = 2;
+    return mesh;
+  }, []);
+
   /* ---------------- 风格切换：场景侧目标（线性空间颜色缓存） ---------------- */
   const sceneStyleTargets = useMemo(() => {
-    const out = {} as Record<PianoStyleName, { fog: THREE.Color; ground: THREE.Color; exposure: number; key: number; hemi: number; fill: number; dust: number }>;
+    const out = {} as Record<PianoStyleName, { fog: THREE.Color; ground: THREE.Color; exposure: number; key: number; hemi: number; fill: number; dust: number; beam: number }>;
     for (const [name, S] of Object.entries(PIANO_STYLES) as [PianoStyleName, (typeof PIANO_STYLES)[PianoStyleName]][]) {
       out[name] = {
         fog: new THREE.Color().setRGB(S.scene.fog[0], S.scene.fog[1], S.scene.fog[2], THREE.SRGBColorSpace),
@@ -436,6 +484,7 @@ export function PianoScene({
         hemi: S.scene.hemi,
         fill: S.scene.fill,
         dust: S.scene.dust,
+        beam: S.scene.beam,
       };
     }
     return out;
@@ -971,6 +1020,11 @@ export function PianoScene({
         dustMat.uniforms.uTime.value += dt;
         dustMat.uniforms.uAlpha.value += (S.dust - dustMat.uniforms.uAlpha.value) * k;
       }
+      const beamMat = beamRef.current;
+      if (beamMat) {
+        beamMat.uniforms.uTime.value += dt;
+        beamMat.uniforms.uAlpha.value += (S.beam - beamMat.uniforms.uAlpha.value) * k;
+      }
     }
 
     // === FPS / 三角面 / 发声数统计（0.5s 更新一次） ===
@@ -994,6 +1048,7 @@ export function PianoScene({
       <primitive object={piano.root} />
       <primitive object={groundGroup} />
       <primitive object={dust} />
+      <primitive object={beam} />
 
       {/* 半球环境光 */}
       <hemisphereLight ref={hemiLightRef} args={[0xffffff, 0xb4bcc9, 0.30]} />
