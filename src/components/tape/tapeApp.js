@@ -267,6 +267,9 @@ const orbit = new Orbit(canvas, camera, {
   theta: 1.18, phi: 1.34, radius: 40, target: new THREE.Vector3(0, 0.05, 0),
   minR: 11, maxR: 52, minPhi: 0.16, maxPhi: 1.52,
   auto: false,
+  /* 监听注册表（见文件头「工厂化」说明）：controls.js 的补丁把所有 canvas/window 级
+     监听交给它，卸载时统一摘除。漏传这一项不会报错，但拖拽/滚轮/捏合/双击会全部失效。 */
+  on,
   reduce,
   onInteract: (dragging) => {
     root.classList.toggle('dragging', dragging);
@@ -298,9 +301,11 @@ const audio = new TapeAudio();
    title, artist, album — come off the file's own ID3 tags instead, and the label
    on the cassette is rewritten to match (see applyTrack). */
 const TRACK_DEFAULT = {
-  title: 'Sacred Play Secret Place',
-  artist: 'Matryoshka',
-  album: 'Laideronnette',
+  /* 换成真曲子时改这三行（标题会写到标签的手写体上）：
+     现在挂的是仓库里的占位合成音，所以不沿用原项目那首商业曲的名字 */
+  title: 'Demo Tone',
+  artist: '',
+  album: '',
   src: '/asset/audio/ohm-tape-default.mp3',
   file: null,
 };

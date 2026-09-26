@@ -21,6 +21,8 @@
  *                       click:<选择器>    真实 CDP 鼠标点击（可信输入，会授予用户手势）
  *                       hash:<#值>        改 location.hash（路由跳转）
  *                       key:<按键>        派发 keydown（空格写"空格"）
+ *                       drag:<dx>x<dy>    真实鼠标拖动（可信输入），并报告按下时是否有 dragging 态
+ *                       wheel:<deltaY>    真实滚轮（可信输入），用来验证推拉镜头
  *                       wait:<秒>         等待
  *                       reload            重新加载当前页（等 --expect 重新出现），用于验证跨刷新的记忆
  *                       ready:<选择器>    等该选择器出现（最多 120s）
@@ -232,6 +234,42 @@ try {
       await sleep(900);
     } else if (op === 'wait') {
       await sleep(Number(val) * 1000);
+    } else if (op === 'drag') {
+      const [dx, dy] = val.split('x').map(Number);
+      const c = await evaluate(cdp, `(() => {
+        const el = document.querySelector('#tape-root canvas#gl');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`);
+      if (!c) throw new Error('拖动失败：找不到 #tape-root canvas#gl');
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', buttons: 1, clickCount: 1 });
+      await sleep(60);
+      const during = await evaluate(cdp, `document.querySelector('#tape-root').classList.contains('dragging')`);
+      const steps = 8;
+      for (let i = 1; i <= steps; i++) {
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mouseMoved', button: 'left', buttons: 1,
+          x: Math.round(c.x + (dx * i) / steps), y: Math.round(c.y + (dy * i) / steps),
+        });
+        await sleep(40);
+      }
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(c.x + dx), y: Math.round(c.y + dy), button: 'left', buttons: 0, clickCount: 1 });
+      const after = await evaluate(cdp, `document.querySelector('#tape-root').className`);
+      console.log(`拖动 (${dx},${dy}) → 按下时 dragging=${during}，松开后 classes="${after}"`);
+      await sleep(900);
+    } else if (op === 'wheel') {
+      const dy = Number(val);
+      const c = await evaluate(cdp, `(() => {
+        const el = document.querySelector('#tape-root canvas#gl');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`);
+      if (!c) throw new Error('滚轮失败：找不到 #tape-root canvas#gl');
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: c.x, y: c.y, deltaX: 0, deltaY: dy });
+      console.log('滚轮', dy);
+      await sleep(900);
     } else if (op === 'reload') {
       await cdp.send('Page.reload', {});
       const t = Date.now();

@@ -43,11 +43,11 @@ export interface TapeAudioState {
   failed: boolean;
 }
 
-/** 默认曲目的信息（与 tapeApp.js 的 TRACK_DEFAULT 对齐；标题由整页在开机后播报覆盖） */
+/** 默认曲目的信息（与 tapeApp.js 的 TRACK_DEFAULT 对齐；整页开机后会广播覆盖，换成真曲子时两处一起改） */
 const DEFAULT_SRC = '/asset/audio/ohm-tape-default.mp3';
-const DEFAULT_TITLE = 'Sacred Play Secret Place';
-const DEFAULT_ARTIST = 'Matryoshka';
-const DEFAULT_ALBUM = 'Laideronnette';
+const DEFAULT_TITLE = 'Demo Tone';
+const DEFAULT_ARTIST = '';
+const DEFAULT_ALBUM = '';
 /** 整页的默认音量（原项目 setVolume(0.10)），保证角标先播时音量一致 */
 const DEFAULT_VOLUME = 0.10;
 /** 播放状态记忆键（设置记忆用的是 ohmtape.prefs，两者互不干扰） */

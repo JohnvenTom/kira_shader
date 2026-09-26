@@ -185,7 +185,14 @@ function portMain(code) {
   rep('主循环守卫', /function loop\(\) \{\n  const now = performance\.now\(\);/,
     'function loop() {\n  if (disposed) return;\n  const now = performance.now();');
 
-  // 7) 默认曲目：改到站点资源目录（文件缺失时走原项目「仅走带动画」降级路径）
+  // 7) 默认曲目：改到站点资源目录，元信息换成中性占位（文件缺失时走「仅走带动画」降级路径）
+  rep('默认曲目元信息',
+    /  title: 'Sacred Play Secret Place',\n  artist: 'Matryoshka',\n  album: 'Laideronnette',\n/,
+    "  /* 换成真曲子时改这三行（标题会写到标签的手写体上）：\n"
+    + '     现在挂的是仓库里的占位合成音，所以不沿用原项目那首商业曲的名字 */\n'
+    + "  title: 'Demo Tone',\n"
+    + "  artist: '',\n"
+    + "  album: '',\n");
   rep('默认曲目路径', /src: 'assets\/sacred-play-secret-place\.mp3',/, "src: '/asset/audio/ohm-tape-default.mp3',");
 
   // 8) 音频元素：外部注入（跨页续播单例）或本地创建
@@ -203,7 +210,19 @@ function portMain(code) {
     + '   它的存在要跟着 root 的 DOM 生命周期走 —— 卸载时 dispose() 会清空 root，那是一次\n'
     + '   我们既不需要、也控制不了的状态变化。跨页共享的元素，让它留在 DOM 之外最省心。 */');
 
-  /* 9) 走带跟随共享音频元素
+  /* 9) 把监听注册表交给轨道控制器
+     controls.js 的补丁把所有 canvas/window 级监听改成了 this.on?.(...)，漏传这一项不会报错，
+     但拖拽旋转 / 滚轮推拉 / 双指捏合 / 双击复位会全部静默失效（`?.` 把错误吞了）。 */
+  rep('轨道控制器监听注册表',
+    /  auto: false,\n  reduce,\n  onInteract: \(dragging\) => \{/,
+    '  auto: false,\n'
+    + '  /* 监听注册表（见文件头「工厂化」说明）：controls.js 的补丁把所有 canvas/window 级\n'
+    + '     监听交给它，卸载时统一摘除。漏传这一项不会报错，但拖拽/滚轮/捏合/双击会全部失效。 */\n'
+    + '  on,\n'
+    + '  reduce,\n'
+    + '  onInteract: (dragging) => {');
+
+  /* 10) 走带跟随共享音频元素
      音频元素是跨页共享的（右下角音乐盒角标也用它），所以"机器在不在走"必须以元素为准：
      角标在别的页面按了播放/暂停，进到本页（或在本页）时走带要跟上，不能各走各的。
      只加在主循环已有的两个分支里，判定都在同一帧完成，不需要额外事件。 */
@@ -222,7 +241,7 @@ function portMain(code) {
     + '       那种情况 audioOk() 为假，机器照旧自己空转 */\n'
     + "    if (cas.st.playing && audioOk() && audioEl.paused && mode === 'idle') togglePlay(false);");
 
-  /* 10) 把当前曲目播报给页面外
+  /* 11) 把当前曲目播报给页面外
      setNowChip() 是曲目显示信息唯一的更新点（开机与换带后都会走），在这里广播一个事件，
      右下角音乐盒角标就能跟着显示曲名，而工厂完全不需要知道角标的存在 */
   rep('曲目播报事件',
@@ -234,7 +253,7 @@ function portMain(code) {
     + '  }));\n'
     + '}');
 
-  /* 11) 绑定页头新增的「返回站内」
+  /* 12) 绑定页头新增的「返回站内」
      原项目没有这个按钮（单页应用不需要"离开"），所以绑定也在这里补。
      回到进入前那一页：角标进 #tape 之前会把来源 hash 写进 sessionStorage（ohmtape.from），
      没有记录（直接打开链接 / 存储不可用）就回胶片页。Esc 不进这里，保持原项目"逐层收"的语义。 */
