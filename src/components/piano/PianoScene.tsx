@@ -400,11 +400,13 @@ export function PianoScene({
           p.x += sin(uTime * 0.11 + aSeed * 3.1) * 0.55 + sin(uTime * 0.31 + aSeed) * 0.12;
           p.y += sin(uTime * 0.07 + aSeed * 1.7) * 0.38;
           p.z += cos(uTime * 0.09 + aSeed * 2.3) * 0.45;
-          vTw = 0.55 + 0.45 * sin(uTime * (0.6 + fract(aSeed) * 0.9) + aSeed * 7.0);
+          // 呼吸：每颗粒子自有相位的慢频深调制(亮度与尺寸同步胀缩)
+          float breath = 0.5 + 0.5 * sin(uTime * (0.35 + fract(aSeed) * 0.45) + aSeed * 7.0);
+          vTw = 0.30 + 0.70 * breath;
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           vNear = -mv.z;
-          // 尺寸 clamp：粒子飘到镜头近处时不至于糊满全屏
-          gl_PointSize = min((2.2 + fract(aSeed * 0.717) * 4.0) * (140.0 / max(-mv.z, 0.001)), 48.0);
+          float size = (2.2 + fract(aSeed * 0.717) * 4.0) * (140.0 / max(-mv.z, 0.001));
+          gl_PointSize = min(size * (0.75 + 0.5 * breath), 64.0);
           gl_Position = projectionMatrix * mv;
         }
       `,
@@ -415,8 +417,11 @@ export function PianoScene({
         void main() {
           float d = length(gl_PointCoord - 0.5);
           float nearFade = smoothstep(0.3, 1.4, vNear);
-          float a = smoothstep(0.5, 0.05, d) * vTw * uAlpha * nearFade;
-          gl_FragColor = vec4(vec3(1.0, 0.98, 0.92) * a, a);
+          // 双层光晕：亮核 + 大光晕,加法混合下即"发光"质感(无需 Bloom 通道)
+          float core = smoothstep(0.16, 0.0, d);
+          float halo = smoothstep(0.5, 0.08, d);
+          float a = (core * 0.85 + halo * 0.45) * vTw * uAlpha * nearFade;
+          gl_FragColor = vec4(vec3(1.0, 0.97, 0.88) * a, a);
         }
       `,
     });
