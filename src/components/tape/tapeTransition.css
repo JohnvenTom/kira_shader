@@ -1,0 +1,75 @@
+/* ============================================================
+   tapeTransition —— 音乐盒角标 ↔ 磁带机整页 的进出过渡
+   ------------------------------------------------------------
+   面板不是额外的替身：它就是 #tape-root 自己（把整页 transform 到角标矩形上）。
+   深色芯片与发丝线用 ::before / ::after 画 —— 它们跟着 root 的 transform 走，
+   所以从第一帧起，芯片矩形就与角标的矩形严丝合缝。
+   时间全部的取自 TapePage 下发的 CSS 变量（--tt-*），与 JS 里的 TIMING 同源。
+   ============================================================ */
+
+/* ---------- 过渡期间的两个共同约定 ---------- */
+#tape-root.is-entering,
+#tape-root.is-leaving {
+  will-change: transform;
+  pointer-events: none;          /* 缩放中的 UI 不该接点击（进站在 boot、出站已经在收） */
+}
+/* 展开：长尾缓出（原项目 --ease），从角标矩形走到 identity */
+#tape-root.is-entering { transition: transform var(--tt-expand) var(--ease); }
+/* 收闭：略快一点的曲线（原项目 --ease2），走得干脆 */
+#tape-root.is-leaving { transition: transform var(--tt-shrink) var(--ease2); }
+
+/* ---------- 第一拍：深色芯片停在原矩形，再用 200ms 过到纸色 ----------
+   填充从角标的深色淡到透明 —— 底下就是面板自己的纸色，视觉上等同于"深色过到纸色"，
+   但省掉一次颜色插值。（芯片的 backdrop-blur 在这里是空操作：身后只有站内深色底。） */
+#tape-root.is-entering::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 30;                   /* 压在加载屏（z-20）之上 */
+  pointer-events: none;
+  animation: tt-chip-out var(--tt-recolor) linear both;
+}
+@keyframes tt-chip-out {
+  /* 比角标那条 chip 略实一点（角标是 .72）：展开那一拍身后是加载屏的纸面与印刷，
+     太透会让字从深色里浮出来；这一拍要读作"一块料"，不是"一层纱" */
+  from { background: rgba(10, 10, 10, 0.88); }
+  to   { background: rgba(10, 10, 10, 0); }
+}
+
+/* ---------- 发丝线：一路跟着长，到展开约 70% 时退场 ----------
+   颜色同时从"亮线配深芯片"换成"深线配纸面"（终端在纸面上的发丝线），
+   否则面板转成纸色后这圈亮线就看不见了。 */
+#tape-root.is-entering::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 31;
+  pointer-events: none;
+  border: 1px solid rgba(252, 249, 243, 0.16);
+  animation:
+    tt-hair-tone var(--tt-recolor) linear both,
+    tt-hair-out 160ms linear calc(var(--tt-recolor) + var(--tt-expand) * 0.68) both;
+}
+@keyframes tt-hair-tone {
+  from { border-color: rgba(252, 249, 243, 0.16); }
+  to   { border-color: rgba(22, 24, 28, 0.18); }
+}
+@keyframes tt-hair-out { to { opacity: 0; } }
+
+/* ---------- 后段：内容淡入 ----------
+   加载屏里那组印刷（OHM TAPE 标记 / 进度条 / 步骤标签）在展开开始 150ms 后才浮现。
+   20 倍放大初期的字就是一片尘埃，等面板长开一半再让它显形。 */
+#tape-root.is-expanding .loader-box {
+  animation: tt-content-in var(--tt-content) var(--ease) var(--tt-content-delay) both;
+}
+@keyframes tt-content-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- 减少动效：整套退化成瞬时 ----------
+   （JS 侧也会跳过动画，这里保证万一类还在也不动） */
+@media (prefers-reduced-motion: reduce) {
+  #tape-root.is-entering,
+  #tape-root.is-leaving { transition: none; }
+  #tape-root.is-entering::before,
+  #tape-root.is-entering::after { animation: none; opacity: 0; }
+  #tape-root.is-expanding .loader-box { animation: none; }
+}

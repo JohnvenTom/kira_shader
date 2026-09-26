@@ -19,8 +19,9 @@
  *    这一条写在 musicBox.css 里，不需要 film 页配合
  *  - #tape 整页里不渲染这个角标（由 main.tsx 的路由分支保证），页面里不必再判断
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tapeAudio, type TapeAudioState } from './tapeAudioStore';
+import { TIMING, consumeLanded, reduceMotion, rememberOrigin } from './tapeTransition';
 import './musicBox.css';
 
 /**
@@ -39,13 +40,40 @@ function fmt(s: number): string {
 export function MusicBoxDock() {
   // 音频单例的状态快照（订阅式：元素是共享的，状态可能来自任何页面）
   const [st, setSt] = useState<TapeAudioState>(tapeAudio.state);
+  // 正在起飞（图标淡出那 90ms：期间不接受第二次点击，也不再响应悬停）
+  const [launching, setLaunching] = useState(false);
+  // 刚完成一次收闭落地（播一次回弹，让"收进去"和"它在角标里接着放"连成一个动作）
+  const [landing, setLanding] = useState(false);
+  // 角标本体（量来源矩形用：展开的起点与收闭的落点就是它）
+  const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => tapeAudio.subscribe(setSt), []);
 
-  /** 打开磁带机整页（顺手记下来源页，整页的「返回站内」按它回去） */
+  /** 挂载时若刚发生过收闭，播一次落地回弹 */
+  useEffect(() => {
+    if (!consumeLanded()) return;
+    setLanding(true);
+    const t = window.setTimeout(() => setLanding(false), 320);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  /**
+   * 打开磁带机整页
+   *
+   * 功能：先量下角标 bar 的矩形交给过渡模块（展开起点 / 收闭落点 / 来源页），
+   *      播一下图标淡出（dockHandoff），再切 hash 让整页从这块矩形长出来
+   *
+   * 参数：无
+   * 返回值：无
+   * 异常：无（减少动效时直接切路由）
+   */
   const openTape = () => {
-    try { sessionStorage.setItem('ohmtape.from', window.location.hash || '#film'); } catch { /* 存储不可用：整页那边兜底回胶片页 */ }
-    window.location.hash = '#tape';
+    if (launching) return;
+    const bar = barRef.current;
+    if (bar) rememberOrigin(bar);
+    if (reduceMotion()) { window.location.hash = '#tape'; return; }
+    setLaunching(true);
+    window.setTimeout(() => { window.location.hash = '#tape'; }, TIMING.dockHandoff);
   };
 
   const credits = [st.artist, st.album].filter(Boolean).join(' · ');
@@ -53,7 +81,7 @@ export function MusicBoxDock() {
 
   return (
     <div
-      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}`}
+      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}${launching ? ' is-launching' : ''}${landing ? ' is-landing' : ''}`}
     >
       {/* 悬停浮出的信息层 */}
       <div className="music-dock-panel">
@@ -64,7 +92,7 @@ export function MusicBoxDock() {
         </span>
       </div>
 
-      <div className="music-dock-bar">
+      <div className="music-dock-bar" ref={barRef}>
         {/* 磁带图标：点它进整页 */}
         <button
           className="music-dock-main"

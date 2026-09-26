@@ -154,14 +154,33 @@ body:has(.film-detail-overlay.visible) .music-dock {
 }
 .music-dock.is-empty .music-dock-prog i { background: rgba(252, 249, 243, 0.2); }
 
+/* ---------- 起飞与落地：一趟进出的两头 ----------
+   起飞：点开后图标先淡出并轻微放大（90ms，与 tapeTransition.TIMING.dockHandoff 一致），
+        随后整页从同一矩形长出来 —— 角标不是"消失"，是"变成了那一页"。
+   落地：收闭落回角标矩形的那一瞬，角标从 0.94 弹回 1；若音乐在放，轮毂顺势开始转。
+   两条都用 animation（而不是 transition），以免覆盖 .music-dock-bar 原有的边框过渡。 */
+.music-dock.is-launching .music-dock-bar { animation: music-dock-launch 90ms ease-out both; }
+.music-dock.is-launching .music-dock-panel { animation: music-dock-launch 90ms ease-out both; }
+@keyframes music-dock-launch {
+  to { opacity: 0; transform: scale(1.06); }
+}
+.music-dock.is-landing .music-dock-bar { animation: music-dock-land 220ms cubic-bezier(.19, 1, .22, 1) both; }
+@keyframes music-dock-land {
+  from { transform: scale(0.94); }
+  to { transform: none; }
+}
+
 /* ---------- 窄屏：只留图标与播放钮，信息层靠悬停也没意义 ---------- */
 @media (max-width: 560px) {
   .music-dock { right: 14px; bottom: 14px; }
   .music-dock-panel { display: none; }
 }
 
-/* ---------- 减少动效：不转轮毂 ---------- */
+/* ---------- 减少动效：不转轮毂、不起飞、不落地回弹 ---------- */
 @media (prefers-reduced-motion: reduce) {
   .music-dock.is-playing .music-dock-reel { animation: none; }
   .music-dock, .music-dock-bar, .music-dock-panel, .music-dock-toggle { transition: none; }
+  .music-dock.is-launching .music-dock-bar,
+  .music-dock.is-launching .music-dock-panel,
+  .music-dock.is-landing .music-dock-bar { animation: none; }
 }

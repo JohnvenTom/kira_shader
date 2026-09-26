@@ -253,15 +253,29 @@ function portMain(code) {
     + '  }));\n'
     + '}');
 
-  /* 12) 绑定页头新增的「返回站内」
-     原项目没有这个按钮（单页应用不需要"离开"），所以绑定也在这里补。
-     回到进入前那一页：角标进 #tape 之前会把来源 hash 写进 sessionStorage（ohmtape.from），
-     没有记录（直接打开链接 / 存储不可用）就回胶片页。Esc 不进这里，保持原项目"逐层收"的语义。 */
+  /* 13) 退场第一步：把灯光过渡压缩并可调速
+     收闭动画（页面缩回角标）只有 380ms，而房间换灯的时钟是 1.6s。把这条时钟本身压短，
+     整套房间（灯位/曝光/后期/地面/背景都在同一条 themeQ 曲线上）仍然同步地一起暗 ——
+     比另叠一层黑色遮罩有内容，也是"先关灯、再收进芯片"这条因果的来源。 */
+  rep('主题时钟可调速',
+    /const THEME_DUR = 1\.6;/,
+    'let THEME_DUR = 1.6;                  // 收闭时由 beginExit() 临时压短：同一条曲线走快些');
+
+  /* 14) 退场入口与 onExit 参数都在下面 HEAD / FOOT 两个常量里（它们是我们新写的头尾，
+     不在 main.js 正文里）：HEAD 里加 onExit 形参，FOOT 里加 beginExit 并扩展返回值 */
+
+  /* 15) 绑定页头新增的「返回站内」
+     原项目没有这个按钮（单页应用不需要"离开"），绑定在这里补。
+     按钮本身不改路由，只把"用户要走"这件事交给调用方（onExit）——
+     因为离开前要先把收闭动画播完，路由得等动画落地才换。
+     没有 onExit（例如直接嵌进别的宿主）时退回原逻辑：按来源页跳转，兜底胶片页。
+     Esc 不进这里，保持原项目"逐层收"的语义。 */
   rep('返回站内绑定',
     /^\$\('#btn-reinit'\)\.addEventListener\('click', reinit\);$/m,
     "  $('#btn-reinit').addEventListener('click', reinit);\n"
     + "  $('#btn-back').addEventListener('click', () => {\n"
     + '    audio.tick();\n'
+    + '    if (onExit) { onExit(); return; }\n'
     + "    let from = '';\n"
     + "    try { from = sessionStorage.getItem('ohmtape.from') || ''; } catch { /* 存储不可用：走兜底 */ }\n"
     + "    window.location.hash = from && from !== '#tape' ? from : '#film';\n"
@@ -291,8 +305,12 @@ ${imports}
  *  - audioEl      {HTMLAudioElement | null} 可选的共享音频元素（跨路由续播用）；
  *                                   不传则本地创建一个指向站点默认曲目的元素
  *  - query        {URLSearchParams}  hash 查询参数（原项目的 ?v=&x=&f=&t=&p=&r= 等）
+ *  - onExit       {(() => void) | null} 页头「BACK TO SITE」被按下时的回调；
+ *                                   由调用方负责"先播收闭动画、再换路由"，不传则按钮自己跳转
  *
- * 返回值：{ { dispose: () => void } }
+ * 返回值：{ { dispose: () => void, beginExit: (dur?: number) => void } }
+ *  - dispose    卸载：停主循环、摘监听、关音频上下文与渲染器
+ *  - beginExit  退场第一步：把换灯时钟压到 dur 秒（默认 0.42）并切暗房，整套房间一起暗
  *
  * 异常：root 缺失时抛 Error；WebGL 不可用时在原项目逻辑里写入提示并抛出（见下）
  *
@@ -302,10 +320,10 @@ ${imports}
  *  - 未做类型化：这是纯 JS 搬运件，TS 侧仅通过 allowJs 参与编译；
  *    下面这行 JSDoc 是给 TS 看的唯一类型信息（否则 root 会被推断掉）
  *
- * @param {{ root: HTMLElement, audioEl?: HTMLAudioElement | null, query?: URLSearchParams }} [options]
- * @returns {{ dispose: () => void }}
+ * @param {{ root: HTMLElement, audioEl?: HTMLAudioElement | null, query?: URLSearchParams, onExit?: (() => void) | null }} [options]
+ * @returns {{ dispose: () => void, beginExit: (dur?: number) => void }}
  */
-export function createTapeApp({ root, audioEl: injectedAudio = null, query = new URLSearchParams() } = {}) {
+export function createTapeApp({ root, audioEl: injectedAudio = null, query = new URLSearchParams(), onExit = null } = {}) {
   if (!root) throw new Error('createTapeApp: 缺少 root 挂载点');
   root.innerHTML = SHELL;
 
@@ -347,9 +365,35 @@ const FOOT = `
     root.innerHTML = '';
   }
 
-  return { dispose };
+  /**
+   * 开始退场：先关灯
+   *
+   * 功能：把"房间换灯"的时钟压到指定秒数并切到暗房（灯位、曝光、后期、地面、背景
+   *      都挂在同一条 themeQ 曲线上，所以整套房间一起暗），作为收闭动画的第一步；
+   *      页面本身的收缩由调用方接着做。
+   *
+   * 参数：
+   *  - dur {number} 过渡时长（秒），默认 0.42
+   * 返回值：无
+   * 异常：无
+   *
+   * 注意事项：
+   *  - 这是单向的：暗房不会被恢复。主题本来就不持久化（themeName 每次挂载回到 studio），
+   *    所以下次进页仍是出厂那套影棚灯，不需要"记住要切回来"
+   */
+  function beginExit(dur = 0.42) {
+    THEME_DUR = Math.max(0.05, dur);
+    setTheme('noir');
+  }
+
+  return { dispose, beginExit };
 }
 `;
+
+/**
+ * 收闭动画的第一步在工厂里留一个口子：把换灯时钟压短并切暗房。
+ * 写在 FOOT 里是因为它属于我们新写的尾部，不在原项目 main.js 正文中。
+ */
 
 /**
  * CSS 作用域化

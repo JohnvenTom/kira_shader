@@ -25,8 +25,12 @@ import { readTags, looksLikeAudio } from './tags.js';
  *  - audioEl      {HTMLAudioElement | null} 可选的共享音频元素（跨路由续播用）；
  *                                   不传则本地创建一个指向站点默认曲目的元素
  *  - query        {URLSearchParams}  hash 查询参数（原项目的 ?v=&x=&f=&t=&p=&r= 等）
+ *  - onExit       {(() => void) | null} 页头「BACK TO SITE」被按下时的回调；
+ *                                   由调用方负责"先播收闭动画、再换路由"，不传则按钮自己跳转
  *
- * 返回值：{ { dispose: () => void } }
+ * 返回值：{ { dispose: () => void, beginExit: (dur?: number) => void } }
+ *  - dispose    卸载：停主循环、摘监听、关音频上下文与渲染器
+ *  - beginExit  退场第一步：把换灯时钟压到 dur 秒（默认 0.42）并切暗房，整套房间一起暗
  *
  * 异常：root 缺失时抛 Error；WebGL 不可用时在原项目逻辑里写入提示并抛出（见下）
  *
@@ -36,10 +40,10 @@ import { readTags, looksLikeAudio } from './tags.js';
  *  - 未做类型化：这是纯 JS 搬运件，TS 侧仅通过 allowJs 参与编译；
  *    下面这行 JSDoc 是给 TS 看的唯一类型信息（否则 root 会被推断掉）
  *
- * @param {{ root: HTMLElement, audioEl?: HTMLAudioElement | null, query?: URLSearchParams }} [options]
- * @returns {{ dispose: () => void }}
+ * @param {{ root: HTMLElement, audioEl?: HTMLAudioElement | null, query?: URLSearchParams, onExit?: (() => void) | null }} [options]
+ * @returns {{ dispose: () => void, beginExit: (dur?: number) => void }}
  */
-export function createTapeApp({ root, audioEl: injectedAudio = null, query = new URLSearchParams() } = {}) {
+export function createTapeApp({ root, audioEl: injectedAudio = null, query = new URLSearchParams(), onExit = null } = {}) {
   if (!root) throw new Error('createTapeApp: 缺少 root 挂载点');
   root.innerHTML = SHELL;
 
@@ -751,7 +755,7 @@ function setBackdrop(name, first = false) {
    by a rate that turns it into a linear walk in q. Each value therefore lands
    exactly on q(p), which is what keeps a colour, a light *and* an opacity in
    step with each other no matter how far each has to travel. */
-const THEME_DUR = 1.6;
+let THEME_DUR = 1.6;                  // 收闭时由 beginExit() 临时压短：同一条曲线走快些
 let themeP = 1;                        // 0 → 1 while a room change is walking
 function themeQ() {                    // eased progress, the shape every value lands on
   const p = themeP;
@@ -2126,6 +2130,7 @@ $('#index-close').addEventListener('click', closeIndex);
   $('#btn-reinit').addEventListener('click', reinit);
   $('#btn-back').addEventListener('click', () => {
     audio.tick();
+    if (onExit) { onExit(); return; }
     let from = '';
     try { from = sessionStorage.getItem('ohmtape.from') || ''; } catch { /* 存储不可用：走兜底 */ }
     window.location.hash = from && from !== '#tape' ? from : '#film';
@@ -2569,5 +2574,26 @@ function loop() {
     root.innerHTML = '';
   }
 
-  return { dispose };
+  /**
+   * 开始退场：先关灯
+   *
+   * 功能：把"房间换灯"的时钟压到指定秒数并切到暗房（灯位、曝光、后期、地面、背景
+   *      都挂在同一条 themeQ 曲线上，所以整套房间一起暗），作为收闭动画的第一步；
+   *      页面本身的收缩由调用方接着做。
+   *
+   * 参数：
+   *  - dur {number} 过渡时长（秒），默认 0.42
+   * 返回值：无
+   * 异常：无
+   *
+   * 注意事项：
+   *  - 这是单向的：暗房不会被恢复。主题本来就不持久化（themeName 每次挂载回到 studio），
+   *    所以下次进页仍是出厂那套影棚灯，不需要"记住要切回来"
+   */
+  function beginExit(dur = 0.42) {
+    THEME_DUR = Math.max(0.05, dur);
+    setTheme('noir');
+  }
+
+  return { dispose, beginExit };
 }

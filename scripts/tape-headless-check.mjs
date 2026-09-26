@@ -17,7 +17,9 @@
  *   --port=<端口>     CDP 调试端口，默认 9333
  *   --expect=<选择器> 就绪判据，默认 #tape-root.ready（验证角标时传 .music-dock）
  *   --do=<步骤>       逗号分隔的步骤序列，支持：
- *                       probe            采样一次并打印
+ *                       probe            采样一次并打印（含 1.2s 计时采样，用于判断主循环在跑）
+ *                       snap             轻量快照（不做等待）：路由 / 过渡类 / transform / 伪元素 / 加载屏，
+ *                                        用来抓展开与收闭动画的中段
  *                       click:<选择器>    真实 CDP 鼠标点击（可信输入，会授予用户手势）
  *                       hash:<#值>        改 location.hash（路由跳转）
  *                       key:<按键>        派发 keydown（空格写"空格"）
@@ -169,6 +171,47 @@ const PROBE = `(async () => {
   });
 })()`;
 
+/** 轻量快照：专门用来抓过渡动画的中段（不带任何等待） */
+const SNAP = `(() => {
+  const root = document.querySelector('#tape-root');
+  const dock = document.querySelector('.music-dock');
+  const cs = root ? getComputedStyle(root) : null;
+  const before = root ? getComputedStyle(root, '::before') : null;
+  const after = root ? getComputedStyle(root, '::after') : null;
+  const box = root?.querySelector('.loader-box');
+  const m = cs?.transform && cs.transform !== 'none' ? cs.transform.match(/matrix\\(([^)]+)\\)/) : null;
+  return JSON.stringify({
+    hash: location.hash,
+    rootClasses: root ? root.className : null,
+    theme: root ? root.getAttribute('data-theme') : null,
+    transform: cs ? cs.transform : null,
+    scale: m ? Number(m[1].split(',')[0]).toFixed(4) : (cs ? 'none' : null),
+    chip: before ? before.backgroundColor : null,
+    hair: after ? after.opacity : null,
+    loaderBox: box ? getComputedStyle(box).opacity : null,
+    loader: root?.querySelector('.loader') ? getComputedStyle(root.querySelector('.loader')).opacity : null,
+    dockClasses: dock ? dock.className : null,
+    /* 诊断用：headless 下 CSS 的 prefers-reduced-motion 与 matchMedia 可能不一致，
+       两条都报出来，免得把"动画被媒体查询关掉"误读成"代码没生效" */
+    reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    boxAnim: box ? getComputedStyle(box).animationName : null,
+    /* 诊断用：过渡本身是否成立（变量解析失败会让整条 transition 失效、动画变成瞬移） */
+    tProp: cs ? cs.transitionProperty : null,
+    tDur: cs ? cs.transitionDuration : null,
+    ttExpand: cs ? cs.getPropertyValue('--tt-expand').trim() : null,
+    easeVar: cs ? cs.getPropertyValue('--ease').trim() : null,
+    /* 决定性诊断：CSS 过渡/动画在动画引擎里的真实状态。
+       为空 = 引擎里没有在跑的动画（环境不推进动画），有但 playState=finished = 已瞬移到位 */
+    anims: document.getAnimations().slice(0, 8).map((a) => ({
+      type: a.constructor.name,
+      prop: a.transitionProperty || a.animationName || '',
+      state: a.playState,
+      t: Math.round(Number(a.currentTime) || 0),
+      dur: a.effect?.getTiming?.().duration ?? null,
+    })),
+  });
+})()`;
+
 /* ============================== 执行 ==================================== */
 const profile = mkdtempSync(join(tmpdir(), 'tape-cdp-'));
 const chrome = spawn(CHROME, [
@@ -192,6 +235,12 @@ try {
   await cdp.ready;
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
+  /* headless Chrome 默认会把 CSS 的 prefers-reduced-motion 报成 reduce（而这套动画就是靠
+     媒体查询和 matchMedia 双开关控制的），所以显式模拟成 no-preference，让动画真的跑起来。
+     要专门验证"减少动效"这条降级路径时传 --motion=reduce。 */
+  await cdp.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: arg('motion', 'no-preference') }],
+  });
 
   /** 截图（同时记进清单） */
   const shot = async (path) => {
@@ -220,9 +269,11 @@ try {
     const val = rest.join(':');
     if (op === 'probe') {
       console.log('采样：', await evaluate(cdp, PROBE));
+    } else if (op === 'snap') {
+      console.log('快照：', await evaluate(cdp, SNAP));
     } else if (op === 'click') {
       console.log(`点击 ${val} →`, await realClick(cdp, val));
-      await sleep(900);
+      await sleep(60);            // 只等一个最短的反应时间；要抓动画中段请在 --do 里跟 snap/wait
     } else if (op === 'hash') {
       await evaluate(cdp, `location.hash = ${JSON.stringify(val)}`);
       console.log('跳转 →', val);
