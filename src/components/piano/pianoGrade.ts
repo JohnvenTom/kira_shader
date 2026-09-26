@@ -105,19 +105,19 @@ function rgb(hex: number): [number, number, number] {
 /** 三种风格预设：影棚（默认，明亮摄影棚+轻胶片）/ 暗房（黑白戏剧光）/ 动画（三渲二） */
 export const PIANO_STYLES: Record<PianoStyleName, PianoStyle> = {
   studio: {
-    grade: { grain: 0.030, vig: 0.28, ca: 0.30, hal: 0.025, sat: 1.0, split: 0.20, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.07, dofMax: 0.28, edge: 0.15 },
+    grade: { grain: 0.030, vig: 0.28, ca: 0.30, hal: 0.025, sat: 1.0, split: 0.20, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.20, dofMax: 0.55, edge: 0.14 },
     scene: { fog: rgb(0xe9ecf1), ground: rgb(0xdfe3ea), exposure: 0.95, key: 1.0, hemi: 1.0, fill: 1.0, dust: 0.55, beam: 0.10 },
     bgTop: rgb(0xfdfdfe), bgMid: rgb(0xeceef3), bgFloor: rgb(0xdde1e9),
     spotPos: [0.5, -0.06], spotRadius: 0.62, spotColor: rgb(0xffffff), spotStrength: 0.55,
   },
   noir: {
-    grade: { grain: 0.085, vig: 0.95, ca: 0.55, hal: 0.060, sat: 0.22, split: 0.50, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.12, dofMax: 0.50, edge: 0.25 },
+    grade: { grain: 0.085, vig: 0.95, ca: 0.55, hal: 0.060, sat: 0.22, split: 0.50, toon: 0, levels: 4, flat: 0.85, ink: 0.6, inkWidth: 1.5, dof: 0.30, dofMax: 0.70, edge: 0.22 },
     scene: { fog: rgb(0x10141b), ground: rgb(0x14181f), exposure: 0.82, key: 0.92, hemi: 0.45, fill: 0.55, dust: 0.6, beam: 0.16 },
     bgTop: rgb(0x05060a), bgMid: rgb(0x10141a), bgFloor: rgb(0x171b22),
     spotPos: [0.5, 0.06], spotRadius: 0.46, spotColor: rgb(0x8ca2c8), spotStrength: 0.30,
   },
   toon: {
-    grade: { grain: 0.020, vig: 0.32, ca: 0.15, hal: 0.015, sat: 1.12, split: 0.20, toon: 1, levels: 4, flat: 0.88, ink: 0.60, inkWidth: 1.5, dof: 0.06, dofMax: 0.20, edge: 0.35 },
+    grade: { grain: 0.020, vig: 0.32, ca: 0.15, hal: 0.015, sat: 1.12, split: 0.20, toon: 1, levels: 4, flat: 0.88, ink: 0.60, inkWidth: 1.5, dof: 0.16, dofMax: 0.45, edge: 0.30 },
     scene: { fog: rgb(0xeef0f2), ground: rgb(0xdfe2e7), exposure: 1.0, key: 1.06, hemi: 1.15, fill: 1.0, dust: 0.30, beam: 0.06 },
     bgTop: rgb(0xdfe3e8), bgMid: rgb(0xeef0f2), bgFloor: rgb(0xf8f9fa),
     spotPos: [0.5, -0.04], spotRadius: 0.60, spotColor: rgb(0xffffff), spotStrength: 0.45,
@@ -226,7 +226,9 @@ export const PIANO_GRADE_SHADER = {
       float coc = clamp(abs(vz - uFocusDist) * uDof, 0.0, 1.0) * uDofMax;
       // 移轴：边缘离焦(画质优先的镜头感)
       float def = smoothstep(uFocusR, uFocusR + 0.40, length(uv - vec2(0.5))) * uEdge;
-      vec2 blur = uTexel * (1.0 + def * 4.6 + coc * 26.0);
+      // 焦点平面 blur=0 → disc4 全部采样落在同一 texel,退化为单次取样(锐利);
+      // 之前的 +1.0 基线会给焦点也叠 ~1texel 柔化,导致"焦点处也是虚的"
+      vec2 blur = uTexel * (def * 4.6 + coc * 26.0);
 
       // 径向色散：RGB 沿视半径方向分离（画面中心不变形）
       vec2 off = d * r2 * uCA * 0.012;
