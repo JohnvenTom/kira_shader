@@ -1424,14 +1424,14 @@ function WorkDetailPage({
   const innerRef = useRef<HTMLDivElement>(null);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
   const heroBlockRef = useRef<HTMLDivElement>(null);
-  // trace 跳转四角放大转场状态（点击卡片后渲染 zoom 层，动画末切 hash）
+  // trace 跳转整页透视飞入转场状态（点击卡片后触发，动画末切 hash）
+  //  - cx/cy  被点卡片中心（视口坐标 = inner 本地坐标，作 transform-origin）
+  //  - zt     translateZ 终值 = PERSPECTIVE × (1 - 1/zs)，恒小于 PERSPECTIVE，
+  //           内容逼近但永不越过相机平面（zs→∞ 时 zt→PERSPECTIVE，天然安全）
   const [zoomCard, setZoomCard] = useState<{
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    thumb: string;
-    zs: number;
+    cx: number;
+    cy: number;
+    zt: number;
   } | null>(null);
 
   /**
@@ -1640,10 +1640,10 @@ function WorkDetailPage({
   /**
    * 收藏柜卡片点击处理
    *
-   * 功能：trace 作品卡片被点击时，白闪渐显掩盖页面切换：
-   *      记录返回位置（section1 + 详情已开）到 sessionStorage，
-   *      420ms 后切 hash 到 #trace。
-   *      拖拽后（hasDragged=true）忽略点击，避免拖卡片误触发跳转。
+   * 功能：trace 作品卡片被点击时，整页透视飞入转场：
+   *      以被点卡片中心为 transform-origin，整个收藏柜沿 Z 轴冲向镜头
+   *      （translateZ 0 → zt），点哪从哪"穿过"进入；末段白闪掩护
+   *      hash 切换到 #trace。拖拽后（hasDragged=true）忽略点击。
    *
    * 参数：
    *  - id {string} 被点击卡片对应的项目 id（data-project）
@@ -1651,19 +1651,26 @@ function WorkDetailPage({
    * 返回值：void
    *
    * 注意事项：
-   *  - 其他项目卡片点击无操作（暂无独立展示页）
-   *  - 白闪层 CSS transition 0.4s，与 420ms 定时匹配
+   *  - zs 沿用原"卡片盖满视口"比例（max(vw/w, vh/h) × 1.12），
+   *    再换算为 translateZ 终值 zt = PERSPECTIVE × (1 - 1/zs)
+   *  - zt 恒小于 PERSPECTIVE（= 1200，与 CSS keyframes 保持一致），
+   *    内容无限逼近相机平面但不会投影翻转
+   *  - 700ms 定时与 CSS 动画 0.6s + 白闪 0.34s+0.28s 对齐
    */
   const handleWorkCardClick = useCallback((id: string, card: HTMLDivElement) => {
     if (id !== 'trace-animated') return;
     if (dragRef.current.hasDragged) return;
     const rect = card.getBoundingClientRect();
-    const img = card.querySelector<HTMLImageElement>('img');
-    const thumb = img?.src ?? '';
+    const ZOOM_PERSPECTIVE = 1200;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const zs = Math.max(vw / Math.max(rect.width, 1), vh / Math.max(rect.height, 1)) * 1.12;
-    setZoomCard({ x: rect.left, y: rect.top, w: rect.width, h: rect.height, thumb, zs });
+    const zt = ZOOM_PERSPECTIVE * (1 - 1 / zs);
+    setZoomCard({
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+      zt,
+    });
     setTimeout(() => {
       try {
         sessionStorage.setItem(
@@ -1756,12 +1763,14 @@ function WorkDetailPage({
    * 返回值：void
    *
    * 注意事项：
-   *  - 拖拽确认后（hasDragged）不加特效，避免拖拽时粒子乱飞
+   *  - 守卫只看 ifMovable（拖拽进行中不变形）。不能拿 hasDragged 做守卫：
+   *    它在 mouseup 后残留 true（供 click 阶段拦截拖拽误跳转），若参与
+   *    守卫会让拖拽结束后 hover 变形/粒子全部失效，直到下次 mousedown
    *  - rotateY 跟随水平位移、rotateX 反向跟随垂直位移（鼠标在上方时卡片抬头）
    */
   const handleCardMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (dragRef.current.hasDragged || dragRef.current.ifMovable) return;
+      if (dragRef.current.ifMovable) return;
       const card = e.currentTarget;
       const rect = card.getBoundingClientRect();
       const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -2067,37 +2076,37 @@ function WorkDetailPage({
   }, [mouseRef]);
 
   return (
-    <div ref={innerRef} className="work-detail-inner">
-      {/* trace 跳转四角放大转场层：卡片克隆从原位放大盖满全屏，
-          四角角标向外放大，末尾白闪覆盖后切 hash */}
+    <div
+      ref={innerRef}
+      className={`work-detail-inner ${zoomCard ? 'zoom-through' : ''}`}
+      style={
+        zoomCard
+          ? ({
+              transformOrigin: `${zoomCard.cx}px ${zoomCard.cy}px`,
+              '--zt': `${zoomCard.zt}px`,
+            } as React.CSSProperties)
+          : undefined
+      }
+    >
+      {/* trace 跳转整页透视飞入转场：整个收藏柜以被点卡片中心为原点
+          沿 Z 轴冲向镜头（translateZ 0 → --zt），点哪从哪穿进去；
+          末段白闪覆盖后切 hash（白闪层在全屏 overlay 上，不参与透视） */}
       {zoomCard && (
         <div className="work-zoom-overlay" aria-hidden="true">
-          <div
-            className="work-zoom-card"
-            style={
-              {
-                left: zoomCard.x,
-                top: zoomCard.y,
-                width: zoomCard.w,
-                height: zoomCard.h,
-                '--zs': zoomCard.zs,
-              } as React.CSSProperties
-            }
-          >
-            <img src={zoomCard.thumb} alt="" draggable={false} />
-            <span className="work-zoom-corner work-zoom-corner--tl" />
-            <span className="work-zoom-corner work-zoom-corner--tr" />
-            <span className="work-zoom-corner work-zoom-corner--bl" />
-            <span className="work-zoom-corner work-zoom-corner--br" />
-          </div>
           <div className="work-zoom-flash" />
         </div>
       )}
       {/* 拖拽结束的圆形蒙版动画层：从松手点圆扩全屏，模糊回归的开场表演 */}
       <div ref={maskRef} className="work-dim-mask" aria-hidden="true" />
       {/* 粒子浮层：覆盖全屏最顶层（fixed z-350），粒子从鼠标位置发射，
-          永不被任何卡片遮挡 */}
-      <div ref={particlesLayerRef} className="work-photos-particles" aria-hidden="true" />
+          永不被任何卡片遮挡；透视飞入转场期间隐藏（fixed 后代会因祖先
+          transform 改变定位基准，且粒子跟着放大毫无意义） */}
+      <div
+        ref={particlesLayerRef}
+        className="work-photos-particles"
+        aria-hidden="true"
+        style={zoomCard ? { visibility: 'hidden' } : undefined}
+      />
       {/* 色散 + 边缘虚化变形：纯 CSS 实现（避免 SVG filter 的 JSX 解析问题）
           - 色散：.work-photo-card 上 filter:drop-shadow 实现 R/B 通道偏移
           - 边缘虚化：.work-photos 上 mask-image 径向渐变让边缘渐隐
