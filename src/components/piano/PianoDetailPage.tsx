@@ -30,6 +30,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
+import * as THREE from 'three';
 import { CanvasContextGuard } from '../CanvasContextGuard';
 import {
   PianoScene,
@@ -93,6 +94,8 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
   const [view, setView] = useState('front');
   // 面板折叠状态
   const [collapsed, setCollapsed] = useState(false);
+  // DOF 焦点目标：鼠标指向模型的命中点(PianoScene 写入,PianoPostProcessing 读取)
+  const focusRef = useRef(new THREE.Vector3(0, 0.9, -0.6));
   // 音量滑杆值（与原项目默认一致）
   const [volume, setVolume] = useState(0.85);
   // 混响滑杆值（默认拉满 = 滑杆上限，与 pianoAudio 初始 wet 增益一致）
@@ -257,8 +260,9 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
             hintElRef={hintElRef}
             toastElRef={toastElRef}
             styleName={style}
+            focusRef={focusRef}
           />
-          <PianoPostProcessing styleName={style} />
+          <PianoPostProcessing styleName={style} focusRef={focusRef} />
           <CanvasContextGuard />
         </Canvas>
       </div>

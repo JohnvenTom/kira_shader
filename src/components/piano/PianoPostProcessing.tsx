@@ -53,7 +53,14 @@ const GRADE_UNIFORM_KEYS = {
  *  - 输出为不透明整帧：3D 画面按 alpha 合成到 shader 内的程序化背景上，
  *    因此暗角/颗粒作用于整帧（CSS .piano-backdrop 保留作加载期兜底）
  */
-export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }) {
+export function PianoPostProcessing({
+  styleName,
+  focusRef,
+}: {
+  styleName: PianoStyleName;
+  /** DOF 焦点目标（PianoScene 写入：鼠标指向模型的命中点） */
+  focusRef: React.MutableRefObject<THREE.Vector3>;
+}) {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const gradeRef = useRef<ShaderPass | null>(null);
@@ -97,6 +104,8 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
     composer.addPass(grade);
     composerRef.current = composer;
     gradeRef.current = grade;
+    // TODO(debug): 临时量测钩子,验证后删除
+    (window as unknown as Record<string, unknown>).__pp = { grade, composer, camera };
     // 注意：styleName 不进依赖 —— 风格切换走逐帧阻尼，不重建管线
   }, [gl, scene, camera]);
 
@@ -148,9 +157,9 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
 
     // 三渲二墨线需要当前帧投影逆矩阵（视空间重建）
     u.uProjInv.value.copy(camera.projectionMatrixInverse);
-    // 景深焦点：相机到钢琴中心的距离,阻尼逼近形成"焦点呼吸"
+    // 景深焦点：相机到"鼠标指向的模型命中点"的距离,阻尼逼近形成"焦点呼吸"
     const kf = 1 - Math.exp(-dt * 9.0);
-    const focusTarget = camera.position.distanceTo(FOCUS_POINT);
+    const focusTarget = camera.position.distanceTo(focusRef.current);
     u.uFocusDist.value += (focusTarget - (u.uFocusDist.value as number)) * kf;
     u.uTime.value += delta;
 
@@ -165,5 +174,3 @@ export function PianoPostProcessing({ styleName }: { styleName: PianoStyleName }
 
 // uSpot 阻尼用（模块级临时向量，避免每帧分配）
 const tmpVec2 = new THREE.Vector2();
-// 景深焦点目标：钢琴中心（世界坐标）
-const FOCUS_POINT = new THREE.Vector3(0, 0.9, -0.6);

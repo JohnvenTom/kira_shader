@@ -102,6 +102,8 @@ export interface PianoSceneProps {
   toastElRef: React.RefObject<HTMLDivElement>;
   /** 风格名（影棚/暗房/动画）：雾/地面/灯光/曝光逐帧阻尼过渡 */
   styleName?: PianoStyleName;
+  /** DOF 焦点目标（鼠标指向的模型命中点，每帧写入；PianoPostProcessing 读取） */
+  focusRef?: React.MutableRefObject<THREE.Vector3>;
 }
 
 /** 白键最大按压角（弧度） */
@@ -235,6 +237,7 @@ export function PianoScene({
   hintElRef,
   toastElRef,
   styleName = 'studio',
+  focusRef,
 }: PianoSceneProps) {
   const { camera, gl, scene } = useThree();
   const cam = camera as THREE.PerspectiveCamera;
@@ -484,6 +487,25 @@ export function PianoScene({
     mesh.renderOrder = 2;
     return mesh;
   }, []);
+
+  /* ---------------- 鼠标焦点拾取：指针指向模型的哪里,景深焦点就在哪里 ---------------- */
+  const pointerNdcRef = useRef(new THREE.Vector2());
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const raycastDueRef = useRef(false);
+  const lastRaycastRef = useRef(0);
+  useEffect(() => {
+    const el = gl.domElement;
+    const onMove = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      pointerNdcRef.current.set(
+        ((e.clientX - r.left) / r.width) * 2 - 1,
+        -((e.clientY - r.top) / r.height) * 2 + 1,
+      );
+      raycastDueRef.current = true;
+    };
+    el.addEventListener('pointermove', onMove);
+    return () => el.removeEventListener('pointermove', onMove);
+  }, [gl]);
 
   /* ---------------- 风格切换：场景侧目标（线性空间颜色缓存） ---------------- */
   const sceneStyleTargets = useMemo(() => {
@@ -1037,6 +1059,18 @@ export function PianoScene({
       if (beamMat) {
         beamMat.uniforms.uTime.value += dt;
         beamMat.uniforms.uAlpha.value += (S.beam - beamMat.uniforms.uAlpha.value) * k;
+      }
+    }
+
+    // === DOF 焦点：鼠标射线命中模型的点(节流 ~120ms,避免 13 万三角形求交过频) ===
+    if (focusRef) {
+      const now = performance.now();
+      if (raycastDueRef.current && now - lastRaycastRef.current > 120) {
+        raycastDueRef.current = false;
+        lastRaycastRef.current = now;
+        raycasterRef.current.setFromCamera(pointerNdcRef.current, cam);
+        const hits = raycasterRef.current.intersectObject(piano.root, true);
+        if (hits.length) focusRef.current.copy(hits[0].point);
       }
     }
 
