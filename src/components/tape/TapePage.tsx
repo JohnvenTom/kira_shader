@@ -29,7 +29,7 @@
  *    的主线程压力影响；时间常量由 tapeTransition.TIMING 经 CSS 变量下发，两边不会对不上
  *  - prefers-reduced-motion 下整套过渡退化成瞬时（不播动画，直接落位）
  */
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { createTapeApp } from './tapeApp.js';
 import { tapeAudio } from './tapeAudioStore';
 import {
@@ -64,7 +64,12 @@ export function TapePage() {
   // 挂载点：工厂会把档案终端外壳与画布注入到这个元素内部
   const rootRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  /* 整个进站编排放在 useLayoutEffect（不是 useEffect）：
+     passive effect 在浏览器绘制之后才跑，真实机器上会先画出一帧
+     "全屏纸色空页"再被摆到角标矩形——用户看到的就是闪一下、弹一下，
+     读作"没有动画"。layout effect 在绘制前同步执行，角标矩形就是
+     这个元素的第一个被画出来的姿态，展开动画从它起跑。 */
+  useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
 
@@ -81,6 +86,11 @@ export function TapePage() {
     const W = () => window.innerWidth;
     const H = () => window.innerHeight;
 
+    /* 工厂引用延迟填充：boot 被双 rAF 推迟到首帧提交之后（见下方注释），
+       close/卸载都要容忍"工厂还没跑"的窗口期 */
+    let app: ReturnType<typeof createTapeApp> | null = null;
+    let bootRaf = 0;
+
     /**
      * 收闭：先关灯，再整页缩回角标，落地后才换路由
      *
@@ -93,7 +103,7 @@ export function TapePage() {
      */
     const close = () => {
       if (!markClosing()) return;
-      if (reduce) { finishClose(); return; }
+      if (reduce || !app) { finishClose(); return; }
       app.beginExit(TIMING.dimTheme / 1000);
       root.classList.add('is-leaving');
       /* 先把当前姿态显式钉成"单位变换列表"：起点与终点是同形状的变换列表，
@@ -108,43 +118,57 @@ export function TapePage() {
       }, TIMING.closeDelay));
     };
 
-    /* 展开的第一步在挂载首帧之前：先把整页摆到角标矩形上（深色芯片态），
-       否则会先闪一帧全屏页面才缩回去 */
+    /* 展开的第一拍在挂载首帧之前：先把整页摆到角标矩形上（深色芯片态），
+       并一次性挂上 is-entering（transform 动画）与 is-expanding（loader 淡入门控）。
+       展开本体是 tapeTransition.css 里的隐式起点 keyframes：延迟 var(--tt-recolor)
+       后由合成器线程自动起跑。 */
     if (origin && !reduce) {
-      root.classList.add('is-entering');
+      root.classList.add('is-entering', 'is-expanding');
       root.style.transformOrigin = '0 0';
       root.style.transform =
         `translate(${origin.x}px, ${origin.y}px) scale(${origin.w / W()}, ${origin.h / H()})`;
     }
 
-    const app = createTapeApp({
-      root,
-      audioEl: tapeAudio.element,
-      query: hashQuery(),
-      onExit: close,
-    });
-    onCloseRequest(close);
+    /* 工厂启动推迟到"首帧提交之后"（双 rAF）：
+       layout effect 里设置完类与 transform 后，浏览器还要经过一次
+       样式计算 + 绘制 + 合成提交，展开动画才会被派发到合成器线程。
+       若在这个提交之前就同步跑 createTapeApp（编着色器，实测能把主线程
+       堵住数秒），动画会因为"从未提交"而压根不起跑——清理定时器醒来时
+       直接把面板 Snap 到全屏（修复前实测：transform 在 947ms 还钉在起点）。
+       双 rAF 保证第 1 帧画完（芯片态 + 动画已上合成器），第 2 帧才交出主线程。 */
+    const boot = () => {
+      app = createTapeApp({
+        root,
+        audioEl: tapeAudio.element,
+        query: hashQuery(),
+        onExit: close,
+      });
+      onCloseRequest(close);
+    };
+    if (origin && !reduce) {
+      bootRaf = requestAnimationFrame(() => {
+        bootRaf = requestAnimationFrame(boot);
+      });
+    } else {
+      boot();
+    }
 
     if (origin && !reduce) {
-      /* 第二拍：深色过到纸色（panelRecolor，CSS 里跑），随后开始展开 */
+      /* 收尾：变色 + 展开 + 余量之后卸掉过渡态。此刻动画已按 both 填充停在
+         单位变换（终态），卸类的同一次样式变更里过渡属性也随之消失，不会跳。 */
       timers.push(window.setTimeout(() => {
-        root.classList.add('is-expanding');
-        /* 展开到的是"显式单位变换列表"而不是 none：与起点同形状，插值一定成立 */
-        root.style.transform = 'translate(0px, 0px) scale(1, 1)';
-        timers.push(window.setTimeout(() => {
-          /* 展开结束后卸掉过渡态：::before/::after 的深色与发丝线随之消失，
-             内容的淡入动画也交还给元素自己的样式（此时都已是终态，不会跳） */
-          root.classList.remove('is-entering', 'is-expanding');
-          root.style.transform = '';
-          root.style.transformOrigin = '';
-        }, TIMING.panelExpand + 40));
-      }, TIMING.panelRecolor));
+        root.classList.remove('is-entering', 'is-expanding');
+        root.style.transform = '';
+        root.style.transformOrigin = '';
+      }, TIMING.panelRecolor + TIMING.panelExpand + 40));
     }
 
     return () => {
       for (const t of timers) window.clearTimeout(t);
+      cancelAnimationFrame(bootRaf);
       onCloseRequest(null);
-      app.dispose();
+      /* 工厂可能还没跑（挂载后两帧内就路由离开）：没有可释放的 app */
+      if (app) app.dispose();
     };
   }, []);
 

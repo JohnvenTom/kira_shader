@@ -6,6 +6,7 @@
 - three r169 渲染管线坑：EffectComposer 共享深度纹理 + autoClear=true → 深度被清；MSAA 深度 resolve 在 SwiftShader/ANGLE 静默失败。诊断法：shader 内临时输出 d0 灰度；uniform 冻结实验须兼容 value/accessor 描述符。
 - WAAPI clamp 分发语义坑（通用）：滚动 scrubbing 按 `clamp(t, delay, delay+dur)` 写 currentTime 时，**t<delay 必须写 0（before 相位）而非 delay**——写 delay 会把 forwards 填充动画强制推进活动相位起点、from 帧生效（曾致 trace 页 ink from{opacity:.38} 在 0% 显示彩色底稿）。both 填充动画两种写法视觉一致。
 - **EffectComposer 中段通道采样共享深度纹理 = 反馈环**（2026-09-27 computer 页踩坑）：往挂着深度纹理的 rt 里写、同时采样它读深度 → GL 静默拒绝（INVALID_OPERATION，零报错），整页画布全黑。症状特征：全黑+零 console 错误+gl.getError()=1282。修法：读深度的通道必须最终 renderToScreen（钢琴 Grade、computer DofPass 都放链尾），或写往未挂该纹理的目标。排障：先 getError()，git stash 做对照。另：SpotLight.map 锥角别扫到屏幕主体；灯贴脸时 decay 会平方级放大近场强度。
+- **CSS 动画要起跑，必须先有一次样式提交**（2026-09-27 磁带页踩坑）：layout effect 设置动画+类之后若同任务同步跑重 boot（编着色器），浏览器没机会提交样式 → 动画从未上合成器，醒来后直接 Snap 到终态。修法：boot 推迟到 double-rAF 之后（首帧画完+动画上合成器才交主线程）；"隐式起点 keyframes + delay + both 填充"可让展开完全在合成器线程跑。另：挂载首帧的姿态要用 useLayoutEffect 摆（useEffect 绘制后才跑，会闪一帧终态）。
 
 ## 用户偏好
 - 修视觉问题要求浏览器交互式实测截图目检（拒绝一次性固化验证脚本）。

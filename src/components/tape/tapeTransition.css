@@ -13,9 +13,20 @@
   will-change: transform;
   pointer-events: none;          /* 缩放中的 UI 不该接点击（进站在 boot、出站已经在收） */
 }
-/* 展开：长尾缓出（原项目 --ease），从角标矩形走到 identity */
-#tape-root.is-entering { transition: transform var(--tt-expand) var(--ease); }
-/* 收闭：略快一点的曲线（原项目 --ease2），走得干脆 */
+/* 展开：长尾缓出（原项目 --ease），从角标矩形走到 identity。
+   用"隐式起点 keyframes + 延迟"的纯 CSS 动画，而不是 JS 定时器改 transform 触发
+   transition——动画在合成器线程推进，boot（编着色器）把主线程堵多久都不影响
+   展开的起跑时刻与丝滑度（JS 定时器版会被 boot 顺延，实测黑屏 2.3s 才展开）。
+   隐式 from = 元素当前 computed transform（JS 已在首帧绘制前摆好的角标矩形），
+   延迟期由 backwards 填充钉在起点；终点显式写单位变换列表，与收闭同形状。 */
+#tape-root.is-entering {
+  animation: tt-expand-in var(--tt-expand) var(--ease) var(--tt-recolor) both;
+}
+@keyframes tt-expand-in {
+  to { transform: translate(0px, 0px) scale(1, 1); }
+}
+/* 收闭：略快一点的曲线（原项目 --ease2），走得干脆（出站时页面已 boot 完，
+   主线程空闲，JS 排程的 transition 没有被阻塞的问题） */
 #tape-root.is-leaving { transition: transform var(--tt-shrink) var(--ease2); }
 
 /* ---------- 第一拍：深色芯片停在原矩形，再用 200ms 过到纸色 ----------
@@ -57,10 +68,11 @@
 @keyframes tt-hair-out { to { opacity: 0; } }
 
 /* ---------- 后段：内容淡入 ----------
-   加载屏里那组印刷（OHM TAPE 标记 / 进度条 / 步骤标签）在展开开始 150ms 后才浮现。
-   20 倍放大初期的字就是一片尘埃，等面板长开一半再让它显形。 */
+   加载屏里那组印刷（OHM TAPE 标记 / 进度条 / 步骤标签）在"变色拍结束 + 
+   content-delay"后才浮现（即展开开始 150ms 后），20 倍放大初期的字就是
+   一片尘埃，等面板长开一半再让它显形。延迟用 calc 与展开动画同一时钟。 */
 #tape-root.is-expanding .loader-box {
-  animation: tt-content-in var(--tt-content) var(--ease) var(--tt-content-delay) both;
+  animation: tt-content-in var(--tt-content) var(--ease) calc(var(--tt-recolor) + var(--tt-content-delay)) both;
 }
 @keyframes tt-content-in { from { opacity: 0; } to { opacity: 1; } }
 
@@ -68,7 +80,7 @@
    （JS 侧也会跳过动画，这里保证万一类还在也不动） */
 @media (prefers-reduced-motion: reduce) {
   #tape-root.is-entering,
-  #tape-root.is-leaving { transition: none; }
+  #tape-root.is-leaving { transition: none; animation: none; }
   #tape-root.is-entering::before,
   #tape-root.is-entering::after { animation: none; opacity: 0; }
   #tape-root.is-expanding .loader-box { animation: none; }
