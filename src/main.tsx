@@ -5,6 +5,7 @@ import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
 import TraceDetailPage from './components/trace/TraceDetailPage';
 import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
+import { BgmSplash } from './components/tape/BgmSplash';
 import './styles.css';
 
 /**
@@ -84,6 +85,9 @@ function Root() {
           放在这里是为了让它跨路由保持在同一个位置、不被卸载 —— 它订阅的是
           tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断 */}
       {!isTape && <MusicBoxDock />}
+      {/* 开屏 BGM 引导层：BGM 未播放时全屏出现，点击任意处解锁自动播放，
+          磁带飞进音乐盒后自行卸载（音频策略随刷新重置，故每次整页加载都可能出现） */}
+      {!isTape && <BgmSplash />}
     </>
   );
 }
