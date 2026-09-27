@@ -3303,8 +3303,8 @@ body.trace-page #root {
 .trace-proc-raster {
   position: relative;
   margin: 0;
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
   overflow: hidden;
 }
 .trace-proc-raster img {
@@ -3335,8 +3335,8 @@ body.trace-page #root {
 /* 卡 02：真成品层（静态展示 + 逐条高亮） */
 .trace-proc-vec {
   position: relative;
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
 }
 .trace-proc-vec-bar {
   display: flex;
@@ -3346,11 +3346,11 @@ body.trace-page #root {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
-  color: #56766c;
-  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+  color: var(--tp-ink-3);
+  border-bottom: 1px solid var(--tp-hair);
 }
 .trace-proc-vec-tag {
-  color: #7dfade;
+  color: var(--tp-accent);
 }
 /* 画布：白纸 + contain:paint 隔离重绘（高亮单条 path 不会牵连整页） */
 .trace-proc-vec-art {
@@ -3373,7 +3373,7 @@ body.trace-page #root {
 }
 /* 高亮：给这一条 path 描一圈亮青边（描边画在填充之上，形状轮廓一眼可见） */
 .trace-proc-vec-art path.is-hot {
-  stroke: #7dfade;
+  stroke: #2fbf9a;
   stroke-width: 4;
 }
 .trace-proc-wait {
@@ -3385,7 +3385,7 @@ body.trace-page #root {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.16em;
-  color: #7c8a84;
+  color: var(--tp-ink-3);
 }
 .trace-proc-vec-hint {
   display: block;
@@ -3393,14 +3393,14 @@ body.trace-page #root {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #56766c;
+  color: var(--tp-ink-3);
 }
 
 /* 卡 03：30 格层网格（随滚动逐格点亮）+ 方向图例 */
 .trace-proc-groups {
   padding: 14px;
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
 }
 .trace-proc-grid {
   display: grid;
@@ -3416,47 +3416,47 @@ body.trace-page #root {
   align-items: center;
   gap: 0 6px;
   padding: 6px 7px;
-  background: rgba(255, 255, 255, 0.02);
-  border-top: 2px solid var(--dc, rgba(255, 255, 255, 0.08));
+  background: rgba(38, 43, 38, 0.03);
+  border-top: 2px solid var(--dc, rgba(38, 43, 38, 0.18));
   opacity: 0.32;
   transition: opacity 0.35s ease, background 0.35s ease;
 }
 .trace-proc-cell.is-lit {
   opacity: 1;
-  background: rgba(47, 191, 154, 0.07);
+  background: rgba(47, 191, 154, 0.12);
 }
 .trace-proc-cell-i {
   grid-area: i;
   font-family: var(--font-retro);
   font-size: 15px;
   line-height: 1;
-  color: #cfdad6;
+  color: var(--tp-ink);
 }
 .trace-proc-cell-g {
   grid-area: g;
   font-size: 11px;
   line-height: 1;
   text-align: right;
-  color: var(--dc, #7c8a84);
+  color: var(--dc, var(--tp-ink-3));
 }
 .trace-proc-cell-n {
   grid-area: n;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: #7c8a84;
+  color: var(--tp-ink-3);
 }
-/* 方向色：层网格上边线、图例色块、甘特条三处共用同一套 */
+/* 方向色：层网格上边线、图例色块、甘特条三处共用同一套（米纸上加深一档） */
 .d-wipe-r {
-  --dc: #2fbf9a;
+  --dc: #1d9c78;
 }
 .d-wipe-l {
-  --dc: #6fd6bd;
+  --dc: #56b394;
 }
 .d-wipe-d {
-  --dc: #7c8a84;
+  --dc: #6d7a72;
 }
 .d-dab {
-  --dc: #cfdad6;
+  --dc: #93a29a;
 }
 .trace-proc-legend {
   display: flex;
@@ -3464,11 +3464,11 @@ body.trace-page #root {
   gap: 6px 16px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid rgba(94, 234, 200, 0.12);
+  border-top: 1px solid var(--tp-hair);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #8c9b94;
+  color: var(--tp-ink-3);
 }
 .trace-proc-legend span {
   display: inline-flex;
@@ -3479,13 +3479,13 @@ body.trace-page #root {
   display: block;
   width: 14px;
   height: 4px;
-  background: var(--dc, #7c8a84);
+  background: var(--dc, var(--tp-ink-3));
 }
 
 /* 卡 04：甘特时间轴（打稿 45 批 + 上色 30 层 + 滚动播放头） */
 .trace-proc-gantt {
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
 }
 .trace-proc-gantt-bar {
   display: flex;
@@ -3495,11 +3495,11 @@ body.trace-page #root {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
-  color: #56766c;
-  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+  color: var(--tp-ink-3);
+  border-bottom: 1px solid var(--tp-hair);
 }
 .trace-proc-gantt-t {
-  color: #7dfade;
+  color: var(--tp-accent);
 }
 .trace-proc-gantt-svg {
   display: block;
@@ -3511,7 +3511,7 @@ body.trace-page #root {
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.06em;
-  fill: #6b7a74;
+  fill: var(--tp-ink-3);
 }
 
 /* 卡 05：三种导出产物（第一张是这幅画的母体，可点开看）
@@ -3705,8 +3705,8 @@ a.trace-proc-file:hover {
 }
 .trace-tech-demo {
   position: relative;
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
   border-radius: 0;
   padding: 26px 18px 40px;
   display: flex;
@@ -3734,10 +3734,10 @@ a.trace-proc-file:hover {
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.1em;
-  color: #56766c;
+  color: var(--tp-ink-3);
 }
 .trace-demo-meter-v {
-  color: #7dfade;
+  color: var(--tp-accent);
   white-space: nowrap;
 }
 .trace-demo-meter--stack {
@@ -3767,7 +3767,7 @@ a.trace-proc-file:hover {
 .trace-dash-strip {
   width: 100%;
   padding-top: 12px;
-  border-top: 1px solid rgba(94, 234, 200, 0.14);
+  border-top: 1px solid var(--tp-hair);
 }
 .trace-dash-strip-svg {
   display: block;
@@ -3810,9 +3810,9 @@ a.trace-proc-file:hover {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.75;
-  color: #9fb3ab;
-  background: #0e1312;
-  border: 1px solid rgba(94, 234, 200, 0.12);
+  color: var(--tp-ink-2);
+  background: #f7f5ee;
+  border: 1px solid var(--tp-hair);
   border-radius: 0;
   padding: 16px 18px;
   overflow-x: auto;
@@ -3878,13 +3878,13 @@ a.trace-proc-file:hover {
   transition: box-shadow 0.18s linear;
 }
 .trace-demo-layers-bar span:nth-child(1) {
-  color: #8b93a0;
+  color: #7a8590;
 }
 .trace-demo-layers-bar span:nth-child(2) {
-  color: #cfdad6;
+  color: #9aa89f;
 }
 .trace-demo-layers-bar span:nth-child(3) {
-  color: #2fbf9a;
+  color: #1d9c78;
 }
 .trace-demo-layers-bar[data-phase="0"] span:nth-child(1),
 .trace-demo-layers-bar[data-phase="1"] span:nth-child(2),
@@ -3898,12 +3898,12 @@ a.trace-proc-file:hover {
 }
 
 /* 技法③：原作真实 30 段成品画（注入 #trace-art 层，复用原 wipe/dab 关键帧） */
-/* 画布：与成品图同比例（1600×1095），深色底 = 尚未揭示 */
+/* 画布：与成品图同比例（1600×1095），白纸底 = 尚未揭示（与母作"白纸起笔"同一语义） */
 .trace-art-canvas {
   position: relative;
   width: 100%;
   aspect-ratio: 1600 / 1095;
-  background: #0b0e0f;
+  background: #ffffff;
   overflow: hidden;
 }
 /* 注入层：30 段 .trace-pg 各按自己的 --i 延迟与方向关键帧揭示，
@@ -3929,9 +3929,9 @@ a.trace-proc-file:hover {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
-  color: #7dfade;
+  color: #a9e6d2;
   background: rgba(8, 12, 13, 0.74);
-  border: 1px solid rgba(94, 234, 200, 0.3);
+  border: 1px solid rgba(47, 191, 154, 0.5);
   border-radius: 0;
   padding: 3px 7px;
 }
@@ -3966,8 +3966,8 @@ a.trace-proc-file:hover {
 .trace-mini {
   grid-column: 2 / 7;
   margin-top: 20px;
-  background: #101415;
-  border: 1px solid rgba(94, 234, 200, 0.18);
+  background: #faf8f2;
+  border: 1px solid var(--tp-hair);
 }
 .trace-mini-bar {
   display: flex;
@@ -3977,11 +3977,11 @@ a.trace-proc-file:hover {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #56766c;
-  border-bottom: 1px solid rgba(94, 234, 200, 0.12);
+  color: var(--tp-ink-3);
+  border-bottom: 1px solid var(--tp-hair);
 }
 .trace-mini-t {
-  color: #7dfade;
+  color: var(--tp-accent);
   white-space: nowrap;
 }
 .trace-mini-body {
@@ -4038,15 +4038,15 @@ a.trace-proc-file:hover {
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.14em;
-  color: #7c8a84;
+  color: var(--tp-ink-3);
 }
 /* 横向时间轴带（0 → 14.65s）：45 格打稿 + 上墨段 + 30 格上色 + 定格段 */
 .trace-mini-axis {
   position: relative;
   height: 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border-top: 1px solid rgba(94, 234, 200, 0.14);
-  border-bottom: 1px solid rgba(94, 234, 200, 0.14);
+  background: rgba(38, 43, 38, 0.05);
+  border-top: 1px solid var(--tp-hair);
+  border-bottom: 1px solid var(--tp-hair);
 }
 .trace-mini-seg,
 .trace-mini-cell {
@@ -4055,15 +4055,15 @@ a.trace-proc-file:hover {
   height: 6px;
 }
 .trace-mini-cell {
-  background: var(--dc, #7c8a84);
+  background: var(--dc, #6d7a72);
   opacity: 0.16;
 }
 /* 打稿格用灰（与技法② 的草稿色同一支），上色格用各自的方向色 */
 .trace-mini-cell--sketch {
-  background: #8b93a0;
+  background: #7a8590;
 }
 .trace-mini-seg--ink {
-  background: #cfdad6;
+  background: #9aa89f;
 }
 .trace-mini-seg--settle {
   background: #2fbf9a;
@@ -4076,7 +4076,7 @@ a.trace-proc-file:hover {
   bottom: 0;
   left: 0;
   width: 1px;
-  background: #7dfade;
+  background: var(--tp-accent);
 }
 /* 底部滑块：既是自动播放的进度显示，也是"按住接管"的输入 */
 .trace-mini-range {
@@ -4104,11 +4104,11 @@ a.trace-proc-file:hover {
   width: 10px;
   height: 14px;
   margin-top: -5.5px;
-  background: #7dfade;
+  background: var(--tp-accent-bright);
   border: 0;
 }
 .trace-mini-range:focus-visible {
-  outline: 1px solid rgba(125, 250, 222, 0.6);
+  outline: 1px solid rgba(23, 121, 95, 0.55);
   outline-offset: 2px;
 }
 

@@ -748,12 +748,13 @@ function ganttX(t: number): number {
   return GANTT_X0 + (t / ACT_TOTAL) * GANTT_W;
 }
 
-/** 四种揭示方向的展示元数据（顺序即图例顺序，色同时用于层网格与甘特条） */
+/** 四种揭示方向的展示元数据（顺序即图例顺序，色同时用于层网格与甘特条；
+ *  暖米纸主题下整体加深一档，保证浅底上的可读性） */
 const DIR_META: { key: string; cls: string; glyph: string; zh: string; color: string }[] = [
-  { key: 'wipe-r', cls: 'trace-wipe-r', glyph: '→', zh: '右扫', color: '#2fbf9a' },
-  { key: 'wipe-l', cls: 'trace-wipe-l', glyph: '←', zh: '左扫', color: '#6fd6bd' },
-  { key: 'wipe-d', cls: 'trace-wipe-d', glyph: '↓', zh: '下扫', color: '#7c8a84' },
-  { key: 'dab', cls: 'trace-dab', glyph: '◉', zh: '点染', color: '#cfdad6' },
+  { key: 'wipe-r', cls: 'trace-wipe-r', glyph: '→', zh: '右扫', color: '#1d9c78' },
+  { key: 'wipe-l', cls: 'trace-wipe-l', glyph: '←', zh: '左扫', color: '#56b394' },
+  { key: 'wipe-d', cls: 'trace-wipe-d', glyph: '↓', zh: '下扫', color: '#6d7a72' },
+  { key: 'dab', cls: 'trace-dab', glyph: '◉', zh: '点染', color: '#93a29a' },
 ];
 
 /**
@@ -1237,7 +1238,7 @@ function ProcessAct() {
             ))}
             {/* 播放头：随滚动平移整组（只画竖线，读数在卡片标题栏，避免圆点压住块标签） */}
             <g ref={ganttHeadRef} transform="translate(0 0)">
-              <line x1={0} y1={8} x2={0} y2={GANTT_VBH - 18} stroke="#7dfade" strokeWidth={1} />
+              <line x1={0} y1={8} x2={0} y2={GANTT_VBH - 18} stroke="#17795f" strokeWidth={1} />
             </g>
           </svg>
         </div>
@@ -1403,7 +1404,7 @@ function TechDashoffset() {
               {/* 实线段：右端随 offset 推进 */}
               <line ref={solidRef} x1={DASH_X0} y1="30" x2={DASH_X0} y2="30" stroke="#2fbf9a" strokeWidth={8} />
               {/* 边界游标 */}
-              <line ref={edgeRef} x1={DASH_X0} y1="17" x2={DASH_X0} y2="43" stroke="#7dfade" strokeWidth={1} />
+              <line ref={edgeRef} x1={DASH_X0} y1="17" x2={DASH_X0} y2="43" stroke="#17795f" strokeWidth={1} />
               <text x={DASH_X0} y="54" className="trace-dash-lb">0 起点</text>
               <text x={DASH_X0 + DASH_LEN} y="54" textAnchor="end" className="trace-dash-lb">1 终点</text>
             </svg>
