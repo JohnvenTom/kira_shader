@@ -57,6 +57,17 @@ try {
       await page.reload({ waitUntil: 'load', timeout: 30000 });
       console.log('reload ok:', page.url());
       break;
+    case 'reload-watch': {
+      // 同一连接内 reload + 监听 N 秒（捕捉加载期 console.error/pageerror）+ 截图
+      const [ms, prefix] = args;
+      await page.reload({ waitUntil: 'load', timeout: 30000 });
+      console.log('reload-watch: listening', ms, 'ms');
+      await page.waitForTimeout(+ms || 8000);
+      const p = `screenshots/${prefix || 'reload-watch'}.png`;
+      await page.screenshot({ path: p });
+      console.log('reload-watch done:', p);
+      break;
+    }
     case 'eval': {
       const r = await page.evaluate(args[0]);
       console.log(typeof r === 'object' ? JSON.stringify(r, null, 2) : String(r));

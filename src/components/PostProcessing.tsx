@@ -6,7 +6,6 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { MotionBlurPass } from './MotionBlurPass';
-
 /**
  * 后处理参数（运行时可调）
  *
@@ -213,11 +212,88 @@ const PostFXShader = {
   `,
 };
 
+/**
+ * 景深通道着色器（移植自钢琴页 PianoGrade 的 DOF 段，管线坑位已在那页踩平）
+ *
+ * 实现：
+ *  1. 深度纹理 → 投影逆矩阵重建视空间深度 vz
+ *  2. CoC（模糊圈）：焦深带（|vz-uFocusDist| < uFocusRange）内完全清晰，
+ *     带外按 uDof 斜率线性增长，饱和于 uDofMax
+ *  3. 9-tap disc 模糊：焦点平面 blur=0 时全部采样落在同一 texel，
+ *     退化为单次取样（锐利），所以焦平面无额外柔化
+ *
+ * 注意：
+ *  - 深度纹理由主 composer 的渲染目标提供（rt1/rt2 共享同一张），
+ *    场景透明区域（无几何体）深度为 1，直接按 vz=far 处理（不参与模糊判定）
+ *  - 本页画布不透明（clearColor alpha=1），9-tap 直接均值即可，
+ *    无需钢琴页的预乘 alpha 处理
+ */
+const DofShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    tDepth: { value: null as THREE.Texture | null },
+    uProjInv: { value: new THREE.Matrix4() },
+    uFocusDist: { value: 5.0 },
+    uFocusRange: { value: 0.6 },
+    uDof: { value: 0.16 },
+    uDofMax: { value: 0.38 },
+    uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tDepth;
+    uniform mat4 uProjInv;
+    uniform float uFocusDist;
+    uniform float uFocusRange;
+    uniform float uDof;
+    uniform float uDofMax;
+    uniform vec2 uTexel;
+    varying vec2 vUv;
+
+    vec3 viewPos(vec2 uv, float d) {
+      vec4 p = uProjInv * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+      return p.xyz / p.w;
+    }
+
+    /* 9 tap disc 模糊（钢琴页同款权重） */
+    vec3 disc9(vec2 uv, vec2 r) {
+      vec3 s = texture2D(tDiffuse, uv).rgb * 0.22;
+      s += texture2D(tDiffuse, uv + vec2(r.x, 0.0)).rgb * 0.10;
+      s += texture2D(tDiffuse, uv - vec2(r.x, 0.0)).rgb * 0.10;
+      s += texture2D(tDiffuse, uv + vec2(0.0, r.y)).rgb * 0.10;
+      s += texture2D(tDiffuse, uv - vec2(0.0, r.y)).rgb * 0.10;
+      s += texture2D(tDiffuse, uv + r * 0.70).rgb * 0.095;
+      s += texture2D(tDiffuse, uv - r * 0.70).rgb * 0.095;
+      s += texture2D(tDiffuse, uv + vec2(r.x, -r.y) * 0.70).rgb * 0.095;
+      s += texture2D(tDiffuse, uv + vec2(-r.x, r.y) * 0.70).rgb * 0.095;
+      return s;
+    }
+
+    void main() {
+      float d0 = texture2D(tDepth, vUv).x;
+      float vz = 60.0;
+      if (d0 < 0.99999) vz = -viewPos(vUv, d0).z;
+      float coc = clamp((abs(vz - uFocusDist) - uFocusRange) * uDof, 0.0, 1.0) * uDofMax;
+      vec2 blur = uTexel * (coc * 26.0);
+      gl_FragColor = vec4(disc9(vUv, blur), 1.0);
+    }
+  `,
+};
+
 interface PostProcessingProps {
   /** 后处理参数（外部传入，实时更新） */
   params: PostFXParams;
   /** 是否启用后处理（false 时直接走 R3F 默认渲染管线） */
   enabled?: boolean;
+  /** DOF 焦点目标（ComputerScene 写入：鼠标指向表面的代理命中点） */
+  focusRef?: React.MutableRefObject<THREE.Vector3>;
 }
 
 /**
@@ -242,21 +318,47 @@ interface PostProcessingProps {
  *  - composer 的 size 由 R3F 的 size 驱动，自动响应窗口缩放
  *  - 当 enabled=false 时直接 return，不调用 composer.render()，R3F 回到默认渲染
  */
-export function PostProcessing({ params, enabled = true }: PostProcessingProps) {
+export function PostProcessing({ params, enabled = true, focusRef }: PostProcessingProps) {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const passRef = useRef<ShaderPass | null>(null);
   const bloomRef = useRef<UnrealBloomPass | null>(null);
   // 运动模糊通道引用：强度在参数同步 effect 中更新，dt 在 useFrame 中更新
   const motionBlurRef = useRef<MotionBlurPass | null>(null);
+  // 景深通道引用：焦点距离每帧由 focusRef 阻尼驱动
+  const dofRef = useRef<ShaderPass | null>(null);
+  // focusRef 的 ref 镜像（避免闭包旧值）
+  const focusTargetRef = useRef<React.MutableRefObject<THREE.Vector3> | undefined>(focusRef);
+  focusTargetRef.current = focusRef;
+  // 焦点距离阻尼用的临时向量（避免每帧分配）
+  const tmpFocus = useMemo(() => new THREE.Vector3(), []);
 
-  // 创建 EffectComposer + RenderPass + Bloom + 自定义 ShaderPass + 运动模糊
+  // 创建 EffectComposer + 深度纹理 + RenderPass + 景深 + Bloom + 自定义 ShaderPass + 运动模糊
   // useMemo 避免每次渲染都重建（只在 gl 变化时重建）
   useMemo(() => {
-    // 用默认 renderTarget（UnsignedByteType）保证兼容性：
-    // 之前尝试 HalfFloatType + samples=4 (MSAA) 在高分屏 + ANGLE/D3D11 上会触发
-    // GL_OUT_OF_MEMORY → CONTEXT_LOST。Bloom 的彩色辉光效果优先于锯齿精度。
-    const c = new EffectComposer(gl);
+    // === 深度纹理 + 自定义渲染目标（钢琴页验证过的守卫模式）===
+    // DOF 需要直读场景深度，主 RT 必须挂深度纹理：
+    //  - samples=0（禁 MSAA）：实测 samples>0 时 MSAA 深度 resolve 在部分驱动栈
+    //    （SwiftShader / ANGLE-D3D）上静默失败——深度纹理保持清空值 1.0，CoC 全失真
+    //  - 类型保持 UnsignedByte：此页曾试过 HalfFloat + MSAA 在高分屏 ANGLE/D3D11
+    //    上触发 GL_OUT_OF_MEMORY → CONTEXT_LOST（见下方原注释），不重蹈覆辙
+    const dbSize = gl.getDrawingBufferSize(new THREE.Vector2());
+    const depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y);
+    depthTexture.minFilter = depthTexture.magFilter = THREE.NearestFilter;
+    depthTexture.type = THREE.UnsignedIntType;
+    const rt = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, {
+      type: THREE.UnsignedByteType,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      samples: 0,
+      depthBuffer: true,
+      depthTexture,
+      resolveDepthBuffer: true,
+    });
+    const c = new EffectComposer(gl, rt);
+    // RenderPass 每帧在两个 target 间交替，clone 可能带走一张克隆深度纹理 →
+    // 隔帧拿到上一帧深度。两个 target 指向同一张深度即可（钢琴页同款守卫）
+    c.renderTarget2.depthTexture = depthTexture;
+
     c.addPass(new RenderPass(scene, camera));
 
     // Bloom 辉光：让屏幕 emissive 自发光部分向四周扩散彩色光晕
@@ -275,7 +377,7 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     pass.renderToScreen = false;
     c.addPass(pass);
 
-    // 运动模糊通道（帧间累积混合）：置于管线末尾，
+    // 运动模糊通道（帧间累积混合）：置于管线末段，
     // 让拖影作用于含 Bloom/色散/暗角在内的完整画面
     const motionBlur = new MotionBlurPass(
       gl.domElement.width || 1,
@@ -285,13 +387,33 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     c.addPass(motionBlur);
     motionBlurRef.current = motionBlur;
 
+    // 景深通道：放在链尾（最终上屏）。
+    // 【为什么不能放中段】rt1/rt2 共享同一张深度纹理，若 DOF 往 writeBuffer
+    // （挂着这张深度纹理）里写、同时采样它读深度——就是"采样附着在当前
+    // framebuffer 上的纹理"反馈环：绘制被 GL 静默拒绝（GL_INVALID_OPERATION，
+    // 不抛异常不打印），输出全黑并污染后续所有通道（实测整页画布全黑）。
+    // 放在链尾后 DOF 直接写屏幕帧缓冲（未挂深度纹理），采样共享深度无冲突
+    // ——与钢琴页 Grade 直写屏幕是同一个避坑思路。
+    // 副作用：DOF 作用于运动模糊之后，先拖影后虚化；两者都是镜头层面的
+    // 混叠效应，先后顺序在观感上不可区分。
+    const dof = new ShaderPass(DofShader);
+    dof.uniforms.tDepth.value = depthTexture;
+    // 焦距初值取当前相机到焦点的真实距离，避免从默认 5.0 收敛造成"开场先糊后清"
+    if (focusRef) {
+      dof.uniforms.uFocusDist.value = camera.position.distanceTo(focusRef.current);
+    }
+    c.addPass(dof);
+    dofRef.current = dof;
+    // 调试钩子：供自动化验证读取 DOF uniform 实时值（无副作用，保留）
+    (window as unknown as { __dofU?: unknown }).__dofU = dof.uniforms;
+
     passRef.current = pass;
     composerRef.current = c;
     // 注意：params 不进依赖，避免每次参数调整都重建 composer；
     //      params 变化通过下方 useEffect 同步到 uniforms / bloom 属性
   }, [gl, scene, camera]);
 
-  // 同步 size 变化到 composer
+  // 同步 size 变化到 composer（深度纹理随 RT setSize 一起缩放）
   useEffect(() => {
     if (composerRef.current) {
       composerRef.current.setSize(size.width, size.height);
@@ -300,6 +422,10 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     if (passRef.current) {
       // aspect = width / height，用于色散的 aspect 校正
       (passRef.current.uniforms.uAspect.value as number) = size.width / size.height;
+    }
+    if (dofRef.current) {
+      const db = gl.getDrawingBufferSize(new THREE.Vector2());
+      dofRef.current.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
     }
   }, [size, gl]);
 
@@ -337,12 +463,34 @@ export function PostProcessing({ params, enabled = true }: PostProcessingProps) 
     };
   }, []);
 
-  // 每帧：先按 dt 更新运动模糊混合系数，再调用 composer.render()，
+  // 每帧：先按 dt 更新运动模糊混合系数与景深焦点，再调用 composer.render()，
   // renderPriority=1 接管 R3F 默认渲染
   useFrame((_state, delta) => {
     if (!enabled || !composerRef.current) return;
     motionBlurRef.current?.update(delta);
+
+    // 景深焦点：相机到"鼠标指向表面命中点"的距离，阻尼逼近平滑过渡。
+    // lambda=14（约 70ms 收敛）：与钢琴页同一档跟手度，快速扫动时焦点连续滑动
+    const dof = dofRef.current;
+    if (dof) {
+      dof.uniforms.uProjInv.value.copy(camera.projectionMatrixInverse);
+      const focusTarget = focusTargetRef.current;
+      if (focusTarget) {
+        const kf = 1 - Math.exp(-delta * 14.0);
+        const target = camera.position.distanceTo(tmpFocus.copy(focusTarget.current));
+        const u = dof.uniforms.uFocusDist;
+        u.value += (target - u.value) * kf;
+      }
+    }
+
+    // 关键：渲染期间关闭 autoClear（钢琴页同款守卫）。
+    // rt1/rt2 共享一张深度纹理，后续通道（Bloom 复合/色散/运动模糊）的全屏 quad
+    // 在 autoClear=true 时会把共享深度清成远平面 1.0——DOF 的 CoC 全部失真。
+    // RenderPass 有显式 clear（this.clear），场景颜色/深度仍然每帧正确写入。
+    const prevAutoClear = gl.autoClear;
+    gl.autoClear = false;
     composerRef.current.render();
+    gl.autoClear = prevAutoClear;
   }, 1);
 
   return null;

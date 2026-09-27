@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-import { ComputerScene } from './components/ComputerScene';
+import { ComputerScene, SCREEN_CENTER } from './components/ComputerScene';
 import { CanvasContextGuard } from './components/CanvasContextGuard';
 import { LoadingScreen } from './components/LoadingScreen';
 import { NavBar } from './components/NavBar';
@@ -166,6 +166,9 @@ export default function App() {
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   // 用 ref 避免高频 setState 引起重渲染，ComputerScene 在 useFrame 里直接读取
   const mouseRef = useRef({ x: 0, y: 0 });
+  // DOF 焦点目标（世界坐标）：ComputerScene 每帧写代理命中点，
+  // PostProcessing 每帧读它阻尼推进焦距。初值取屏幕中心，避免开场焦距从错误值收敛
+  const focusRef = useRef(SCREEN_CENTER.clone());
 
   // 后处理参数（色散 + 鱼眼 + 暗角 + Bloom 辉光）
   // useMemo 避免每次渲染都创建新对象，否则 PostProcessing 的 useEffect 会频繁触发
@@ -448,8 +451,9 @@ export default function App() {
             scrollProgress={scrollProgress}
             onLoaded={handleLoaded}
             mouseRef={mouseRef}
+            focusRef={focusRef}
           />
-          <PostProcessing params={postFXParams} />
+          <PostProcessing params={postFXParams} focusRef={focusRef} />
           <CanvasContextGuard />
         </Canvas>
       </div>

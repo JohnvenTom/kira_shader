@@ -144,11 +144,17 @@ const SCROLL_PUSH_CONFIG = {
   EASE_POWER: 1.6,           // 缓动指数：1.6 让推入前期稍慢、后期加速，像"扎进去"
 };
 
-/**
- * 屏幕法线方向（已归一化）
+/** 屏幕法线方向（已归一化）
  * 来源：SCREEN_CONFIG 注释 "法线(-0.6,0,0.8)"，length = sqrt(0.36+0.64) = 1.0
  */
 const SCREEN_NORMAL = { x: -0.6, y: 0, z: 0.8 };
+
+/** 屏幕中心世界坐标（供 App 初始化 DOF 焦点、避免首帧焦距从错误值收敛） */
+export const SCREEN_CENTER = new THREE.Vector3(
+  SCREEN_CONFIG.posX,
+  SCREEN_CONFIG.posY,
+  SCREEN_CONFIG.posZ
+);
 
 /**
  * 预配置 Draco 解码器路径
@@ -409,6 +415,80 @@ function GlowParticles({
   );
 }
 
+/**
+ * 程序化焦散纹理（Worley F2-F1 边缘光，平铺无缝）
+ *
+ * 功能：在内存中生成一张 256×256 的水纹焦散贴图——每个纹素算 Worley 噪声的
+ *      F2-F1（第二近/最近特征点距离差），差值越小越靠近 cell 边界，
+ *      边界处提亮成细亮线，就是"光穿过波动介质投下的网纹"的经典近似。
+ *
+ * 返回值：THREE.CanvasTexture（RepeatWrapping，可直接当 SpotLight.map 用）
+ *
+ * 注意事项：
+ *  - 特征点距离按 3×3 环绕计算（dx=min(dx,1-dx)），纹理四边无缝平铺
+ *  - 只生成一次（useMemo 缓存）；两盏焦散灯各自 clone 出独立纹理实例，
+ *    这样 UV offset 漂移互不干扰（共享同一实例会让两盏灯纹路同步滑动）
+ */
+function createCausticsCanvas(): HTMLCanvasElement {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+
+  // 24 个特征点：足够密出细网纹，又不会让 256² 的逐像素计算明显卡顿
+  const PTS = 24;
+  const px = new Float32Array(PTS);
+  const py = new Float32Array(PTS);
+  for (let i = 0; i < PTS; i++) {
+    px[i] = Math.random();
+    py[i] = Math.random();
+  }
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      let f1 = 8.0;
+      let f2 = 8.0;
+      for (let i = 0; i < PTS; i++) {
+        let dx = Math.abs(u - px[i]);
+        dx = Math.min(dx, 1 - dx); // X 环绕
+        let dy = Math.abs(v - py[i]);
+        dy = Math.min(dy, 1 - dy); // Y 环绕
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < f1) {
+          f2 = f1;
+          f1 = d;
+        } else if (d < f2) {
+          f2 = d;
+        }
+      }
+      // F2-F1 小 = 靠近两个 cell 的交界 → 提亮成焦散亮线
+      const edge = Math.max(0, 1 - (f2 - f1) * 6.5);
+      const b = Math.min(1, Math.pow(edge, 3.2));
+      const idx = (y * size + x) * 4;
+      img.data[idx] = Math.round(b * 255);
+      img.data[idx + 1] = Math.round(b * 255);
+      img.data[idx + 2] = Math.round(b * 255);
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/** 由焦散 canvas 建一张可平铺的 SpotLight gobo 纹理 */
+function createCausticsTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  // gobo 在光照线性空间里做乘法，不做 sRGB 转换
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+
 interface ComputerSceneProps {
   /** 滚动进度 0~1，驱动相机与模型动画 */
   scrollProgress: number;
@@ -416,6 +496,8 @@ interface ComputerSceneProps {
   onLoaded: () => void;
   /** 鼠标归一化坐标 ref（-1~1），驱动相机绕 target 做小角度视差旋转 */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
+  /** DOF 焦点目标（本组件每帧写入：鼠标指向表面的代理命中点），供 PostProcessing 读 */
+  focusRef?: React.MutableRefObject<THREE.Vector3>;
 }
 
 /**
@@ -595,7 +677,12 @@ async function loadGif(url: string): Promise<GifAsset> {
  *  - 主 canvas 固定 512×512，GIF 尺寸不同时用 drawImage 缩放
  *  - mesh 直接放场景根节点，用世界坐标（模型静止，无需 reparent 跟随）
  */
-function ScreenDisplay() {
+function ScreenDisplay({
+  colorRef,
+}: {
+  /** 可选输出：每帧把 GIF 当前帧采样出的平均色写进去（焦散灯跟随用） */
+  colorRef?: React.MutableRefObject<THREE.Color>;
+}) {
   // GIF 加载完成标志：所有 GIF 解析完才渲染 mesh
   const [ready, setReady] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null);
@@ -760,6 +847,8 @@ function ScreenDisplay() {
         // 强度 = 基础强度 × (0.4 + 0.6 × 亮度)，保证暗帧也有最低光照
         rectLightRef.current.intensity =
           SCREEN_CONFIG.rectLightIntensity * (0.4 + 0.6 * luminance);
+        // 屏幕焦散灯跟随同一份采样色（红 GIF 投红纹、蓝 GIF 投蓝纹）
+        if (colorRef) colorRef.current.setRGB(r / 255, g / 255, b / 255);
       }
     }
   });
@@ -924,7 +1013,7 @@ function analyzeScreenGeometry(
  *  - 相机距离基于 FOV 与模型包围盒动态计算，避免过大/过小模型显示异常
  *  - 滚动进度通过 useFrame 中读取最新 props 实现，避免重渲染
  */
-export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSceneProps) {
+export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: ComputerSceneProps) {
   // 使用 ref 保存最新的滚动进度，避免每帧触发 React 重渲染
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
@@ -940,6 +1029,36 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
   // 滚动进度平滑值：每帧 lerp 向 props 的 scrollProgress 靠近，
   // 避免滚轮离散跳动让相机产生顿挫感（lerp 系数 0.1 → 轻微惯性）
   const scrollSmoothedRef = useRef(0);
+
+  // 屏幕当前帧平均色（ScreenDisplay 每帧写入，屏幕焦散灯每帧读取跟随）
+  const screenColorRef = useRef(new THREE.Color('#ffffff'));
+
+  // 焦散 gobo 纹理：同一张 canvas 出两份实例（useMemo 保证只建一次），
+  // 两盏灯的 UV 漂移互不干扰
+  const causticsTex = useMemo(() => {
+    const canvas = createCausticsCanvas();
+    return {
+      screen: createCausticsTexture(canvas),
+      top: createCausticsTexture(canvas),
+    };
+  }, []);
+
+  // 焦散灯引用（位置/目标点由 setup 后的 effect 摆放；颜色每帧跟随）
+  const screenCausticRef = useRef<THREE.SpotLight>(null);
+  const screenCausticTargetRef = useRef<THREE.Object3D>(null);
+  const topCausticRef = useRef<THREE.SpotLight>(null);
+  const topCausticTargetRef = useRef<THREE.Object3D>(null);
+
+  // DOF 焦点代理（setup 后构建）：屏幕平面精确命中 + 模型包围球兜底
+  const proxyRef = useRef<{
+    plane: THREE.Plane;
+    sphere: THREE.Sphere;
+    center: THREE.Vector3;
+    screenR2: number;
+  } | null>(null);
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const pointerNdcRef = useRef(new THREE.Vector2());
+  const focusHitRef = useRef(new THREE.Vector3());
 
   const { camera, gl, scene } = useThree();
 
@@ -1020,6 +1139,32 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
     // 遍历 computer 节点的几何，按法线聚类找平面，输出候选屏幕区域
     analyzeScreenGeometry(modelScene, scale, center);
 
+    // === DOF 焦点代理（钢琴页"轻量代理求交"同款思路）===
+    // 全模型 raycast 每帧太重（Draco 网格数万三角形），改用两个解析代理：
+    //  - 屏幕平面：ray ∩ plane 精确解，命中半径内直接当焦点（点屏幕→屏幕清晰）
+    //  - 包围球：屏幕未命中时取射线上最接近球心的点（≈机身平均深度）
+    const screenCenterW = new THREE.Vector3(
+      SCREEN_CONFIG.posX,
+      SCREEN_CONFIG.posY,
+      SCREEN_CONFIG.posZ
+    );
+    const plane = new THREE.Plane();
+    plane.setFromNormalAndCoplanarPoint(
+      new THREE.Vector3(SCREEN_NORMAL.x, SCREEN_NORMAL.y, SCREEN_NORMAL.z).normalize(),
+      screenCenterW
+    );
+    const sphere = new THREE.Box3().setFromObject(modelScene).getBoundingSphere(new THREE.Sphere());
+    proxyRef.current = {
+      plane,
+      sphere,
+      center: screenCenterW,
+      // 命中半径：屏幕对角线的一半再放宽 20%，容许"点到屏幕边框附近也算屏幕"
+      screenR2: Math.pow(
+        Math.hypot(SCREEN_CONFIG.width, SCREEN_CONFIG.height) * 0.5 * 1.2,
+        2
+      ),
+    };
+
     return { scaledSize, distance };
   }, [modelScene, camera]);
 
@@ -1083,7 +1228,19 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
     if (spotLightRef.current && spotTargetRef.current) {
       spotLightRef.current.target = spotTargetRef.current;
     }
-  }, []);
+    // 两盏焦散灯同理：目标点必须挂进场景并指给灯，gobo 投射方向才正确
+    if (screenCausticRef.current && screenCausticTargetRef.current) {
+      screenCausticRef.current.target = screenCausticTargetRef.current;
+    }
+    if (topCausticRef.current && topCausticTargetRef.current) {
+      topCausticRef.current.target = topCausticTargetRef.current;
+    }
+    // 卸载时释放 gobo 纹理（两份实例来自同一张 canvas，canvas 本体交 GC）
+    return () => {
+      causticsTex.screen.dispose();
+      causticsTex.top.dispose();
+    };
+  }, [causticsTex]);
 
   // 每帧更新：非 DEBUG 模式下按 CAMERA_CONFIG 固定相机 + 鼠标视差微旋转
   // DEBUG 模式下让 OrbitControls 接管
@@ -1177,11 +1334,32 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
     cam.updateProjectionMatrix();
 
     // 模型不旋转（保持静止，让用户能看清电脑细节）
+
+    // === DOF 焦点：每帧轻量代理求交，实时跟手 ===
+    // 屏幕平面精确命中（点屏幕→焦平面落在屏幕）；未命中屏幕取射线上最接近
+    // 模型包围球球心的点（≈机身平均深度）。鼠标 NDC 的 Y 轴与 Raycaster 约定
+    // 相反（App 里底=+1），取反后使用
+    if (focusRef && proxyRef.current) {
+      pointerNdcRef.current.set(mouseRef.current.x, -mouseRef.current.y);
+      camera.updateMatrixWorld();
+      raycasterRef.current.setFromCamera(pointerNdcRef.current, camera);
+      const ray = raycasterRef.current.ray;
+      const proxy = proxyRef.current;
+      const planeHit = ray.intersectPlane(proxy.plane, focusHitRef.current);
+      if (planeHit && planeHit.distanceToSquared(proxy.center) <= proxy.screenR2) {
+        focusRef.current.copy(planeHit);
+      } else {
+        // 射线上最接近球心的参数 t（球心-原点 在射线方向上的投影）
+        focusHitRef.current.copy(proxy.sphere.center).sub(ray.origin);
+        const t = Math.max(focusHitRef.current.dot(ray.direction), 0.1);
+        focusRef.current.copy(ray.origin).addScaledVector(ray.direction, t);
+      }
+    }
   });
 
-  // 每帧更新两层烟雾位置 + 聚光灯晃动
+  // 每帧更新两层烟雾位置 + 聚光灯晃动 + 焦散灯
   // 独立于上方 useFrame，确保 DEBUG 模式（OrbitControls 接管）下也能正确跟随
-  useFrame((state) => {
+  useFrame((state, delta) => {
     if (!setup) return;
     const { scaledSize } = setup;
 
@@ -1248,6 +1426,50 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       );
       spotTargetRef.current.updateMatrixWorld();
     }
+
+    // === 焦散灯：摆位 + gobo UV 慢速漂移 + 屏幕灯跟色 ===
+    // 屏幕灯贴着屏幕中心沿法线外移一点，投向机身前下方——
+    // "屏幕的光在机身上泛起涟漪"，颜色每帧跟 GIF 采样色
+    if (screenCausticRef.current) {
+      screenCausticRef.current.position.set(
+        SCREEN_CONFIG.posX + SCREEN_NORMAL.x * 0.12,
+        SCREEN_CONFIG.posY,
+        SCREEN_CONFIG.posZ + SCREEN_NORMAL.z * 0.12
+      );
+    }
+    if (screenCausticTargetRef.current) {
+      screenCausticTargetRef.current.position.set(
+        targetX + SCREEN_NORMAL.x * scaledSize.z * 0.09,
+        targetY - scaledSize.y * 0.18,
+        targetZ + SCREEN_NORMAL.z * scaledSize.z * 0.09
+      );
+      screenCausticTargetRef.current.updateMatrixWorld();
+    }
+    if (screenCausticRef.current) {
+      screenCausticRef.current.color.copy(screenColorRef.current);
+    }
+    // 顶部灯悬在机身前上方（压低、前移——几何上保证屏幕中心落在光锥之外
+    // 约 40°，否则 gobo 水纹会织在屏幕上污染 GIF 主体），暖白水纹从上往下织
+    if (topCausticRef.current) {
+      topCausticRef.current.position.set(
+        targetX + scaledSize.x * 0.06,
+        targetY + scaledSize.y * 0.38,
+        targetZ + scaledSize.z * 0.40
+      );
+    }
+    if (topCausticTargetRef.current) {
+      topCausticTargetRef.current.position.set(
+        targetX,
+        targetY - scaledSize.y * 0.16,
+        targetZ + scaledSize.z * 0.02
+      );
+      topCausticTargetRef.current.updateMatrixWorld();
+    }
+    // gobo UV 漂移：两盏灯速率不同，纹路不会同步滑动
+    causticsTex.screen.offset.x += delta * 0.021;
+    causticsTex.screen.offset.y += delta * 0.013;
+    causticsTex.top.offset.x -= delta * 0.009;
+    causticsTex.top.offset.y += delta * 0.016;
   });
 
   if (!modelScene || !setup) return null;
@@ -1279,6 +1501,34 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       {/* 聚光灯目标点（必须挂到场景里才会生效） */}
       <object3D ref={spotTargetRef} />
 
+      {/* 屏幕焦散灯：从屏幕中心向外投水纹 gobo，颜色每帧跟随 GIF 采样色
+          （红 GIF 投红纹、蓝 GIF 投蓝纹——与"屏幕照亮环境"同一套设计语言）。
+          电影级微妙档：强度压低，只让机身泛起若隐若现的光纹 */}
+      <spotLight
+        ref={screenCausticRef}
+        color="#ffffff"
+        intensity={1.7}
+        distance={30}
+        angle={0.75}
+        penumbra={0.55}
+        decay={1.25}
+        map={causticsTex.screen}
+      />
+      <object3D ref={screenCausticTargetRef} />
+
+      {/* 顶部焦散灯：暖白水纹从上方织在机身朝相机的一面（与主聚光灯同色温） */}
+      <spotLight
+        ref={topCausticRef}
+        color="#fff2dc"
+        intensity={0.95}
+        distance={40}
+        angle={0.62}
+        penumbra={0.65}
+        decay={1.3}
+        map={causticsTex.top}
+      />
+      <object3D ref={topCausticTargetRef} />
+
       {/* 补光：电脑正上方的柔和顶光（directionalLight 平行光，均匀照亮整体）
           低强度 + 冷白色，与主聚光灯的暖白形成色温对比，避免画面过暗 */}
       <directionalLight
@@ -1290,8 +1540,9 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef }: ComputerSc
       {/* 模型本体 */}
       <primitive object={modelScene} />
 
-      {/* 电脑屏幕：显示 GIF 动画，自发光效果；世界坐标定位 */}
-      <ScreenDisplay />
+      {/* 电脑屏幕：显示 GIF 动画，自发光效果；世界坐标定位。
+          colorRef 输出每帧 GIF 采样色，供屏幕焦散灯跟随 */}
+      <ScreenDisplay colorRef={screenColorRef} />
 
       {/* 飘动烟雾：前层（镜头与电脑之间，靠近相机）*/}
       <group ref={frontSmokeRef}>
