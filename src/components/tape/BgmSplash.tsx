@@ -2,13 +2,13 @@
  * BgmSplash —— 开屏 BGM 引导层（浏览器自动播放策略的手势解锁页）
  *
  * 功能：
- *  - 整页加载时（BGM 尚未播放）全屏覆盖：一只纯 SVG 磁带以缓动跟手浮动
- *    （带速度倾斜 + 呼吸漂浮），中央提示"点击任意处"——这一下点击就是
- *    浏览器要求的用户手势，tapeAudio.play() 由此解锁 BGM
+ *  - 整页加载时全屏覆盖：一只纯 SVG 磁带以缓动跟手浮动（带速度倾斜 + 呼吸
+ *    漂浮），中央提示"点击任意处"——这一下点击就是浏览器要求的用户手势，
+ *    tapeAudio.play() 由此解锁 BGM
  *  - 点击后：磁带 FLIP 飞向右下角音乐盒（量 .music-dock-bar 的矩形，
  *    缩放平移落位），背景与文案淡出，音乐盒的轮毂开始转（音乐已播）
- *  - 卸载即结束：本组件不占路由状态，刷新后重新出现（音频策略随刷新重置，
- *    引导页的意义就是每次都把这次手势收集到）
+ *  - 每次整页加载出现一次：刷新会重置自动播放权限，手势需要重新收集——
+ *    所以刷新后再出现是刻意的；会话内路由切换（不刷新）不会重挂本层
  *
  * 参数：无
  *
@@ -17,8 +17,8 @@
  * 异常：无（音乐盒元素缺失、减少动效等一律退化为直接淡出）
  *
  * 注意事项：
- *  - 只出现一次：完成引导（点击播放或跳过）即写 localStorage 持久标记，
- *    之后刷新、再访问都直接不挂载；清站点数据才会再看一次
+ *  - BGM 自己响起来（浏览器放行了无手势播放）时本层没有意义：订阅播放态，
+ *    一旦 playing 自动收场（淡出写盘都不用，直接退场）
  *  - 点击就是 tapeAudio.play() 的手势：store 的 onFirstGesture 也会在这次
  *    pointerdown 上兜底，双路起播互不冲突（userTouched 守卫）
  *  - prefers-reduced-motion：不做跟手与 FLIP，退化为直接淡入淡出
@@ -36,15 +36,10 @@ const TAPE_H = 104;
 /** 跟手缓动系数与倾斜幅度 */
 const FOLLOW = 0.09;
 const TILT = 0.06;
-/** "已完成引导"的持久标记键：写过就永不出现（除非清站点数据） */
-const DONE_KEY = 'ohmtape.splash.done';
 
 export function BgmSplash() {
-  /** 完成过引导（点过播放或跳过）就写持久标记：之后刷新、再访问都不再出现。
-      gone 用标记同步初始化——老用户挂载瞬间就是 null，连一帧都不闪 */
-  const [gone, setGone] = useState(() => {
-    try { return localStorage.getItem(DONE_KEY) === '1'; } catch { return false; }
-  });
+  /** 层是否还挂着（收场动画结束后置 false 卸载） */
+  const [gone, setGone] = useState(false);
   /** 是否已进入收场（背景淡出 + 磁带飞行） */
   const [leaving, setLeaving] = useState(false);
   const tapeRef = useRef<HTMLDivElement>(null);
@@ -55,14 +50,9 @@ export function BgmSplash() {
   const target = useRef({ x: 0, y: 0 });
   const startedRef = useRef(false);
 
-  /** 写"已完成引导"的持久标记（存储不可用只是每次刷新会再看一次，无碍） */
-  const markDone = () => {
-    try { localStorage.setItem(DONE_KEY, '1'); } catch { /* 存储不可用 */ }
-  };
-
   useEffect(() => {
-    /* 极少见：标记丢了但 BGM 自己响起来了（浏览器允许无手势播放）——
-       本层没有存在的意义，直接淡出写标记收场 */
+    /* BGM 自己响起来了（浏览器放行了无手势播放）——本层没有存在的意义，
+       磁带淡出收场（不写标记：下次刷新权限重置，引导页照常出现） */
     const unsub = tapeAudio.subscribe((s) => {
       if (s.playing) dismiss(false);
     });
@@ -127,7 +117,6 @@ export function BgmSplash() {
   const dismiss = (withMusic: boolean) => {
     if (startedRef.current) return;           // 收场只走一次
     startedRef.current = true;
-    markDone();
     if (withMusic) tapeAudio.play();          // 这一下手势解锁 BGM（rejection 已吞）
     setLeaving(true);
 
@@ -162,7 +151,6 @@ export function BgmSplash() {
   const skipOut = () => {
     if (startedRef.current) return;
     startedRef.current = true;
-    markDone();
     tapeAudio.suppressAutoplay();
     setLeaving(true);
     window.setTimeout(() => setGone(true), 420);
