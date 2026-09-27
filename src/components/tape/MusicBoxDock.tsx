@@ -148,9 +148,12 @@ export function MusicBoxDock() {
     const wasCaptured = d.captured;
     const dx = d.dx;
     d.captured = false;
+    /* movedAt 只在"确认拖拽过"时更新——普通点击的 pointerup 也会走到这里，
+       若无条件更新，click（在 pointerup 之后派发）会被 openTape 的
+       300ms 抑制误吞，磁带页就再也点不开了（实测回归） */
+    if (!wasCaptured) return;
     d.movedAt = Date.now();
     setDrag(null);
-    if (!wasCaptured) return;                // 没过捕获阈值的都是普通点击，原样放行
     if (Math.abs(dx) < DRAG_THRESHOLD) return; // 拖了但不够深：回弹即可，什么都不切
     const ok = dx < 0 ? tapeAudio.prev() : tapeAudio.next();
     showHint(ok ? (dx < 0 ? '已切上一首 ◀' : '已切下一首 ▶') : '只有一首 · 去磁带页装几首');
