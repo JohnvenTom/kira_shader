@@ -53,11 +53,67 @@ export interface PlaylistTrack {
   src: string;
 }
 
-/** 默认曲目的信息（与 tapeApp.js 的 TRACK_DEFAULT 对齐；整页开机后会广播覆盖，换成真曲子时两处一起改） */
-const DEFAULT_SRC = '/asset/audio/ohm-tape-default.mp3';
-const DEFAULT_TITLE = 'Demo Tone';
-const DEFAULT_ARTIST = '';
-const DEFAULT_ALBUM = '';
+/* ============================================================
+   默认歌单：public/asset/audio/bgm/ 下的 50 首。
+   元数据由文件名解析（第一个短横线前=作者，其后=歌名，剔出结尾 ID 数字、
+   下划线转空格；浏览器重复下载的 " (1)" 后缀也剥掉）——由一次性脚本生成，
+   加新曲子时把文件放进 bgm 目录后重跑或手改这个数组。第一首 positive
+   是"打开网页自动播"的那首。
+   ============================================================ */
+const PLAYLIST: PlaylistTrack[] = [
+  { artist: "JAMBACK", title: "positive", album: "", src: "/asset/audio/bgm/JAMBACK - positive.mp3" },
+  { artist: "comastudio", title: "abstract-design universe", album: "", src: "/asset/audio/bgm/comastudio-abstract-design_universe-40978.mp3" },
+  { artist: "comastudio", title: "abstract-epic-technology-electronica star", album: "", src: "/asset/audio/bgm/comastudio-abstract-epic-technology-electronica_star-197960.mp3" },
+  { artist: "comastudio", title: "abstract-slideshow planet", album: "", src: "/asset/audio/bgm/comastudio-abstract-slideshow_planet-121486.mp3" },
+  { artist: "comastudio", title: "abstract-trap-vibe orbital", album: "", src: "/asset/audio/bgm/comastudio-abstract-trap-vibe_orbital-303651.mp3" },
+  { artist: "comastudio", title: "action-trap-sport-beat constellation", album: "", src: "/asset/audio/bgm/comastudio-action-trap-sport-beat_constellation-148536.mp3" },
+  { artist: "comastudio", title: "ambient-chill-beat observatory", album: "", src: "/asset/audio/bgm/comastudio-ambient-chill-beat_observatory-49962.mp3" },
+  { artist: "comastudio", title: "chill-beat-abstract-vlog fulfillment", album: "", src: "/asset/audio/bgm/comastudio-chill-beat-abstract-vlog_fulfillment-84177.mp3" },
+  { artist: "comastudio", title: "chill-modern-abstract revelation", album: "", src: "/asset/audio/bgm/comastudio-chill-modern-abstract_revelation-162594.mp3" },
+  { artist: "comastudio", title: "chill-timelapse-tech-vlog influence", album: "", src: "/asset/audio/bgm/comastudio-chill-timelapse-tech-vlog_influence-84179.mp3" },
+  { artist: "comastudio", title: "dark-abstract-beat encouragement", album: "", src: "/asset/audio/bgm/comastudio-dark-abstract-beat_encouragement-40982.mp3" },
+  { artist: "comastudio", title: "deep-abstract-ambient purpose", album: "", src: "/asset/audio/bgm/comastudio-deep-abstract-ambient_purpose-165044.mp3" },
+  { artist: "comastudio", title: "deep-chilled-ambience-electronica faith", album: "", src: "/asset/audio/bgm/comastudio-deep-chilled-ambience-electronica_faith-303653.mp3" },
+  { artist: "comastudio", title: "deep-fashion-chill-out adaptability", album: "", src: "/asset/audio/bgm/comastudio-deep-fashion-chill-out_adaptability-122639.mp3" },
+  { artist: "comastudio", title: "dreamy-chill-beat flowerings", album: "", src: "/asset/audio/bgm/comastudio-dreamy-chill-beat_flowerings-40983.mp3" },
+  { artist: "comastudio", title: "epic-hybrid-rock-trailer cultivation", album: "", src: "/asset/audio/bgm/comastudio-epic-hybrid-rock-trailer_cultivation-158531.mp3" },
+  { artist: "comastudio", title: "epic-powerful-sport-big-beat balance", album: "", src: "/asset/audio/bgm/comastudio-epic-powerful-sport-big-beat_balance-128013.mp3" },
+  { artist: "comastudio", title: "fashion-abstract-beat powered", album: "", src: "/asset/audio/bgm/comastudio-fashion-abstract-beat_powered-95422.mp3" },
+  { artist: "comastudio", title: "fashion-inspire-relaxing-music schooner", album: "", src: "/asset/audio/bgm/comastudio-fashion-inspire-relaxing-music_schooner-165046.mp3" },
+  { artist: "comastudio", title: "for-food anchor", album: "", src: "/asset/audio/bgm/comastudio-for-food_anchor-99185.mp3" },
+  { artist: "comastudio", title: "future-bass-background lifelong-learning", album: "", src: "/asset/audio/bgm/comastudio-future-bass-background_lifelong-learning-199984.mp3" },
+  { artist: "comastudio", title: "gloomy-background empathy", album: "", src: "/asset/audio/bgm/comastudio-gloomy-background_empathy-303656.mp3" },
+  { artist: "comastudio", title: "honey", album: "", src: "/asset/audio/bgm/comastudio-honey-123561.mp3" },
+  { artist: "comastudio", title: "inspired-ambient-technology observation", album: "", src: "/asset/audio/bgm/comastudio-inspired-ambient-technology_observation-49969.mp3" },
+  { artist: "comastudio", title: "inspiring-abstract-ambient trust", album: "", src: "/asset/audio/bgm/comastudio-inspiring-abstract-ambient_trust-142820.mp3" },
+  { artist: "comastudio", title: "jump", album: "", src: "/asset/audio/bgm/comastudio-jump-117029.mp3" },
+  { artist: "comastudio", title: "lo-fi-chill infinite", album: "", src: "/asset/audio/bgm/comastudio-lo-fi-chill_infinite-166238.mp3" },
+  { artist: "comastudio", title: "lo-fi-chill-time flabby", album: "", src: "/asset/audio/bgm/comastudio-lo-fi-chill-time_flabby-137262.mp3" },
+  { artist: "comastudio", title: "motion-abstract-beat buried", album: "", src: "/asset/audio/bgm/comastudio-motion-abstract-beat_buried-182691.mp3" },
+  { artist: "comastudio", title: "on-trip-hop ocean", album: "", src: "/asset/audio/bgm/comastudio-on-trip-hop_ocean-194598.mp3" },
+  { artist: "comastudio", title: "organic-relax-lo-fi", album: "", src: "/asset/audio/bgm/comastudio-organic-relax-lo-fi-137261.mp3" },
+  { artist: "comastudio", title: "promo-fashion-chill glacier", album: "", src: "/asset/audio/bgm/comastudio-promo-fashion-chill_glacier-158536.mp3" },
+  { artist: "comastudio", title: "smooth dew", album: "", src: "/asset/audio/bgm/comastudio-smooth_dew-108786.mp3" },
+  { artist: "comastudio", title: "soft-beat mist", album: "", src: "/asset/audio/bgm/comastudio-soft-beat_mist-115017.mp3" },
+  { artist: "comastudio", title: "soft-lofi-beat vintage", album: "", src: "/asset/audio/bgm/comastudio-soft-lofi-beat_vintage-95425 (1).mp3" },
+  { artist: "comastudio", title: "soul", album: "", src: "/asset/audio/bgm/comastudio-soul-106805.mp3" },
+  { artist: "comastudio", title: "sport-fashion-rock sleek", album: "", src: "/asset/audio/bgm/comastudio-sport-fashion-rock_sleek-95426.mp3" },
+  { artist: "comastudio", title: "sport-rock-fashion-trailer urban", album: "", src: "/asset/audio/bgm/comastudio-sport-rock-fashion-trailer_urban-131258.mp3" },
+  { artist: "comastudio", title: "stylish-fashion-beat traditional", album: "", src: "/asset/audio/bgm/comastudio-stylish-fashion-beat_traditional-125855.mp3" },
+  { artist: "comastudio", title: "techno-sport understated", album: "", src: "/asset/audio/bgm/comastudio-techno-sport_understated-125858.mp3" },
+  { artist: "comastudio", title: "technological-ambient-downtempo creative", album: "", src: "/asset/audio/bgm/comastudio-technological-ambient-downtempo_creative-95427.mp3" },
+  { artist: "comastudio", title: "temper", album: "", src: "/asset/audio/bgm/comastudio-temper-111377.mp3" },
+  { artist: "comastudio", title: "that-funk sculpture", album: "", src: "/asset/audio/bgm/comastudio-that-funk_sculpture-125857.mp3" },
+  { artist: "comastudio", title: "the-abstract-beats carving", album: "", src: "/asset/audio/bgm/comastudio-the-abstract-beats_carving-95428.mp3" },
+  { artist: "comastudio", title: "the-upbeat-chill-beat constructing", album: "", src: "/asset/audio/bgm/comastudio-the-upbeat-chill-beat_constructing-121494.mp3" },
+  { artist: "comastudio", title: "thought", album: "", src: "/asset/audio/bgm/comastudio-thought-106806.mp3" },
+  { artist: "comastudio", title: "trap-beat materializing", album: "", src: "/asset/audio/bgm/comastudio-trap-beat_materializing-99191.mp3" },
+  { artist: "comastudio", title: "trap-it manifestation", album: "", src: "/asset/audio/bgm/comastudio-trap-it_manifestation-303650.mp3" },
+  { artist: "comastudio", title: "travel draft", album: "", src: "/asset/audio/bgm/comastudio-travel_draft-122070.mp3" },
+  { artist: "comastudio", title: "wheedling", album: "", src: "/asset/audio/bgm/comastudio-wheedling-106807.mp3" },
+];
+/** 打开网页自动播放的第一首 */
+const FIRST_TRACK = PLAYLIST[0];
 /** 整页的默认音量（原项目 setVolume(0.10)），保证角标先播时音量一致 */
 const DEFAULT_VOLUME = 0.10;
 /** 音量记忆键：角标滚轮与磁带页滚轮共用一档，谁调了都记住 */
@@ -79,16 +135,21 @@ function readSavedVolume(): number {
 const element: HTMLAudioElement = new Audio();
 element.preload = 'auto';
 element.volume = readSavedVolume();
-element.src = DEFAULT_SRC;
+element.src = FIRST_TRACK.src;
+/* 双保险第一重：页面一打开就尝试无手势播放——部分浏览器/场景允许（有过交互记录、
+   非严格策略），被自动播放策略拦下时静默失败，第二重在下面的 onFirstGesture：
+   用户第一次点击/按键/触摸时立即起播。注意这里不用 play()（它会把 userTouched
+   置真，导致第一重被拦后第二重也被跳过）。 */
+void element.play().catch(() => undefined);
 
 /** 当前状态（每次变化后重建一份并通知订阅者） */
 let state: TapeAudioState = {
   playing: false,
   time: 0,
   duration: 0,
-  title: DEFAULT_TITLE,
-  artist: DEFAULT_ARTIST,
-  album: DEFAULT_ALBUM,
+  title: FIRST_TRACK.title,
+  artist: FIRST_TRACK.artist,
+  album: FIRST_TRACK.album,
   volume: element.volume,
   ready: false,
   failed: false,
@@ -97,22 +158,30 @@ const listeners = new Set<(s: TapeAudioState) => void>();
 /** 用户是否亲手按过播放/暂停：按过就不再让"自动续播"抢方向盘 */
 let userTouched = false;
 
-/** 读取记忆的播放状态（读不到或没值就是 null） */
-function readSaved(): { playing: boolean; time: number } | null {
+/** 读取记忆的播放状态（读不到或没值就是 null；src 用来判断"记忆的是不是当前这首"） */
+function readSaved(): { playing: boolean; time: number; src: string } | null {
   try {
     const raw = localStorage.getItem(PLAY_KEY);
     if (!raw) return null;
-    const o = JSON.parse(raw) as { playing?: unknown; time?: unknown };
-    return { playing: !!o.playing, time: Number(o.time) || 0 };
+    const o = JSON.parse(raw) as { playing?: unknown; time?: unknown; src?: unknown };
+    return {
+      playing: !!o.playing,
+      time: Number(o.time) || 0,
+      src: typeof o.src === 'string' ? o.src : '',
+    };
   } catch {
     return null;
   }
 }
 
-/** 写入记忆的播放状态（存储被禁用时静默跳过） */
+/** 写入记忆的播放状态（存储被禁用时静默跳过；src 记当前曲目，续播只认同一首） */
 function writeSaved(): void {
   try {
-    localStorage.setItem(PLAY_KEY, JSON.stringify({ playing: state.playing && !state.failed, time: state.time }));
+    localStorage.setItem(PLAY_KEY, JSON.stringify({
+      playing: state.playing && !state.failed,
+      time: state.time,
+      src: currentTrack().src,
+    }));
   } catch {
     /* 存储不可用：只是这次会话不记忆，不影响播放 */
   }
@@ -186,10 +255,9 @@ function toggle(): void {
    页面开着时音频由 applyTrack 驱动（addPlaylistTrack 只登记不碰元素），
    页面关着时 dock 的 next/prev 直接驱动共享元素。 */
 
-/** 歌单：内置曲起步；blob 曲目随会话失效，不持久化（音频文件无法进 localStorage） */
-const playlist: PlaylistTrack[] = [
-  { title: DEFAULT_TITLE, artist: DEFAULT_ARTIST, album: DEFAULT_ALBUM, src: DEFAULT_SRC },
-];
+/** 运行时歌单：默认歌单的副本起步；ADD MUSIC 追加进来的 blob 曲目随会话失效，
+    不持久化（音频文件无法进 localStorage），刷新后回到默认歌单 */
+const playlist: PlaylistTrack[] = [...PLAYLIST];
 let plIndex = 0;
 
 /** 歌单当前曲目 */
@@ -282,12 +350,14 @@ window.addEventListener('ohmtape:track', (e) => {
 });
 
 /**
- * 在"首次用户交互"时自动续播
+ * 双保险第二重：用户第一次交互时确保音乐响起
  *
- * 功能：按记忆里的播放状态接着放（含进度）。浏览器不允许无手势出声，所以只能挂在
- *      本次页面加载的第一次 pointerdown / keydown / touchstart 上；为了不和用户
- *      这一次手势本身的操作打架（比如第一下点的就是角标的播放钮），真正的续播放在
- *      0ms 之后：那时若用户已经亲手动过播放（userTouched）或元素已在播放，就不插手。
+ * 功能：页面打开时的无手势自动播（第一重）被浏览器策略拦下的话，挂在这里的
+ *      pointerdown/keydown/touchstart 兜底——用户第一次任意交互立即起播。
+ *      两种情形：
+ *        - 上次在听的就是当前这首（src 相同）：续到记忆的进度
+ *        - 否则（含首访）：从歌单第一首（positive）开头起播
+ *      用户若在 0ms 定时器前已亲手操作过播放（userTouched），不插手。
  *
  * 参数：无
  * 返回值：无
@@ -295,10 +365,12 @@ window.addEventListener('ohmtape:track', (e) => {
  */
 function onFirstGesture(): void {
   window.setTimeout(() => {
+    if (userTouched) return;                 // 用户已亲手操作过播放：不抢方向盘
+    if (!element.paused) return;             // 第一重已经响了
+    if (state.failed) return;                // 未装带/加载失败：无从播起
     const saved = readSaved();
-    if (!saved || !saved.playing || userTouched || state.failed) return;
-    if (!element.paused) return;
-    if (saved.time > 0 && saved.time < (element.duration || Infinity)) {
+    if (saved && saved.playing && saved.src === element.src
+        && saved.time > 0 && saved.time < (element.duration || Infinity)) {
       try { element.currentTime = saved.time; } catch { /* 元数据未就绪：从头放 */ }
     }
     void element.play().catch(() => undefined);
