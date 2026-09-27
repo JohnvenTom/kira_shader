@@ -67,13 +67,12 @@ const FALLBACK_SIZE = { w: 81, h: 39 };
 const DOCK_GAP = 26;
 /** 来源页的存储键：与 tapeApp 里那条兜底路径共用（见 port-cassette.mjs 的「返回站内绑定」） */
 const FROM_KEY = 'ohmtape.from';
-
 /** 角标点开时量下的矩形（本次会话内有效；刷新即失，深链走兜底） */
 let originRect: Rect | null = null;
 /** 量到过的角标尺寸（用于深链收闭时的兜底落点） */
 let dockSize: { w: number; h: number } | null = null;
-/** 来源页 hash（收闭落地后回到这里） */
-let fromHash = '';
+/** 来源页 hash（收闭落地后回到这里；null = 尚未量过，空串 = 来源是根路由主页） */
+let fromHash: string | null = null;
 /** 整页注册的收闭实现 */
 let closeHandler: (() => void) | null = null;
 /** 收闭是否正在进行（防重复触发） */
@@ -95,7 +94,9 @@ export function rememberOrigin(el: HTMLElement): void {
   const r = el.getBoundingClientRect();
   originRect = { x: r.left, y: r.top, w: r.width, h: r.height };
   dockSize = { w: r.width, h: r.height };
-  fromHash = window.location.hash && window.location.hash !== '#tape' ? window.location.hash : '#film';
+  /* 空串也是合法来源：computer 主页是无 hash 的根路由——此前 `hash && ...` 把它
+     判成 falsy 硬编码回 #film，导致"主页进磁带页，返回却落在胶片页" */
+  fromHash = window.location.hash !== '#tape' ? window.location.hash : '#film';
   try { sessionStorage.setItem(FROM_KEY, fromHash); } catch { /* 存储不可用：内存里那份还在 */ }
   closing = false;
 }
@@ -128,9 +129,9 @@ export function landingRect(): Rect {
   };
 }
 
-/** 来源页 hash（没有记录时回胶片页） */
+/** 来源页 hash（量过就按记录走——含根路由的空串；深链兜底胶片页） */
 export function exitHash(): string {
-  if (fromHash) return fromHash;
+  if (fromHash !== null) return fromHash;
   try {
     const saved = sessionStorage.getItem(FROM_KEY);
     if (saved && saved !== '#tape') return saved;
@@ -180,7 +181,14 @@ export function finishClose(): void {
   closing = false;
   landed = true;
   const target = exitHash();
-  if (window.location.hash !== target) window.location.hash = target;
+  if (target === '') {
+    /* 来源是根路由（computer 主页）：置空 hash 会留下一个孤零零的 "#"，
+       replaceState 把 URL 擦干净——hashchange 照常触发，路由回到主页 */
+    window.location.hash = '';
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  } else if (window.location.hash !== target) {
+    window.location.hash = target;
+  }
 }
 
 /** 标记收闭开始（整页在用；防止重复触发） */

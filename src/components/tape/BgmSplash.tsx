@@ -42,6 +42,10 @@ export function BgmSplash() {
   const [gone, setGone] = useState(false);
   /** 是否已进入收场（背景淡出 + 磁带飞行） */
   const [leaving, setLeaving] = useState(false);
+  /** 是否渲染引导层：挂载瞬间 BGM 已在播（能自动播放/续播中）就根本不出现；
+      700ms 宽限内音乐响起来（双保险第一重成功）也取消出现——
+      本层的全部意义是"收集解锁音频的手势"，能自动播时它没有意义 */
+  const [show, setShow] = useState(() => !tapeAudio.state.playing);
   const tapeRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** 跟手状态（rAF 每帧读写，走 ref 不走 state）；初值在屏幕中心偏上——
@@ -51,11 +55,15 @@ export function BgmSplash() {
   const startedRef = useRef(false);
 
   useEffect(() => {
-    /* 双保险第一重若已把音乐放响（部分浏览器允许无手势播放），本层没有意义——
-       400ms 竞态确认后直接淡出卸载 */
-    const race = window.setTimeout(() => {
-      if (tapeAudio.state.playing) dismiss(false);
-    }, 400);
+    /* 订阅播放态：BGM 一响立刻取消引导层（比宽限定时更快更准）。
+       注意是单向的——暂停不会把已隐藏的层再拉出来，是否出现只在
+       挂载瞬间与 700ms 宽限点决定两次 */
+    const unsub = tapeAudio.subscribe((s) => {
+      if (s.playing) setShow(false);
+    });
+    /* 宽限窗口：给"无手势直试"的第一重一个裁决期——期间音乐响起来就不显示，
+       到点仍无声（策略拦截）才把引导层淡入推给用户 */
+    const grace = window.setTimeout(() => setShow(true), 700);
 
     const reduce = reduceMotion();
     /* 指针移动只记目标点；真正的缓动在 rAF 里做 */
@@ -93,7 +101,8 @@ export function BgmSplash() {
     window.addEventListener('hashchange', onHash);
 
     return () => {
-      clearTimeout(race);
+      unsub();
+      clearTimeout(grace);
       cancelAnimationFrame(raf);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('hashchange', onHash);
@@ -137,7 +146,7 @@ export function BgmSplash() {
     window.setTimeout(() => setGone(true), 640);
   };
 
-  if (gone) return null;
+  if (gone || !show) return null;
 
   return (
     <div
