@@ -17,8 +17,8 @@
  * 异常：无（音乐盒元素缺失、减少动效等一律退化为直接淡出）
  *
  * 注意事项：
- *  - 显示条件 = 挂载时 BGM 未在播放（store 的双保险第一重若直接响了，本层
- *    在 400ms 竞态检查后自动淡出，不打扰）
+ *  - 只出现一次：完成引导（点击播放或跳过）即写 localStorage 持久标记，
+ *    之后刷新、再访问都直接不挂载；清站点数据才会再看一次
  *  - 点击就是 tapeAudio.play() 的手势：store 的 onFirstGesture 也会在这次
  *    pointerdown 上兜底，双路起播互不冲突（userTouched 守卫）
  *  - prefers-reduced-motion：不做跟手与 FLIP，退化为直接淡入淡出
@@ -36,16 +36,17 @@ const TAPE_H = 104;
 /** 跟手缓动系数与倾斜幅度 */
 const FOLLOW = 0.09;
 const TILT = 0.06;
+/** "已完成引导"的持久标记键：写过就永不出现（除非清站点数据） */
+const DONE_KEY = 'ohmtape.splash.done';
 
 export function BgmSplash() {
-  /** 层是否还挂着（收场动画结束后置 false 卸载） */
-  const [gone, setGone] = useState(false);
+  /** 完成过引导（点过播放或跳过）就写持久标记：之后刷新、再访问都不再出现。
+      gone 用标记同步初始化——老用户挂载瞬间就是 null，连一帧都不闪 */
+  const [gone, setGone] = useState(() => {
+    try { return localStorage.getItem(DONE_KEY) === '1'; } catch { return false; }
+  });
   /** 是否已进入收场（背景淡出 + 磁带飞行） */
   const [leaving, setLeaving] = useState(false);
-  /** 是否渲染引导层：挂载瞬间 BGM 已在播（能自动播放/续播中）就根本不出现；
-      700ms 宽限内音乐响起来（双保险第一重成功）也取消出现——
-      本层的全部意义是"收集解锁音频的手势"，能自动播时它没有意义 */
-  const [show, setShow] = useState(() => !tapeAudio.state.playing);
   const tapeRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** 跟手状态（rAF 每帧读写，走 ref 不走 state）；初值在屏幕中心偏上——
@@ -54,16 +55,17 @@ export function BgmSplash() {
   const target = useRef({ x: 0, y: 0 });
   const startedRef = useRef(false);
 
+  /** 写"已完成引导"的持久标记（存储不可用只是每次刷新会再看一次，无碍） */
+  const markDone = () => {
+    try { localStorage.setItem(DONE_KEY, '1'); } catch { /* 存储不可用 */ }
+  };
+
   useEffect(() => {
-    /* 订阅播放态：BGM 一响立刻取消引导层（比宽限定时更快更准）。
-       注意是单向的——暂停不会把已隐藏的层再拉出来，是否出现只在
-       挂载瞬间与 700ms 宽限点决定两次 */
+    /* 极少见：标记丢了但 BGM 自己响起来了（浏览器允许无手势播放）——
+       本层没有存在的意义，直接淡出写标记收场 */
     const unsub = tapeAudio.subscribe((s) => {
-      if (s.playing) setShow(false);
+      if (s.playing) dismiss(false);
     });
-    /* 宽限窗口：给"无手势直试"的第一重一个裁决期——期间音乐响起来就不显示，
-       到点仍无声（策略拦截）才把引导层淡入推给用户 */
-    const grace = window.setTimeout(() => setShow(true), 700);
 
     const reduce = reduceMotion();
     /* 指针移动只记目标点；真正的缓动在 rAF 里做 */
@@ -102,7 +104,6 @@ export function BgmSplash() {
 
     return () => {
       unsub();
-      clearTimeout(grace);
       cancelAnimationFrame(raf);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('hashchange', onHash);
@@ -126,6 +127,7 @@ export function BgmSplash() {
   const dismiss = (withMusic: boolean) => {
     if (startedRef.current) return;           // 收场只走一次
     startedRef.current = true;
+    markDone();
     if (withMusic) tapeAudio.play();          // 这一下手势解锁 BGM（rejection 已吞）
     setLeaving(true);
 
@@ -146,7 +148,27 @@ export function BgmSplash() {
     window.setTimeout(() => setGone(true), 640);
   };
 
-  if (gone || !show) return null;
+  /**
+   * 暂不播放：用户明确拒绝——不起播、直接整层淡出
+   *
+   * 功能：suppressAutoplay 置 userTouched（否则这一次点击作为手势，会被
+   *      onFirstGesture 续播钩子当成"用户想听"，违背"不强制"的选择）；
+   *      收场走退化路径直接淡出——音乐没响，磁带没有飞向音乐盒的理由。
+   *
+   * 参数：无
+   * 返回值：void
+   * 异常：无
+   */
+  const skipOut = () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    markDone();
+    tapeAudio.suppressAutoplay();
+    setLeaving(true);
+    window.setTimeout(() => setGone(true), 420);
+  };
+
+  if (gone) return null;
 
   return (
     <div
@@ -162,6 +184,14 @@ export function BgmSplash() {
           点击<em>任意处</em>
         </h1>
         <p className="bgm-splash-sub">CLICK ANYWHERE — THE TAPE STARTS BY ITSELF</p>
+        <button
+          type="button"
+          className="bgm-splash-skip"
+          onPointerDown={(e) => { e.stopPropagation(); skipOut(); }}
+          aria-label="暂不播放背景音乐"
+        >
+          暂不播放 · SKIP
+        </button>
       </div>
 
       {/* 跟手磁带：纯 SVG 组合（外壳 / 标签 / 带窗 / 双带轮 / 传动轮 / 螺丝） */}

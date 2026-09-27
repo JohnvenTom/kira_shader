@@ -380,6 +380,20 @@ window.addEventListener('pointerdown', onFirstGesture, { once: true, capture: tr
 window.addEventListener('keydown', onFirstGesture, { once: true, capture: true });
 window.addEventListener('touchstart', onFirstGesture, { once: true, capture: true });
 
+/**
+ * 标记"用户明确拒绝自动播放"（引导页的暂不播放按钮用）
+ *
+ * 功能：置 userTouched——首次交互钩子（onFirstGesture）看到它就不再自动起播，
+ *      用户明确说不要，就不替他打开。此后想听音乐走正常入口（音乐盒播放钮）。
+ *
+ * 参数：无
+ * 返回值：void
+ * 异常：无
+ */
+function suppressAutoplay(): void {
+  userTouched = true;
+}
+
 /** 导出的单例 */
 export const tapeAudio = {
   /** 共享的音频元素：交给磁带机整页使用（工厂的 audioEl 注入位） */
@@ -397,4 +411,5 @@ export const tapeAudio = {
   prev,
   addPlaylistTrack,
   setVolume,
+  suppressAutoplay,
 };
