@@ -24,8 +24,7 @@ import { tapeAudio, type TapeAudioState } from './tapeAudioStore';
 import { TIMING, consumeLanded, reduceMotion, rememberOrigin } from './tapeTransition';
 import './musicBox.css';
 
-/**
- * 秒数格式化为 mm:ss
+/** 秒数格式化为 mm:ss
  *
  * 参数：
  *  - s {number} 秒数（非法值按 0 处理）
@@ -37,6 +36,11 @@ function fmt(s: number): string {
   return `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(Math.floor(v % 60)).padStart(2, '0')}`;
 }
 
+/** 拖拽判定阈值（px）：越过才算"切歌拖拽"，之内是普通点击的抖动 */
+const DRAG_THRESHOLD = 26;
+/** 跟手位移的阻尼：bar 实际平移量 = 指针位移 × 阻尼（拖起来有"磁带在槽里滑动"的重量感） */
+const DRAG_DAMP = 0.45;
+
 export function MusicBoxDock() {
   // 音频单例的状态快照（订阅式：元素是共享的，状态可能来自任何页面）
   const [st, setSt] = useState<TapeAudioState>(tapeAudio.state);
@@ -44,8 +48,20 @@ export function MusicBoxDock() {
   const [launching, setLaunching] = useState(false);
   // 刚完成一次收闭落地（播一次回弹，让"收进去"和"它在角标里接着放"连成一个动作）
   const [landing, setLanding] = useState(false);
+  // 音量气泡：null = 隐藏；滚轮调整时显示百分比，1.1s 无操作后淡出
+  const [volPct, setVolPct] = useState<number | null>(null);
+  // 拖拽态：null = 未拖；dx 是指针位移，dir 是"已过阈值待切"的方向
+  const [drag, setDrag] = useState<{ dx: number; dir: 'prev' | 'next' | null } | null>(null);
+  // 面板 credits 位的临时文案（切歌反馈 / 只有一首提示），空串 = 显示正常曲目信息
+  const [hint, setHint] = useState('');
   // 角标本体（量来源矩形用：展开的起点与收闭的落点就是它）
   const barRef = useRef<HTMLDivElement>(null);
+  // 根元素（滚轮监听挂这里：指针悬停在角标任何部位都算"hover 中"）
+  const rootRef = useRef<HTMLDivElement>(null);
+  // 拖拽的命令式账本（pointermove 高频，走 ref 不走 state；state 只留渲染需要的 dx/dir）
+  const dragRef = useRef({ startX: 0, active: false, captured: false, dx: 0, movedAt: 0 });
+  const volTimer = useRef(0);
+  const hintTimer = useRef(0);
 
   useEffect(() => tapeAudio.subscribe(setSt), []);
 
@@ -56,6 +72,89 @@ export function MusicBoxDock() {
     const t = window.setTimeout(() => setLanding(false), 320);
     return () => window.clearTimeout(t);
   }, []);
+
+  /**
+   * 悬停滚轮调音量（非 passive 原生监听）
+   *
+   * 功能：指针悬停在角标上滚动滚轮，音量按 5% 一档增减并浮出气泡；
+   *      preventDefault 挡住页面滚动。必须用原生监听——React 的 onWheel
+   *      是 passive 的，在里面 preventDefault 会被控制台警告且无效。
+   *
+   * 参数：无
+   * 返回值：void
+   * 异常：无（setVolume 内部自行收敛越界值）
+   */
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return;                 // 浏览器缩放手势不抢
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = e.deltaY < 0 ? 1 : -1;     // 上滚加、下滚减
+      const v = Math.min(1, Math.max(0, tapeAudio.state.volume + dir * 0.05));
+      tapeAudio.setVolume(v);
+      setVolPct(v);
+      clearTimeout(volTimer.current);
+      volTimer.current = window.setTimeout(() => setVolPct(null), 1100);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      clearTimeout(volTimer.current);
+      clearTimeout(hintTimer.current);
+    };
+  }, []);
+
+  /** 面板 credits 位的临时文案（1.6s 后回到正常曲目信息） */
+  const showHint = (text: string) => {
+    setHint(text);
+    clearTimeout(hintTimer.current);
+    hintTimer.current = window.setTimeout(() => setHint(''), 1600);
+  };
+
+  /**
+   * 拖拽三件套：按下记账 → 越过 8px 抢占指针进入拖拽 → 松手按阈值切歌
+   *
+   * 功能：向左拖（过阈值）上一首、向右拖下一首，循环；拖拽期间磁带图标跟手平移、
+   *      面板显示方向提示；拖过就必须切（抑制本次 click 误开磁带页）。
+   *      指针捕获在"确认拖拽"时才 set——捕获会让 click 落到 bar 上，
+   *      太早设会把播放钮的点击也吃掉。
+   *
+   * 参数：React 指针事件（挂在 bar 上）
+   * 返回值：void
+   * 异常：无
+   */
+  const onBarPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, active: true, captured: false, dx: 0, movedAt: 0 };
+  };
+  const onBarPointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d.active) return;
+    d.dx = e.clientX - d.startX;
+    if (!d.captured) {
+      if (Math.abs(d.dx) <= 8) return;
+      d.captured = true;
+      try { barRef.current?.setPointerCapture(e.pointerId); } catch { /* 已释放：放弃本次拖拽 */ }
+    }
+    if (!d.captured) return;
+    setDrag({ dx: d.dx, dir: Math.abs(d.dx) >= DRAG_THRESHOLD ? (d.dx < 0 ? 'prev' : 'next') : null });
+  };
+  const onBarPointerEnd = () => {
+    const d = dragRef.current;
+    if (!d.active) return;
+    d.active = false;
+    const wasCaptured = d.captured;
+    const dx = d.dx;
+    d.captured = false;
+    d.movedAt = Date.now();
+    setDrag(null);
+    if (!wasCaptured) return;                // 没过捕获阈值的都是普通点击，原样放行
+    if (Math.abs(dx) < DRAG_THRESHOLD) return; // 拖了但不够深：回弹即可，什么都不切
+    const ok = dx < 0 ? tapeAudio.prev() : tapeAudio.next();
+    showHint(ok ? (dx < 0 ? '已切上一首 ◀' : '已切下一首 ▶') : '只有一首 · 去磁带页装几首');
+  };
 
   /**
    * 打开磁带机整页
@@ -69,6 +168,7 @@ export function MusicBoxDock() {
    */
   const openTape = () => {
     if (launching) return;
+    if (Date.now() - dragRef.current.movedAt < 300) return;   // 刚拖完切歌：别把松手当点击
     const bar = barRef.current;
     if (bar) rememberOrigin(bar);
     if (reduceMotion()) { window.location.hash = '#tape'; return; }
@@ -78,27 +178,48 @@ export function MusicBoxDock() {
 
   const credits = [st.artist, st.album].filter(Boolean).join(' · ');
   const progress = st.duration > 0 ? Math.min(1, st.time / st.duration) : 0;
+  /* 面板 credits 行的文案优先级：拖拽方向提示 > 临时反馈 > 未装带 > 正常曲目信息 */
+  const panelCredits =
+    drag?.dir === 'prev' ? '← 上一首'
+    : drag?.dir === 'next' ? '下一首 →'
+    : hint || (st.failed ? '未装带 · 点开装一首' : (credits || '未知曲目'));
 
   return (
     <div
-      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}${launching ? ' is-launching' : ''}${landing ? ' is-landing' : ''}`}
+      ref={rootRef}
+      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}${launching ? ' is-launching' : ''}${landing ? ' is-landing' : ''}${drag ? ' is-dragging' : ''}`}
     >
       {/* 悬停浮出的信息层 */}
       <div className="music-dock-panel">
         <b className="music-dock-title">{st.title}</b>
-        <i className="music-dock-credits">{st.failed ? '未装带 · 点开装一首' : (credits || '未知曲目')}</i>
+        <i className={`music-dock-credits${(drag?.dir || hint) ? ' is-note' : ''}`}>{panelCredits}</i>
         <span className="music-dock-time">
           {fmt(st.time)} <u>/</u> {st.duration > 0 ? fmt(st.duration) : '--:--'}
         </span>
+        {volPct !== null && (
+          <span className="music-dock-volrow">
+            <u>音量</u>
+            <i className="music-dock-volbar"><b style={{ transform: `scaleX(${volPct})` }} /></i>
+            <em>{Math.round(volPct * 100)}%</em>
+          </span>
+        )}
       </div>
 
-      <div className="music-dock-bar" ref={barRef}>
-        {/* 磁带图标：点它进整页 */}
+      <div
+        className="music-dock-bar"
+        ref={barRef}
+        style={drag ? { transform: `translateX(${drag.dx * DRAG_DAMP}px)` } : undefined}
+        onPointerDown={onBarPointerDown}
+        onPointerMove={onBarPointerMove}
+        onPointerUp={onBarPointerEnd}
+        onPointerCancel={onBarPointerEnd}
+      >
+        {/* 磁带图标：点它进整页（拖拽松手后的 click 会被 movedAt 抑制） */}
         <button
           className="music-dock-main"
           onClick={openTape}
           aria-label="打开磁带机（音乐盒）"
-          title="打开磁带机"
+          title="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
             <rect x="1.4" y="4.4" width="21.2" height="15.2" fill="none" stroke="currentColor" strokeWidth="1.2" />

@@ -37,10 +37,20 @@ export interface TapeAudioState {
   artist: string;
   /** 专辑 */
   album: string;
+  /** 音量（0~1；磁带页滚轮与音乐盒角标滚轮共用） */
+  volume: number;
   /** 音频是否可用（元数据已就绪；false 表示未装带或加载失败） */
   ready: boolean;
   /** 是否加载失败（文件缺失/无法解码） */
   failed: boolean;
+}
+
+/** 歌单里的一条曲目（ADD MUSIC 追加进来；blob 地址随会话失效） */
+export interface PlaylistTrack {
+  title: string;
+  artist: string;
+  album: string;
+  src: string;
 }
 
 /** 默认曲目的信息（与 tapeApp.js 的 TRACK_DEFAULT 对齐；整页开机后会广播覆盖，换成真曲子时两处一起改） */
@@ -50,13 +60,25 @@ const DEFAULT_ARTIST = '';
 const DEFAULT_ALBUM = '';
 /** 整页的默认音量（原项目 setVolume(0.10)），保证角标先播时音量一致 */
 const DEFAULT_VOLUME = 0.10;
+/** 音量记忆键：角标滚轮与磁带页滚轮共用一档，谁调了都记住 */
+const VOLUME_KEY = 'ohmtape.volume';
 /** 播放状态记忆键（设置记忆用的是 ohmtape.prefs，两者互不干扰） */
 const PLAY_KEY = 'ohmtape.play';
+
+/** 读记忆音量（0~1；读不到/非法退回默认 0.10） */
+function readSavedVolume(): number {
+  try {
+    const v = Number(localStorage.getItem(VOLUME_KEY));
+    return Number.isFinite(v) && v >= 0 && v <= 1 ? v : DEFAULT_VOLUME;
+  } catch {
+    return DEFAULT_VOLUME;
+  }
+}
 
 /** 单例的音频元素：全站共用，路由切换不销毁 */
 const element: HTMLAudioElement = new Audio();
 element.preload = 'auto';
-element.volume = DEFAULT_VOLUME;
+element.volume = readSavedVolume();
 element.src = DEFAULT_SRC;
 
 /** 当前状态（每次变化后重建一份并通知订阅者） */
@@ -67,6 +89,7 @@ let state: TapeAudioState = {
   title: DEFAULT_TITLE,
   artist: DEFAULT_ARTIST,
   album: DEFAULT_ALBUM,
+  volume: element.volume,
   ready: false,
   failed: false,
 };
@@ -157,6 +180,72 @@ function toggle(): void {
   else pause();
 }
 
+/* ---- 歌单：磁带页 ADD MUSIC 追加，音乐盒角标左右拖在歌单里循环切 ----
+   单例持有歌单是架构决定：dock 只在磁带页之外渲染（main.tsx !isTape），
+   所以"dock 切歌"与"磁带页换带动画"永远不会同时发生——
+   页面开着时音频由 applyTrack 驱动（addPlaylistTrack 只登记不碰元素），
+   页面关着时 dock 的 next/prev 直接驱动共享元素。 */
+
+/** 歌单：内置曲起步；blob 曲目随会话失效，不持久化（音频文件无法进 localStorage） */
+const playlist: PlaylistTrack[] = [
+  { title: DEFAULT_TITLE, artist: DEFAULT_ARTIST, album: DEFAULT_ALBUM, src: DEFAULT_SRC },
+];
+let plIndex = 0;
+
+/** 歌单当前曲目 */
+function currentTrack(): PlaylistTrack {
+  return playlist[plIndex];
+}
+
+/** 把歌单第 i 首装进共享元素并播报（保持播放态：切歌不打断"正在听"） */
+function switchTo(i: number): void {
+  plIndex = ((i % playlist.length) + playlist.length) % playlist.length;
+  const t = currentTrack();
+  const wasPlaying = !element.paused && !element.ended;
+  element.src = t.src;
+  state = { ...state, title: t.title, artist: t.artist, album: t.album, time: 0, duration: 0, ready: false, failed: false };
+  emit();
+  if (wasPlaying) void play();
+}
+
+/** 下一首（循环）；歌单不足两首时返回 false（dock 用它提示"只有一首"） */
+function next(): boolean {
+  if (playlist.length < 2) return false;
+  switchTo(plIndex + 1);
+  return true;
+}
+
+/** 上一首（循环）；歌单不足两首时返回 false */
+function prev(): boolean {
+  if (playlist.length < 2) return false;
+  switchTo(plIndex - 1);
+  return true;
+}
+
+/** ADD MUSIC 追加曲目：登记进歌单并把"当前带"指向它（音频由磁带页的 applyTrack 驱动） */
+function addPlaylistTrack(t: PlaylistTrack): void {
+  playlist.push(t);
+  plIndex = playlist.length - 1;
+  state = { ...state, title: t.title, artist: t.artist, album: t.album };
+  emit();
+}
+
+/**
+ * 设音量（0~1）：磁带页滚轮与音乐盒角标滚轮共用，写元素 + 记忆 + 广播
+ *
+ * 参数：
+ *  - v {number} 目标音量（越界自动收敛到 0~1）
+ * 返回值：void
+ * 异常：无（localStorage 不可用时只是不记忆）
+ */
+function setVolume(v: number): void {
+  const vol = Math.min(1, Math.max(0, v));
+  element.volume = vol;
+  state = { ...state, volume: vol };
+  try { localStorage.setItem(VOLUME_KEY, String(vol)); } catch { /* 存储不可用 */ }
+  emit();
+}
+
 /* ---- 元素事件：状态、进度、失败都在这里汇入单例 ---- */
 element.addEventListener('loadedmetadata', refresh);
 element.addEventListener('durationchange', refresh);
@@ -224,8 +313,16 @@ export const tapeAudio = {
   /** 共享的音频元素：交给磁带机整页使用（工厂的 audioEl 注入位） */
   element,
   get state(): TapeAudioState { return state; },
+  /** 歌单当前曲目（磁带页开机对齐标签文字用） */
+  get current(): PlaylistTrack { return currentTrack(); },
+  /** 歌单曲目数（dock 判断"只有一首"用） */
+  get playlistLength(): number { return playlist.length; },
   subscribe,
   play,
   pause,
   toggle,
+  next,
+  prev,
+  addPlaylistTrack,
+  setVolume,
 };

@@ -96,6 +96,24 @@ try {
       await page.mouse.wheel(+args[0], +args[1]);
       console.log(`wheel ${args[0]},${args[1]} ok`);
       break;
+    case 'drag': {
+      // CDP 原始拖拽：playwright 的 mouse.down/up 在本环境会把事件派发到 (0,0)
+      // （move 正常），分步拖拽拿不到起点——直接用 Input.dispatchMouseEvent
+      // 显式传坐标，Chromium 会合成对应 pointer 事件
+      const [x1, y1, x2, y2] = args.map(Number);
+      const client = await ctx.newCDPSession(page);
+      const send = (type, x, y, buttons) => client.send('Input.dispatchMouseEvent', {
+        type, x, y, button: 'left', buttons, clickCount: 1, pointerType: 'mouse',
+      });
+      await send('mousePressed', x1, y1, 1);
+      const steps = 10;
+      for (let i = 1; i <= steps; i++) {
+        await send('mouseMoved', Math.round(x1 + ((x2 - x1) * i) / steps), Math.round(y1 + ((y2 - y1) * i) / steps), 1);
+      }
+      await send('mouseReleased', x2, y2, 0);
+      console.log(`drag ${x1},${y1} -> ${x2},${y2} ok`);
+      break;
+    }
     case 'wait':
       await page.waitForTimeout(+args[0]);
       console.log(`waited ${args[0]}ms`);

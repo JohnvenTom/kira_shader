@@ -12,6 +12,7 @@ import { clamp, damp, ease, Timeline } from './anim.js';
 import * as TX from './textures.js';
 import { TapeAudio } from './audio.js';
 import { readTags, looksLikeAudio } from './tags.js';
+import { tapeAudio } from './tapeAudioStore';
 
 /**
  * createTapeApp —— 磁带机整页的装配工厂（原项目 main.js 的工厂化版本）
@@ -334,7 +335,14 @@ let muted = false;
    It used to be whatever the <audio> element defaults to — 1.0 — with the tape
    bed ducked to 0.30 to compensate; now the music sits at 0.10 to begin with and
    the bed keeps its own mix, which is what a transport actually does. */
-let volume = 0.10;
+let volume = (() => {
+  /* 开机读记忆音量：音乐盒角标的滚轮与这里共用一档，谁调了都算数（读写键 ohmtape.volume） */
+  try {
+    const v = Number(localStorage.getItem('ohmtape.volume'));
+    if (Number.isFinite(v) && v >= 0 && v <= 1) return v;
+  } catch { /* 存储不可用：回默认 */ }
+  return 0.10;
+})();
 const VOL_STEP = 0.05;
 /* The tape bed is mixed *against* the music — 0.30 against a full-scale track is
    the balance that was tuned by ear — so it has to follow the wheel as well, or
@@ -421,7 +429,8 @@ function whenPlayable() {
     minutes is a lie for exactly as long as the browser takes to answer. */
 async function applyTrack({ title, artist, album, src, file }) {
   const seq = ++loadSeq;
-  const stale = objUrl;
+  /* 追加式歌单：旧带的 blob 地址还活在歌单里（音乐盒角标要来回切），不再 revoke——
+     blob 生命周期本来就是会话级，刷新即整体释放，这里泄漏一次会话可接受 */
   objUrl = src.startsWith('blob:') ? src : null;
   const short = file?.name || src;
   currentName = short;
@@ -436,7 +445,6 @@ async function applyTrack({ title, artist, album, src, file }) {
   cas.setProgress(0);                         // and it sits at the head again
   root.classList.remove('no-audio');
   audioFailed = false;
-  if (stale && stale !== src) URL.revokeObjectURL(stale);
 
   swap.meta = { title, artist, album, src, file };
   swap.state = 'arming';
@@ -2115,6 +2123,19 @@ $('#btn-mute').addEventListener('wheel', (e) => {
   audio.tick();
 }, { passive: false });
 setVolume(volume, { flash: false });
+/* 开机对齐歌单当前曲：音乐盒角标侧可能已切到歌单第 N 首（共享元素正在放的就是它），
+   页面文字层（now chip / 失败提示）跟着对齐。卡座 3D 标签纹理需要整条 swap 流程
+   重绘才有意义，这里刻意不动——重载同 src 会打断正在续播的音乐（已知限制） */
+try {
+  const st0 = tapeAudio.state;
+  if (st0.title && st0.title !== TRACK_DEFAULT.title) {
+    TRACK.title = st0.title;
+    TRACK.artist = st0.artist;
+    TRACK.album = st0.album;
+    currentName = tapeAudio.current.src;
+    setNowChip();
+  }
+} catch { /* store 不可用时保持默认曲样 */ }
 $('#btn-explode').addEventListener('click', () => { setExplode(!exploded); audio.tick(); render(); });
 $('#btn-flip').addEventListener('click', () => { setFlip(!flipped); audio.tick(); render(); });
 $('#theme').addEventListener('click', (e) => {
@@ -2162,7 +2183,16 @@ async function addFiles(files) {
   if (swap.state !== 'idle') { flashAdd('正在装入'); return; }
   flashAdd('正在装入');
   const tags = await readTags(file);          // guarded inside: always an object
-  applyTrack({ ...tags, src: URL.createObjectURL(file), file });
+  const src = URL.createObjectURL(file);
+  applyTrack({ ...tags, src, file });
+  /* 登记进共享歌单：音乐盒角标的左右拖从此能切到这首（音频由上面的 applyTrack 驱动，
+     store 侧只登记不碰元素）。这是"追加"不是"替换"——旧带的 blob 还活着 */
+  tapeAudio.addPlaylistTrack({
+    title: tags.title || file.name,
+    artist: tags.artist || '',
+    album: tags.album || '',
+    src,
+  });
 }
 addBtn.addEventListener('click', openPicker);
 fileInput.addEventListener('change', () => {
