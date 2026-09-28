@@ -30,6 +30,7 @@ body:has(.film-detail-overlay.visible) .music-dock {
    transform 过渡是"拖拽松手后弹回原位"用的；拖拽进行中要跟手，
    由 .is-dragging 把它摘掉。touch-action:none 让触屏上横向拖不被页面滚动抢走 */
 .music-dock-bar {
+  position: relative;           /* data-tip 提示气泡的定位基准（见下方气泡一节） */
   display: flex;
   align-items: stretch;
   background: rgba(10, 10, 10, 0.72);
@@ -197,6 +198,51 @@ body:has(.film-detail-overlay.visible) .music-dock {
   min-width: 30px;
   text-align: right;
   color: #fcf9f3;
+}
+
+/* ---------- 按钮提示气泡：data-tip + 伪元素，替代浏览器原生 title ----------
+   视觉与音量气泡同一套深色芯片（直角、发丝线、等宽微标签），但它是被动的
+   操作说明而非交互反馈，边框用发丝线不用铜色。
+   锚定整条按钮行（.music-dock-bar 是定位基准，按钮本身不设 relative）：
+   三个按钮紧贴，锚单钮的话气泡会直接盖在旁边按钮上。统一出现在按钮行左侧
+   ——右下角标再往左是空白页区，上方已被悬停信息层与音量气泡占住。
+   悬停 / 键盘聚焦都显示；0.35s 延时出现（快速扫过不闪），移开即隐；
+   hover:hover 门禁让触屏完全跳过；拖拽期间由 .is-dragging 强制压住，
+   免得跟着磁带一起平移。 */
+@media (hover: hover) and (pointer: fine) {
+  .music-dock [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    right: calc(100% + 9px);
+    top: 50%;
+    transform: translateY(-50%) translateX(4px);
+    padding: 6px 10px;
+    background: rgba(10, 10, 10, 0.88);
+    border: 1px solid rgba(252, 249, 243, 0.16);
+    backdrop-filter: blur(9px);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    white-space: nowrap;
+    color: rgba(252, 249, 243, 0.72);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.18s ease, visibility 0.18s ease, transform 0.18s ease;
+  }
+  .music-dock [data-tip]:hover::after,
+  .music-dock [data-tip]:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(-50%);
+    transition-delay: 0.35s;      /* 只在出现方向延时：移开时回到无延时的隐藏 */
+  }
+  /* 拖拽切歌期间气泡跟着 bar 平移会晃，直接压住不显 */
+  .music-dock.is-dragging [data-tip]::after {
+    opacity: 0;
+    visibility: hidden;
+    transition: none;
+  }
 }
 
 /* ---------- 细进度线 ---------- */
@@ -394,4 +440,5 @@ body:has(.film-detail-overlay.visible) .music-dock {
   .music-dock-playlist { animation: none; }
   .music-dock-playlist.is-closing { animation: none; }
   .music-dock-playlist-item { animation: none; opacity: 1; }
+  .music-dock [data-tip]::after { transition: none; }
 }

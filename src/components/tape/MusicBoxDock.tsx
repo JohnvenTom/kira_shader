@@ -7,6 +7,8 @@
  *  - 角标自带播放/暂停小钮（播放期间常显，暂停时悬停才显），控制的就是那个共享音频元素，
  *    所以在胶片页按暂停、进 #tape 后机器会跟着停下来（走带跟随见 tapeApp.js 主循环）
  *  - 未装带（默认曲目缺失或加载失败）时：信息层提示"未装带 · 点开装一首"，播放钮禁用
+ *  - 三个按钮的操作提示走 data-tip + CSS 伪元素的自定义气泡（按钮左侧浮出），
+ *    不用浏览器原生 title——原生气泡的样式与档案终端风完全不搭
  *
  * 参数：无（无 props：全站挂载，显隐由路由与样式决定）
  *
@@ -304,7 +306,7 @@ export function MusicBoxDock() {
           onClick={() => (listOpen || listClosing ? closeList() : setListOpen(true))}
           aria-label={listOpen ? '关闭播放列表' : '打开播放列表'}
           aria-expanded={listOpen}
-          title={listOpen ? '关闭播放列表' : '播放列表'}
+          data-tip={listOpen ? '关闭播放列表' : '打开播放列表'}
         >
           <svg viewBox="0 0 18 18" width="15" height="15" aria-hidden="true">
             <line className="music-dock-list-l1" x1="3" y1="5" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -318,7 +320,7 @@ export function MusicBoxDock() {
           className="music-dock-main"
           onClick={openTape}
           aria-label="打开磁带机（音乐盒）"
-          title="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
+          data-tip="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
             <rect x="1.4" y="4.4" width="21.2" height="15.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -340,7 +342,7 @@ export function MusicBoxDock() {
           onClick={(e) => { e.stopPropagation(); if (!st.failed) tapeAudio.toggle(); }}
           disabled={st.failed}
           aria-label={st.playing ? '暂停' : '播放'}
-          title={st.failed ? '未装带：先打开磁带机装一首' : (st.playing ? '暂停' : '播放')}
+          data-tip={st.failed ? '未装带：先打开磁带机装一首' : (st.playing ? '暂停' : '播放')}
         >
           {st.playing ? (
             <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
