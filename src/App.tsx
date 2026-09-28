@@ -63,6 +63,7 @@ function normalizeWheelDelta(e: WheelEvent): number {
  *  - scrollProgress {number}  当前滚动进度（0~1）
  *  - flyDirection   {number}  飞出方向（-1=向左，1=向右），默认 -1（向左飞出）
  *  - accent         {boolean} 点缀词（斜体微放，混排配方的关键词），默认 false
+ *  - zBase          {number}  字符 Z 深度基准（px，行内弧面之上再叠加，如 Future 抬高），默认 0
  *
  * 返回值：ReactNode[] 每个字符对应的 span 节点数组
  *
@@ -74,6 +75,9 @@ function normalizeWheelDelta(e: WheelEvent): number {
  *    transition 让飞出过程有平滑过渡感（300ms ease-out）
  *  - 内联 transition 同时声明 text-shadow/filter（1.8s 慢速）：入场特效
  *    （强辉光+RGB 分裂）在字符就位后缓慢收敛到素颜静止态，收敛节奏逐字错开
+ *  - 伪 3D：Z 深度走 inline 的 --z 变量（行内弧面 sin 波 ±8px + zBase），
+ *    入场/静止的 transform 由 CSS 持有并引用 var(--z)，飞出时 inline
+ *    transform 接管并把 Z 拉向屏幕深处（-260px×进度，坠入场景）
  */
 function splitTextToChars(
   text: string,
@@ -83,11 +87,16 @@ function splitTextToChars(
   exitStep: number,
   scrollProgress: number,
   flyDirection: number = -1,
-  accent: boolean = false
+  accent: boolean = false,
+  zBase: number = 0
 ): ReactNode[] {
   // 飞出动画的过渡区间长度：超过阈值后用 0.05 的进度完成整个飞出
   // 让字符在 scrollProgress 越过 exitThreshold 后的 0.05 范围内完成飞出
   const EXIT_DURATION = 0.05;
+  // 行内弧面：字符 Z 沿行内位置呈正弦微凸（中间高两端 0，幅度 8px），
+  // 标题从"刚性平板"变成"微弯的面料"，鼠标倾斜时曲率可感知
+  const arcZ = (i: number) =>
+    text.length > 1 ? Math.sin(Math.PI * (i / (text.length - 1))) * 8 : 0;
   return Array.from(text).map((ch, i) => {
     // 当前字符的飞出阈值：字符 i 在 exitThreshold + i * exitStep 处开始飞出
     const threshold = exitThreshold + i * exitStep;
@@ -96,10 +105,12 @@ function splitTextToChars(
     // 当 scrollProgress > threshold + EXIT_DURATION 时 exitRaw > 1 → clamp 到 1
     const exitRaw = (scrollProgress - threshold) / EXIT_DURATION;
     const exitProgress = Math.max(0, Math.min(1, exitRaw));
-    // 飞出 transform：向左/右平移 60px，并稍微下沉和旋转，营造"被甩出去"感
+    // 飞出 transform：向左/右平移 60px，并稍微下沉和旋转，营造"被甩出去"感；
+    // Z 分量把字符拉向屏幕深处（-260px×进度）——穿屏时文字被"留在身后"
     const flyX = flyDirection * 60 * exitProgress;
     const flyY = 20 * exitProgress;
     const rotate = flyDirection * 8 * exitProgress;
+    const flyZ = (zBase + arcZ(i)) - 260 * exitProgress;
     // opacity 从 1 衰减到 0
     const opacity = 1 - exitProgress;
     return (
@@ -108,9 +119,13 @@ function splitTextToChars(
         className={`hero-char${accent ? ' is-accent' : ''}`}
         style={{
           transitionDelay: `${baseDelay + i * step}ms`,
-          // 飞出动画的 transform/opacity（仅当 exitProgress>0 时生效）
+          // Z 深度（伪 3D）：入场/静止态由 CSS transform 引用 var(--z)，
+          // 飞出态由下方 inline transform 直接使用数值
+          '--z': `${zBase + arcZ(i)}px`,
+          // 飞出动画的 transform/opacity（仅当 exitProgress>0 时生效；
+          // 未飞出时不写 transform，让 CSS 的入场/静止态接管）
           transform: exitProgress > 0
-            ? `translate(${flyX}px, ${flyY}px) rotate(${rotate}deg)`
+            ? `translate3d(${flyX}px, ${flyY}px, ${flyZ}px) rotate(${rotate}deg)`
             : undefined,
           opacity: exitProgress > 0 ? opacity : undefined,
           // transform/opacity 走 300ms（飞出跟手）；text-shadow/filter 走
@@ -120,7 +135,7 @@ function splitTextToChars(
           transitionTimingFunction: 'ease-out, ease-out, ease, ease',
           // display:inline-block 让 transform 生效（inline 元素 transform 不起作用）
           display: 'inline-block',
-        }}
+        } as React.CSSProperties}
       >
         {ch === ' ' ? '\u00A0' : ch}
       </span>
@@ -240,6 +255,10 @@ export default function App() {
       st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
       if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
       setScrollProgress(Math.min(1, st.display));
+      // 伪 3D 退场：滚动推进时文字块整体后仰（display → --tilt，最大 14°），
+      // .hero-block 的 rotateX 里与鼠标视差叠加；泄能回退时自然回正。
+      // 直写 CSS 变量不触发 React 重渲染（与鼠标视差同一策略）
+      heroBlockRef.current?.style.setProperty('--tilt', `${(st.display * 14).toFixed(2)}deg`);
     }
 
     // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
@@ -483,8 +502,9 @@ export default function App() {
             </span>
             <span className="hero-line">
               {splitTextToChars('into the ', 950, 30, 0.55, 0.02, scrollProgress, -1)}
-              {/* 混排点缀词：Future 用同族 Italic 微放（衔接前段延迟与飞出阈值） */}
-              {splitTextToChars('Future', 1250, 30, 0.73, 0.02, scrollProgress, -1, true)}
+              {/* 混排点缀词：Future 用同族 Italic 微放；Z 抬高 35px 浮出本行
+                  （行 50 + 词 35 = 85px，景深分层的最前层）（衔接前段延迟与飞出阈值） */}
+              {splitTextToChars('Future', 1250, 30, 0.73, 0.02, scrollProgress, -1, true, 35)}
             </span>
           </h1>
         </div>

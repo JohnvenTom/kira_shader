@@ -181,22 +181,25 @@ body.camera-debug-mode .scroll-container {
 /* 整个文字块往下移：顶部留出更多空间 */
 .hero-block {
   margin-top: 18vh;
-  /* 视差变量由 JS 写入：--px/--py 位移，--rx/--ry 旋转 */
+  /* 视差变量由 JS 写入：--px/--py 位移，--rx/--ry 旋转（鼠标），
+     --tilt 滚动推进的后仰角（穿屏时文字被"留在身后"，JS 在 tickScroll 写入） */
   --px: 0px;
   --py: 0px;
   --rx: 0deg;
   --ry: 0deg;
-  /* transform: 位移 + 3D 旋转，配合较长 transition 营造惯性追随感
+  --tilt: 0deg;
+  /* transform: 位移 + 3D 旋转（鼠标视差 + 滚动后仰叠加），配合较长 transition 营造惯性追随感
      preserve-3d 让子元素也参与 3D 空间，旋转时文字不会变扁 */
   transform-style: preserve-3d;
-  transform: translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
+  transform: translate3d(var(--px), var(--py), 0) rotateX(calc(var(--rx) + var(--tilt))) rotateY(var(--ry));
   transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: transform;
 }
 
 /* hero 大标题：Cormorant Garamond 高对比衬线（自托管后真正渲染），
    500 中字重 + 紧排（行高 1.15 / 字距 -0.01em）——杂志大片式的密排气质；
-   斜体点缀词（Future）由 .hero-char.is-accent 处理 */
+   斜体点缀词（Future）由 .hero-char.is-accent 处理。
+   preserve-3d：Z 分层要穿透 h1 传到行与字符（伪 3D 的景深管道） */
 .hero-title {
   font-family: var(--font-display);
   font-weight: 500;
@@ -204,8 +207,20 @@ body.camera-debug-mode .scroll-container {
   line-height: 1.15;
   letter-spacing: -0.01em;
   max-width: 1000px;
+  transform-style: preserve-3d;
   /* 容器本身不参与动画，由内部 .hero-char 各自动画 */
 }
+
+/* 伪 3D 景深分层：三行标题依次抬离基准面 0/+25/+50px，鼠标倾斜时
+   近行移动快、远行慢（真实透视分离）；行内字符的 --z 在此基础上再叠弧面 */
+.hero-line {
+  display: block;
+  transform-style: preserve-3d;
+}
+
+.hero-title .hero-line:nth-of-type(1) { transform: translateZ(0px); }
+.hero-title .hero-line:nth-of-type(2) { transform: translateZ(25px); }
+.hero-title .hero-line:nth-of-type(3) { transform: translateZ(50px); }
 
 /* 混排点缀：斜体词——同族 Italic 500 + 微放大，靠斜轴本身制造焦点，
    不再加重量（Cormorant Italic 的高对比斜轴在 88px 下已经足够优雅） */
@@ -214,17 +229,14 @@ body.camera-debug-mode .scroll-container {
   font-size: 1.04em;
 }
 
-/* 每行容器：仅作为块级换行，不参与动画 */
-.hero-line {
-  display: block;
-}
-
 /* 每个字符 span：默认隐藏 + 下移，父级 .visible 时逐个浮现。
+   --z 由 JS 逐字写入（行内弧面 ±8px + 点缀词抬高），入场/静止/飞出
+   三个状态的 transform 都带上它——Z 深度贯穿始终。
    入场态 = 强特效（辉光 + RGB 分裂拉满），特效属于运动 */
 .hero-char {
   display: inline-block;
   opacity: 0;
-  transform: translateY(40px) scale(0.85);
+  transform: translateY(40px) scale(0.85) translateZ(var(--z, 0px));
   text-shadow:
     0 0 8px rgba(255, 244, 224, 0.9),
     0 0 22px rgba(255, 200, 120, 0.75),
@@ -244,7 +256,7 @@ body.camera-debug-mode .scroll-container {
    衬线的收笔细节（Cormorant 的优雅线条）重新锋利可读 */
 .hero-title.visible .hero-char {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: translateY(0) scale(1) translateZ(var(--z, 0px));
   text-shadow: 0 0 24px rgba(255, 180, 110, 0.16);
   filter:
     drop-shadow(0.4px 0 0 rgba(255, 80, 80, 0.4))
@@ -264,7 +276,9 @@ body.camera-debug-mode .scroll-container {
   text-transform: uppercase;
   color: var(--foreground);
   opacity: 0;
-  transform: translateY(8px);
+  /* Z 沉到 -70px：景深分层的最远层（空气透视——透视相机自然把它缩小），
+     入场位移与 Z 深度合并在同一 transform 里 */
+  transform: translateY(8px) translateZ(-70px);
   margin-bottom: 32px;
   transition: opacity 0.45s ease, transform 0.45s ease;
 }
@@ -278,7 +292,7 @@ body.camera-debug-mode .scroll-container {
 
 .hero-kicker.visible {
   opacity: 0.55;
-  transform: translateY(0);
+  transform: translateY(0) translateZ(-70px);
 }
 
 .hero-subtitle {
