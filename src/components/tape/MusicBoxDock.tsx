@@ -7,6 +7,10 @@
  *  - 角标自带播放/暂停小钮（播放期间常显，暂停时悬停才显），控制的就是那个共享音频元素，
  *    所以在胶片页按暂停、进 #tape 后机器会跟着停下来（走带跟随见 tapeApp.js 主循环）
  *  - 未装带（默认曲目缺失或加载失败）时：信息层提示"未装带 · 点开装一首"，播放钮禁用
+ *  - 按住磁带图标向上拖：铰链在图标中心的半圆（三扇区）跟着拖出展开，
+ *    指到哪个扇区哪个亮，松手即选中该播放模式（随机/单曲循环/列表顺序）；
+ *    松手滑回圆心附近则取消。键盘路径：磁带钮聚焦后 ↑ 弹出、←→ 换扇区、
+ *    Enter 选中、Esc 收回
  *  - 三个按钮的操作提示走 data-tip + CSS 伪元素的自定义气泡（按钮左侧浮出），
  *    不用浏览器原生 title——原生气泡的样式与档案终端风完全不搭
  *
@@ -22,7 +26,7 @@
  *  - #tape 整页里不渲染这个角标（由 main.tsx 的路由分支保证），页面里不必再判断
  */
 import { useEffect, useRef, useState } from 'react';
-import { tapeAudio, type TapeAudioState } from './tapeAudioStore';
+import { tapeAudio, type TapeAudioState, type PlayMode } from './tapeAudioStore';
 import { TIMING, consumeLanded, reduceMotion, rememberOrigin } from './tapeTransition';
 import './musicBox.css';
 
@@ -43,6 +47,38 @@ const DRAG_THRESHOLD = 26;
 /** 跟手位移的阻尼：bar 实际平移量 = 指针位移 × 阻尼（拖起来有"磁带在槽里滑动"的重量感） */
 const DRAG_DAMP = 0.45;
 
+/* ---- 模式半圆（按住磁带图标上滑）的几何参数 ----
+   铰链固定在磁带图标中心（即手势起点上方），半圆朝上张开。 */
+/** 扇形半径（px）：磁带钮中心距屏幕右缘约 83px，R=80 向右伸到头还留一点不出屏 */
+const FAN_R = 80;
+/** 选中半径：指针离铰链超过这段距离才算"指到了"某个扇区，之内视同滑回圆心（取消） */
+const FAN_SELECT_R = 40;
+/** 展开进度映射：r 从 18 到 62 映射 0→1，拖多远开多满，松手回弹 */
+const FAN_REVEAL_IN = 18;
+const FAN_REVEAL_OUT = 62;
+/** 磁带钮中心相对 bar 左缘的偏移（列表钮 35 + 磁带钮半宽 22）：
+    fan 的 CSS 定位与铰链换算都依赖这组写死的内边距，改按钮尺寸要同步 */
+const FAN_HINGE_X = 57;
+/** 扇区 → 模式：左=随机、顶=单曲循环、右=列表顺序（用户口述的三分顺序） */
+const MODE_ITEMS: Array<{ id: PlayMode; label: string }> = [
+  { id: 'random', label: '随机播放' },
+  { id: 'loop', label: '单曲循环' },
+  { id: 'seq', label: '顺序播放' },
+];
+/** 扇区圆周上的关键点（R=80，SVG 坐标系铰链在原点、y 向下） */
+const FAN_P = {
+  left: [-FAN_R, 0] as const,
+  upperLeft: [-FAN_R / 2, -FAN_R * 0.866] as const,
+  upperRight: [FAN_R / 2, -FAN_R * 0.866] as const,
+  right: [FAN_R, 0] as const,
+};
+/** 三条扇区路径：180°→240°→300°→360°，各占 60° */
+const FAN_WEDGES = [
+  `M0 0 L${FAN_P.left.join(' ')} A${FAN_R} ${FAN_R} 0 0 1 ${FAN_P.upperLeft.join(' ')} Z`,
+  `M0 0 L${FAN_P.upperLeft.join(' ')} A${FAN_R} ${FAN_R} 0 0 1 ${FAN_P.upperRight.join(' ')} Z`,
+  `M0 0 L${FAN_P.upperRight.join(' ')} A${FAN_R} ${FAN_R} 0 0 1 ${FAN_P.right.join(' ')} Z`,
+];
+
 export function MusicBoxDock() {
   // 音频单例的状态快照（订阅式：元素是共享的，状态可能来自任何页面）
   const [st, setSt] = useState<TapeAudioState>(tapeAudio.state);
@@ -59,16 +95,29 @@ export function MusicBoxDock() {
   const [listClosing, setListClosing] = useState(false);
   // 拖拽态：null = 未拖；dx 是指针位移，dir 是"已过阈值待切"的方向
   const [drag, setDrag] = useState<{ dx: number; dir: 'prev' | 'next' | null } | null>(null);
+  // 模式半圆：null = 收着；reveal 是跟手的展开进度（0~1），sector 是指针正指着的扇区，
+  // key = 经键盘 ↑ 打开（驻留、reveal 恒 1，走 CSS 过渡而非跟手）
+  const [fan, setFan] = useState<{ reveal: number; sector: number | null; key: boolean } | null>(null);
+  // 半圆收回动画的缓冲：真卸载前先挂 is-closing 播 180ms 缩回（与列表面板同套路）
+  const [fanClosing, setFanClosing] = useState(false);
   // 面板 credits 位的临时文案（切歌反馈 / 只有一首提示），空串 = 显示正常曲目信息
   const [hint, setHint] = useState('');
   // 角标本体（量来源矩形用：展开的起点与收闭的落点就是它）
   const barRef = useRef<HTMLDivElement>(null);
+  // 磁带钮（扇形铰链 = 它的中心，指针 → 扇区换算的基准）
+  const mainRef = useRef<HTMLButtonElement>(null);
   // 根元素（滚轮监听挂这里：指针悬停在角标任何部位都算"hover 中"）
   const rootRef = useRef<HTMLDivElement>(null);
   // 拖拽的命令式账本（pointermove 高频，走 ref 不走 state；state 只留渲染需要的 dx/dir）
-  const dragRef = useRef({ startX: 0, active: false, captured: false, dx: 0, movedAt: 0 });
+  // gesture 在"确认拖拽"那一刻定轴：h = 横向切歌，fan = 上滑模式半圆，此后不再改判
+  const dragRef = useRef({
+    startX: 0, startY: 0, active: false, captured: false,
+    gesture: 'none' as 'none' | 'h' | 'fan', dx: 0, movedAt: 0,
+    fromMain: false, sector: null as number | null,
+  });
   const volTimer = useRef(0);
   const hintTimer = useRef(0);
+  const fanTimer = useRef(0);
 
   useEffect(() => tapeAudio.subscribe(setSt), []);
 
@@ -142,6 +191,7 @@ export function MusicBoxDock() {
       el.removeEventListener('wheel', onWheel);
       clearTimeout(volTimer.current);
       clearTimeout(hintTimer.current);
+      clearTimeout(fanTimer.current);
     };
   }, []);
 
@@ -174,12 +224,27 @@ export function MusicBoxDock() {
   }, [listOpen]);
 
   /**
-   * 拖拽三件套：按下记账 → 越过 8px 抢占指针进入拖拽 → 松手按阈值切歌
+   * 选中扇区：切模式 + credits 位反馈；扇区为 null = 滑回圆心取消，只收回不办事
+   */
+  const selectFan = (sector: number | null) => {
+    setFan(null);
+    setFanClosing(true);
+    clearTimeout(fanTimer.current);
+    fanTimer.current = window.setTimeout(() => setFanClosing(false), 180);
+    if (sector == null) return;
+    const item = MODE_ITEMS[sector];
+    tapeAudio.setMode(item.id);
+    showHint(`已切换：${item.label}`);
+  };
+
+  /**
+   * 拖拽三件套：按下记账 → 越过 8px 抢占指针并定轴 → 松手按手势分支结算
    *
-   * 功能：向左拖（过阈值）上一首、向右拖下一首，循环；拖拽期间磁带图标跟手平移、
-   *      面板显示方向提示；拖过就必须切（抑制本次 click 误开磁带页）。
-   *      指针捕获在"确认拖拽"时才 set——捕获会让 click 落到 bar 上，
-   *      太早设会把播放钮的点击也吃掉。
+   * 功能：横向拖（过阈值）上一首/下一首；从磁带钮起手向上拖则进入模式半圆——
+   *      半圆展开进度跟手（拖多远开多满），指针指到的扇区高亮，松手即选中，
+   *      滑回圆心（r < 选中半径）松手则取消。拖过就必须结算（抑制本次 click
+   *      误开磁带页）。指针捕获在"确认拖拽"时才 set——捕获会让 click 落到
+   *      bar 上，太早设会把播放钮的点击也吃掉。
    *
    * 参数：React 指针事件（挂在 bar 上）
    * 返回值：void
@@ -187,16 +252,36 @@ export function MusicBoxDock() {
    */
   const onBarPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    dragRef.current = { startX: e.clientX, active: true, captured: false, dx: 0, movedAt: 0 };
+    dragRef.current = {
+      startX: e.clientX, startY: e.clientY, active: true, captured: false,
+      gesture: 'none', dx: 0, movedAt: dragRef.current.movedAt,
+      fromMain: !!(e.target as HTMLElement | null)?.closest?.('.music-dock-main'),
+      sector: null,
+    };
   };
   const onBarPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d.active) return;
     d.dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
     if (!d.captured) {
-      if (Math.abs(d.dx) <= 8) return;
+      if (Math.abs(d.dx) <= 8 && Math.abs(dy) <= 8) return;
       d.captured = true;
       try { barRef.current?.setPointerCapture(e.pointerId); } catch { /* 已释放：放弃本次拖拽 */ }
+      /* 轴向判定一次性定死：磁带钮起手 + 纵向占优且向上 = 模式半圆，否则横向切歌 */
+      d.gesture = d.fromMain && dy < 0 && Math.abs(dy) > Math.abs(d.dx) ? 'fan' : 'h';
+    }
+    if (d.gesture === 'fan') {
+      /* 指针 → 铰链坐标：铰链 = 磁带钮中心 × bar 顶缘；r 管展开与选中，角度管扇区 */
+      const bar = barRef.current?.getBoundingClientRect();
+      const main = mainRef.current?.getBoundingClientRect();
+      if (!bar || !main) return;
+      const r = Math.hypot(e.clientX - (main.left + main.width / 2), bar.top - e.clientY);
+      const deg = Math.atan2(bar.top - e.clientY, e.clientX - (main.left + main.width / 2)) * 180 / Math.PI;
+      d.sector = r >= FAN_SELECT_R && deg >= -2 && deg <= 182 ? (deg <= 60 ? 2 : deg <= 120 ? 1 : 0) : null;
+      const reveal = Math.min(1, Math.max(0, (r - FAN_REVEAL_IN) / (FAN_REVEAL_OUT - FAN_REVEAL_IN)));
+      setFan({ reveal, sector: d.sector, key: false });
+      return;
     }
     if (!d.captured) return;
     setDrag({ dx: d.dx, dir: Math.abs(d.dx) >= DRAG_THRESHOLD ? (d.dx < 0 ? 'prev' : 'next') : null });
@@ -205,6 +290,8 @@ export function MusicBoxDock() {
     const d = dragRef.current;
     if (!d.active) return;
     d.active = false;
+    const gesture = d.gesture;
+    d.gesture = 'none';
     const wasCaptured = d.captured;
     const dx = d.dx;
     d.captured = false;
@@ -213,10 +300,46 @@ export function MusicBoxDock() {
        300ms 抑制误吞，磁带页就再也点不开了（实测回归） */
     if (!wasCaptured) return;
     d.movedAt = Date.now();
+    if (gesture === 'fan') {
+      const sector = d.sector;
+      d.sector = null;
+      setDrag(null);
+      selectFan(sector);
+      return;
+    }
     setDrag(null);
     if (Math.abs(dx) < DRAG_THRESHOLD) return; // 拖了但不够深：回弹即可，什么都不切
     const ok = dx < 0 ? tapeAudio.prev() : tapeAudio.next();
     showHint(ok ? (dx < 0 ? '已切上一首 ◀' : '已切下一首 ▶') : '只有一首 · 去磁带页装几首');
+  };
+
+  /**
+   * 键盘路径：磁带钮聚焦后 ↑ 弹出驻留的半圆（reveal 恒 1），←→ 换扇区，
+   * Enter/空格选中，Esc 收回——指针手势对键盘用户不可达，这是它的等价通道
+   */
+  const onMainKeyDown = (e: React.KeyboardEvent) => {
+    if (fan?.key) {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setFan({ ...fan, sector: fan.sector == null ? 1 : (fan.sector + 1) % 3 });
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setFan({ ...fan, sector: fan.sector == null ? 1 : (fan.sector + 2) % 3 });
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectFan(fan.sector);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        selectFan(null);
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      clearTimeout(fanTimer.current);
+      setFanClosing(false);
+      setFan({ reveal: 1, sector: MODE_ITEMS.findIndex((m) => m.id === st.mode), key: true });
+    }
   };
 
   /**
@@ -250,12 +373,12 @@ export function MusicBoxDock() {
   return (
     <div
       ref={rootRef}
-      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}${launching ? ' is-launching' : ''}${landing ? ' is-landing' : ''}${drag ? ' is-dragging' : ''}${listOpen && !listClosing ? ' is-list-open' : ''}`}
+      className={`music-dock${st.playing ? ' is-playing' : ''}${st.failed ? ' is-empty' : ''}${launching ? ' is-launching' : ''}${landing ? ' is-landing' : ''}${drag ? ' is-dragging' : ''}${fan ? ' is-fan' : ''}${listOpen && !listClosing ? ' is-list-open' : ''}`}
     >
       {/* 悬停浮出的信息层（列表打开时让位隐藏） */}
       <div className="music-dock-panel">
         <b className="music-dock-title">{st.title}</b>
-        <i className={`music-dock-credits${(drag?.dir || hint) ? ' is-note' : ''}`}>{panelCredits}</i>
+        <i aria-live="polite" className={`music-dock-credits${(drag?.dir || hint) ? ' is-note' : ''}`}>{panelCredits}</i>
         <span className="music-dock-time">
           {fmt(st.time)} <u>/</u> {st.duration > 0 ? fmt(st.duration) : '--:--'}
         </span>
@@ -315,12 +438,16 @@ export function MusicBoxDock() {
           </svg>
         </button>
 
-        {/* 磁带图标：点它进整页（拖拽松手后的 click 会被 movedAt 抑制） */}
+        {/* 磁带图标：点它进整页（拖拽松手后的 click 会被 movedAt 抑制）；
+            按住上滑 = 模式半圆（手势见 onBarPointer*），↑ 键 = 键盘等价路径 */}
         <button
           className="music-dock-main"
+          ref={mainRef}
           onClick={openTape}
+          onKeyDown={onMainKeyDown}
+          onBlur={() => { if (fan?.key) selectFan(null); }}
           aria-label="打开磁带机（音乐盒）"
-          data-tip="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
+          data-tip="打开磁带机 · 滚轮调音量 · 左右拖切歌 · 按住上滑选模式"
         >
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
             <rect x="1.4" y="4.4" width="21.2" height="15.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -354,6 +481,68 @@ export function MusicBoxDock() {
             </svg>
           )}
         </button>
+
+        {/* 模式半圆：铰链 = svg 原点 = 磁带钮中心 × bar 顶缘，三扇区各 60°
+            （左=随机 顶=单曲循环 右=顺序）。指针手势的展开进度 inline 直写 svg
+            （每帧跟手，不走 CSS 过渡）；键盘路径挂 .is-key 走过渡；收回挂
+            .is-closing 播缩回动画再卸载。选中的播报走 credits 的 aria-live。 */}
+        {(fan || fanClosing) && (
+          <div
+            className={`music-dock-fan${!fan && fanClosing ? ' is-closing' : ''}${fan?.key ? ' is-key' : ''}`}
+            style={{ left: FAN_HINGE_X }}
+            aria-hidden={!fan || fanClosing}
+          >
+            <svg
+              viewBox="-86 -86 172 172"
+              width="172"
+              height="172"
+              style={fan && !fanClosing && !fan.key ? { transform: `scale(${fan.reveal})`, opacity: fan.reveal } : undefined}
+            >
+              {FAN_WEDGES.map((d, i) => (
+                <path
+                  key={d}
+                  className={`music-dock-fan-w${st.mode === MODE_ITEMS[i].id ? ' is-active' : ''}${fan?.sector === i ? ' is-pick' : ''}`}
+                  d={d}
+                />
+              ))}
+              {MODE_ITEMS.map((m, i) => (
+                <g
+                  key={m.id}
+                  className={`music-dock-fan-g${st.mode === m.id ? ' is-active' : ''}${fan?.sector === i ? ' is-pick' : ''}`}
+                  transform={`translate(${[-45, 0, 45][i]} ${[-26, -52, -26][i]})`}
+                >
+                  {i === 0 && ( /* 随机：两条交叉声道 + 出线箭头 */
+                    <g className="music-dock-fan-i">
+                      <path d="M2.2 4.6h2.7l7.4 8.8h3.4" />
+                      <path d="M13.5 11.2l2.3 2.2-2.3 2.2" />
+                      <path d="M2.2 13.4h2.7l7.4-8.8h3.4" />
+                      <path d="M13.5 2.4l2.3 2.2-2.3 2.2" />
+                    </g>
+                  )}
+                  {i === 1 && ( /* 单曲循环：循环双弧（带箭头）+ 1 */
+                    <g className="music-dock-fan-i">
+                      <path d="M3.6 8.2A5.4 5.4 0 0 1 14.4 8.2" />
+                      <path d="M12.9 6.7l1.5 1.5-1.5 1.5" />
+                      <path d="M14.4 9.8A5.4 5.4 0 0 1 3.6 9.8" />
+                      <path d="M5.1 11.3L3.6 9.8l1.5-1.5" />
+                      <path d="M8.5 7.6l.9-.9v4.6" />
+                    </g>
+                  )}
+                  {i === 2 && ( /* 顺序播放：曲目行 + 向下接续箭头 */
+                    <g className="music-dock-fan-i">
+                      <path d="M2.8 4.8h8.6" />
+                      <path d="M2.8 9h5.4" />
+                      <path d="M2.8 13.2h8.6" />
+                      <path d="M15 5.6v6.8" />
+                      <path d="M13.1 10.5L15 12.4l1.9-1.9" />
+                    </g>
+                  )}
+                  <text className="music-dock-fan-t" x="0" y="21" textAnchor="middle">{m.label}</text>
+                </g>
+              ))}
+            </svg>
+          </div>
+        )}
       </div>
 
       {/* 细进度线：没有时长（未装带）时不显示 */}

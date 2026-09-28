@@ -43,7 +43,12 @@ export interface TapeAudioState {
   ready: boolean;
   /** 是否加载失败（文件缺失/无法解码） */
   failed: boolean;
+  /** 播放模式（角标半圆菜单选的；只驱动角标场景的自动接续，磁带页不受影响） */
+  mode: PlayMode;
 }
+
+/** 播放模式：随机 / 单曲循环 / 列表顺序（扇形菜单的三个扇区，顺序即此序） */
+export type PlayMode = 'random' | 'loop' | 'seq';
 
 /** 歌单里的一条曲目（ADD MUSIC 追加进来；blob 地址随会话失效） */
 export interface PlaylistTrack {
@@ -120,6 +125,20 @@ const DEFAULT_VOLUME = 0.10;
 const VOLUME_KEY = 'ohmtape.volume';
 /** 播放状态记忆键（设置记忆用的是 ohmtape.prefs，两者互不干扰） */
 const PLAY_KEY = 'ohmtape.play';
+/** 播放模式记忆键：角标半圆菜单选的模式，刷新后保留 */
+const MODE_KEY = 'ohmtape.mode';
+/** 全部合法模式（读记忆时校验用） */
+const PLAY_MODES: PlayMode[] = ['random', 'loop', 'seq'];
+
+/** 读记忆的播放模式（读不到/非法退回列表顺序——与历史行为一致） */
+function readSavedMode(): PlayMode {
+  try {
+    const m = localStorage.getItem(MODE_KEY) as PlayMode | null;
+    return m && PLAY_MODES.includes(m) ? m : 'seq';
+  } catch {
+    return 'seq';
+  }
+}
 
 /** 读记忆音量（0~1；读不到/非法退回默认 0.10） */
 function readSavedVolume(): number {
@@ -153,6 +172,7 @@ let state: TapeAudioState = {
   volume: element.volume,
   ready: false,
   failed: false,
+  mode: readSavedMode(),
 };
 const listeners = new Set<(s: TapeAudioState) => void>();
 /** 用户是否亲手按过播放/暂停：按过就不再让"自动续播"抢方向盘 */
@@ -320,12 +340,62 @@ function setVolume(v: number): void {
   emit();
 }
 
+/**
+ * 设播放模式（角标半圆菜单选）：记忆 + 广播
+ *
+ * 功能：只记意图不立刻动元素——本曲继续放完，"ended" 时才按新模式接续
+ *
+ * 参数：
+ *  - m {PlayMode} 目标模式
+ * 返回值：void
+ * 异常：无（localStorage 不可用时只是不记忆）
+ */
+function setMode(m: PlayMode): void {
+  state = { ...state, mode: m };
+  try { localStorage.setItem(MODE_KEY, m); } catch { /* 存储不可用 */ }
+  emit();
+}
+
+/** 从头重播当前曲目（单曲循环 / 只有一首时的自动接续） */
+function replay(): void {
+  try { element.currentTime = 0; } catch { /* 元数据未就绪：play() 自会从头起 */ }
+  void play();
+}
+
+/**
+ * 播完自动接续（仅角标场景；磁带页有自己的倒带重播逻辑，见 tapeApp.js）
+ *
+ * 功能：按当前模式接下一曲——单曲循环重播本曲；随机挑一首非当前曲目；
+ *      列表顺序进下一首（循环）。歌单只有一首时任何模式都重播。
+ *      磁带页判定用 hash：dock 只在非 #tape 页渲染（main.tsx 路由分支），
+ *      ended 那一刻 hash 就是场景的真值。
+ *
+ * 参数：无
+ * 返回值：void
+ * 异常：无
+ */
+function advanceByMode(): void {
+  if (playlist.length < 2 || state.mode === 'loop') { replay(); return; }
+  if (state.mode === 'random') {
+    let i = plIndex;
+    while (i === plIndex) i = Math.floor(Math.random() * playlist.length);
+    playIndex(i);
+    return;
+  }
+  playIndex(plIndex + 1);
+}
+
 /* ---- 元素事件：状态、进度、失败都在这里汇入单例 ---- */
 element.addEventListener('loadedmetadata', refresh);
 element.addEventListener('durationchange', refresh);
 element.addEventListener('play', refresh);
 element.addEventListener('pause', () => { refresh(); writeSaved(); });
-element.addEventListener('ended', () => { refresh(); writeSaved(); });
+element.addEventListener('ended', () => {
+  refresh();
+  writeSaved();
+  /* 角标场景（磁带页之外）按模式自动接续；磁带页由 tapeApp.js 的倒带重播接管 */
+  if (!location.hash.startsWith('#tape')) advanceByMode();
+});
 element.addEventListener('error', () => {
   state = { ...state, failed: true, ready: false };
   emit();
@@ -422,5 +492,6 @@ export const tapeAudio = {
   playIndex,
   addPlaylistTrack,
   setVolume,
+  setMode,
   suppressAutoplay,
 };

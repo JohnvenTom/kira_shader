@@ -420,6 +420,74 @@ body:has(.film-detail-overlay.visible) .music-dock {
   margin-bottom: -8px;
 }
 
+/* ---------- 模式半圆：按住磁带图标上滑拖出的径向菜单 ----------
+   铰链 = 磁带钮中心 × bar 顶缘：fan 以 bar 为定位基准（bar 已是 relative），
+   left 57px（FAN_HINGE_X）+ translateX(-50%) 把 svg 原点对准铰链，bottom 让
+   svg 几何中心（viewBox 对称，铰链在正中）落在 bar 顶缘上——下半圆是空占位。
+   pointer-events:none：径向菜单选中看的是松手位置，不是悬停命中。
+   指针手势的展开进度由 JS inline 直写 svg（每帧跟手）；键盘路径挂 .is-key
+   播展开动画；收回挂 .is-closing 播缩回动画再卸载。
+   扇区视觉与整套角标同语言：深色芯片底、发丝线描边；铜色留给当前模式
+   （is-active）与指针正指的扇区（is-pick）。 */
+.music-dock-fan {
+  position: absolute;
+  left: 57px;                    /* 由 TSX 的 FAN_HINGE_X inline 注入，此处仅兜底 */
+  bottom: calc(100% - 86px);     /* svg 半高 86：几何中心即铰链 */
+  width: 172px;
+  height: 172px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.music-dock-fan svg {
+  display: block;
+  overflow: visible;
+  transform-origin: 50% 50%;     /* 原点即铰链：scale 从铰链里长出来 */
+}
+.music-dock-fan.is-key svg {
+  animation: music-dock-fan-open 0.32s cubic-bezier(.19, 1, .22, 1) both;
+}
+@keyframes music-dock-fan-open {
+  from { transform: scale(0.55); opacity: 0; }
+}
+.music-dock-fan.is-closing svg {
+  animation: music-dock-fan-close 0.18s ease both;
+}
+@keyframes music-dock-fan-close {
+  to { transform: scale(0.55); opacity: 0; }
+}
+.music-dock-fan-w {
+  fill: rgba(10, 10, 10, 0.88);
+  stroke: rgba(252, 249, 243, 0.18);
+  stroke-width: 1;
+  transition: fill 0.18s ease, stroke 0.18s ease;
+}
+.music-dock-fan-w.is-active { stroke: rgba(208, 120, 58, 0.55); }
+.music-dock-fan-w.is-pick { fill: rgba(208, 120, 58, 0.16); stroke: rgba(208, 120, 58, 0.7); }
+.music-dock-fan-g {
+  color: rgba(252, 249, 243, 0.6);
+  transition: color 0.18s ease;
+}
+.music-dock-fan-g.is-active { color: #d0783a; }
+.music-dock-fan-g.is-pick { color: #fcf9f3; }
+.music-dock-fan-i path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.music-dock-fan-t {
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  fill: currentColor;
+}
+
+/* 模式半圆打开时悬停信息层让位（与列表打开同款处理，避免叠在一起） */
+.music-dock.is-fan .music-dock-panel {
+  display: none;
+}
+
 /* ---------- 窄屏：只留图标与播放钮，信息层靠悬停也没意义 ---------- */
 @media (max-width: 560px) {
   .music-dock { right: 14px; bottom: 14px; }
@@ -435,10 +503,12 @@ body:has(.film-detail-overlay.visible) .music-dock {
   .music-dock.is-landing .music-dock-bar { animation: none; }
   .music-dock-volbar b { transition: none; }
 }
-/* 减少动效补充：列表不展开动画、条目不滑入 */
+/* 减少动效补充：列表不展开动画、条目不滑入、模式半圆不播开合动画 */
 @media (prefers-reduced-motion: reduce) {
   .music-dock-playlist { animation: none; }
   .music-dock-playlist.is-closing { animation: none; }
   .music-dock-playlist-item { animation: none; opacity: 1; }
   .music-dock [data-tip]::after { transition: none; }
+  .music-dock-fan.is-key svg,
+  .music-dock-fan.is-closing svg { animation: none; }
 }
