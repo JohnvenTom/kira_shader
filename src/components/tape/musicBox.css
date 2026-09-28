@@ -245,23 +245,69 @@ body:has(.film-detail-overlay.visible) .music-dock {
   }
 }
 
-/* ---------- 细进度线 ---------- */
+/* ---------- 细进度线（可拖定位：拖动预览、松手提交） ----------
+   命中区 16px（发丝线只顶在上缘），margin-bottom:-15px 把布局占位抵回 1px，
+   角标整体位置一丝不动；触屏拖动 seek 需要 touch-action:none 挡住页面滚动 */
 .music-dock-prog {
+  position: relative;
   width: 100%;
   min-width: 44px;
+  height: 16px;
+  margin-bottom: -15px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+/* 轨道：上缘发丝线 */
+.music-dock-prog::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
   height: 1px;
   background: rgba(252, 249, 243, 0.14);
-  overflow: hidden;
+  transition: height 0.15s ease, background 0.15s ease;
 }
+/* 已播填充 */
 .music-dock-prog i {
-  display: block;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
   background: #d0783a;
   transform-origin: left center;
   transform: scaleX(0);
-  transition: transform 0.35s linear;
+  transition: transform 0.35s linear, height 0.15s ease;
 }
+/* 播放头：铜色小方块，悬停/拖动才亮（不在 i 里：会被 scaleX 压扁） */
+.music-dock-prog b {
+  position: absolute;
+  top: 1px;
+  width: 5px;
+  height: 5px;
+  background: #d0783a;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+/* 悬停 / 拖动中：线加粗到 3px、播放头亮出；拖动中摘掉填充的 scaleX 过渡，跟手 */
+.music-dock-prog:hover::before,
+.music-dock-prog.is-scrub::before {
+  height: 3px;
+}
+.music-dock-prog:hover i,
+.music-dock-prog.is-scrub i {
+  height: 3px;
+}
+.music-dock-prog:hover b,
+.music-dock-prog.is-scrub b {
+  opacity: 1;
+}
+.music-dock-prog.is-scrub i {
+  transition: height 0.15s ease;
+}
+.music-dock.is-empty .music-dock-prog { cursor: default; pointer-events: none; }
 .music-dock.is-empty .music-dock-prog i { background: rgba(252, 249, 243, 0.2); }
 
 /* ---------- 起飞与落地：一趟进出的两头 ----------

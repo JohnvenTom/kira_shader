@@ -4,6 +4,8 @@
  * 功能：
  *  - 常驻右下角的一枚磁带图标：点它打开磁带机整页（#tape）；播放时图标里的两只轮毂跟着转
  *  - 悬停浮出信息层：曲名 / 艺人 · 专辑 / 当前时间与总长，底部一条细进度线
+ *  - 进度线可拖定位（拖动预览、松手提交）：按下/拖动只动播放头与时间读数，
+ *    松手才真正写 currentTime；命中区比发丝线厚（16px），悬停/拖动时加粗亮播放头
  *  - 角标自带播放/暂停小钮（播放期间常显，暂停时悬停才显），控制的就是那个共享音频元素，
  *    所以在胶片页按暂停、进 #tape 后机器会跟着停下来（走带跟随见 tapeApp.js 主循环）
  *  - 未装带（默认曲目缺失或加载失败）时：信息层提示"未装带 · 点开装一首"，播放钮禁用
@@ -98,6 +100,9 @@ export function MusicBoxDock() {
   // 模式半圆：null = 收着；reveal 是跟手的展开进度（0~1），sector 是指针正指着的扇区，
   // key = 经键盘 ↑ 打开（驻留、reveal 恒 1，走 CSS 过渡而非跟手）
   const [fan, setFan] = useState<{ reveal: number; sector: number | null; key: boolean } | null>(null);
+  // 进度线拖动中的预览位置（0~1 比例）：null = 没在拖，显示值回归真实播放进度。
+  // 预览不碰音频元素，松手才 tapeAudio.seek 提交
+  const [scrub, setScrub] = useState<number | null>(null);
   // 半圆收回动画的缓冲：真卸载前先挂 is-closing 播 180ms 缩回（与列表面板同套路）
   const [fanClosing, setFanClosing] = useState(false);
   // 面板 credits 位的临时文案（切歌反馈 / 只有一首提示），空串 = 显示正常曲目信息
@@ -314,6 +319,39 @@ export function MusicBoxDock() {
   };
 
   /**
+   * 进度线 seek 三件套：按下预览 → 拖动跟手 → 松手提交
+   *
+   * 功能：拖动预览、松手提交——按下/拖动只更新 scrub（播放头与面板时间读数
+   *       跟着指针走，音频元素不动），松手才把比例换算成秒一次性 tapeAudio.seek。
+   *       按下即 setPointerCapture，拖出线外也不断流；比例按命中区矩形归一
+   *       并 clamp 到 0~1。没有时长（未装带）时按下直接忽略。
+   *
+   * 参数：React 指针事件（挂在进度线命中区上）
+   * 返回值：void
+   * 异常：无（seek 内部对元数据未就绪已静默降级）
+   */
+  const progRatio = (e: React.PointerEvent<HTMLDivElement>): number => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  };
+  const onProgPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || st.duration <= 0) return;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 已释放：仍按松手坐标提交 */ }
+    setScrub(progRatio(e));
+  };
+  const onProgPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (scrub == null) return;
+    setScrub(progRatio(e));
+  };
+  const onProgPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (scrub == null) return;
+    const r = progRatio(e);
+    setScrub(null);   // 先清预览再 seek：seek 的广播同批把 time 同步到提交值，播放头不会闪回旧位
+    tapeAudio.seek(r * st.duration);
+  };
+
+  /**
    * 键盘路径：磁带钮聚焦后 ↑ 弹出驻留的半圆（reveal 恒 1），←→ 换扇区，
    * Enter/空格选中，Esc 收回——指针手势对键盘用户不可达，这是它的等价通道
    */
@@ -364,6 +402,8 @@ export function MusicBoxDock() {
 
   const credits = [st.artist, st.album].filter(Boolean).join(' · ');
   const progress = st.duration > 0 ? Math.min(1, st.time / st.duration) : 0;
+  /* 进度线显示值：拖动预览优先（scrub 只在有时长时才会被置起），否则真实播放进度 */
+  const shownProgress = scrub != null ? scrub : progress;
   /* 面板 credits 行的文案优先级：拖拽方向提示 > 临时反馈 > 未装带 > 正常曲目信息 */
   const panelCredits =
     drag?.dir === 'prev' ? '← 上一首'
@@ -380,7 +420,7 @@ export function MusicBoxDock() {
         <b className="music-dock-title">{st.title}</b>
         <i aria-live="polite" className={`music-dock-credits${(drag?.dir || hint) ? ' is-note' : ''}`}>{panelCredits}</i>
         <span className="music-dock-time">
-          {fmt(st.time)} <u>/</u> {st.duration > 0 ? fmt(st.duration) : '--:--'}
+          {fmt(scrub != null && st.duration > 0 ? scrub * st.duration : st.time)} <u>/</u> {st.duration > 0 ? fmt(st.duration) : '--:--'}
         </span>
       </div>
 
@@ -549,9 +589,19 @@ export function MusicBoxDock() {
         )}
       </div>
 
-      {/* 细进度线：没有时长（未装带）时不显示 */}
-      <div className="music-dock-prog" aria-hidden="true">
-        <i style={{ transform: `scaleX(${progress})` }} />
+      {/* 细进度线（可拖定位）：i = 已播填充（scaleX），b = 播放头小方块（悬停/拖动亮出）。
+          拖动预览、松手提交（手势见上方 onProgPointer*）；纯指针交互，键盘路径不加，
+          维持 aria-hidden。没有时长（未装带）时 onProgPointerDown 直接忽略 */}
+      <div
+        className={`music-dock-prog${scrub != null ? ' is-scrub' : ''}`}
+        aria-hidden="true"
+        onPointerDown={onProgPointerDown}
+        onPointerMove={onProgPointerMove}
+        onPointerUp={onProgPointerUp}
+        onPointerCancel={onProgPointerUp}
+      >
+        <i style={{ transform: `scaleX(${shownProgress})` }} />
+        <b style={{ left: `${shownProgress * 100}%` }} />
       </div>
 
       {/* 音量气泡由命令式 effect 挂载（见上方 effect 注释），不在 JSX 里 */}

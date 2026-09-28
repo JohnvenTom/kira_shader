@@ -365,6 +365,31 @@ function setMode(m: PlayMode): void {
   emit();
 }
 
+/**
+ * 手动定位播放进度（角标进度线松手提交用）
+ *
+ * 功能：把当前曲目跳到 t 秒——clamp 到 [0, duration)，时长未知（未装带/
+ *      元数据未就绪）时静默不动。写完同步快照里的 time 并广播，进度线与
+ *      面板读数立即跟上；顺带落盘，续播记忆的是新位置（timeupdate 的
+ *      4 秒节流不用等）
+ *
+ * 参数：
+ *  - t {number} 目标秒数（越界自动收敛到有效区间）
+ *
+ * 返回值：void
+ *
+ * 异常：无（currentTime 赋值在元数据未就绪时会抛，吞掉即可）
+ */
+function seek(t: number): void {
+  const dur = Number.isFinite(element.duration) ? element.duration : 0;
+  if (dur <= 0) return;
+  const time = Math.min(dur - 0.01, Math.max(0, t));
+  try { element.currentTime = time; } catch { /* 元数据未就绪：放弃本次定位 */ }
+  state = { ...state, time };
+  emit();
+  writeSaved();
+}
+
 /** 从头重播当前曲目（单曲循环 / 只有一首时的自动接续） */
 function replay(): void {
   try { element.currentTime = 0; } catch { /* 元数据未就绪：play() 自会从头起 */ }
@@ -490,6 +515,7 @@ export const tapeAudio = {
   play,
   pause,
   toggle,
+  seek,
   next,
   prev,
   playIndex,
