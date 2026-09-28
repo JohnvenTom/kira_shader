@@ -511,33 +511,37 @@ export function MusicBoxDock() {
                   className={`music-dock-fan-g${st.mode === m.id ? ' is-active' : ''}${fan?.sector === i ? ' is-pick' : ''}`}
                   transform={`translate(${[-45, 0, 45][i]} ${[-26, -52, -26][i]})`}
                 >
-                  {i === 0 && ( /* 随机：两条交叉声道 + 出线箭头 */
-                    <g className="music-dock-fan-i">
-                      <path d="M2.2 4.6h2.7l7.4 8.8h3.4" />
-                      <path d="M13.5 11.2l2.3 2.2-2.3 2.2" />
-                      <path d="M2.2 13.4h2.7l7.4-8.8h3.4" />
-                      <path d="M13.5 2.4l2.3 2.2-2.3 2.2" />
-                    </g>
-                  )}
-                  {i === 1 && ( /* 单曲循环：循环双弧（带箭头）+ 1 */
-                    <g className="music-dock-fan-i">
-                      <path d="M3.6 8.2A5.4 5.4 0 0 1 14.4 8.2" />
-                      <path d="M12.9 6.7l1.5 1.5-1.5 1.5" />
-                      <path d="M14.4 9.8A5.4 5.4 0 0 1 3.6 9.8" />
-                      <path d="M5.1 11.3L3.6 9.8l1.5-1.5" />
-                      <path d="M8.5 7.6l.9-.9v4.6" />
-                    </g>
-                  )}
-                  {i === 2 && ( /* 顺序播放：曲目行 + 向下接续箭头 */
-                    <g className="music-dock-fan-i">
-                      <path d="M2.8 4.8h8.6" />
-                      <path d="M2.8 9h5.4" />
-                      <path d="M2.8 13.2h8.6" />
-                      <path d="M15 5.6v6.8" />
-                      <path d="M13.1 10.5L15 12.4l1.9-1.9" />
-                    </g>
-                  )}
-                  <text className="music-dock-fan-t" x="0" y="21" textAnchor="middle">{m.label}</text>
+                  {/* 图标一律以 (0,0) 为几何中心绘制（原点偏移版改过来后扇区里才居中）；
+                      整块再上提 6px，让"图标+文字"的块中心对准扇区质心（r≈52） */}
+                  <g className="music-dock-fan-i" transform="translate(0 -6)">
+                    {i === 0 && ( /* 随机：两条交叉声道 + 出线箭头 */
+                      <>
+                        <path d="M-6.8 -4.4h2.7l7.4 8.8h3.4" />
+                        <path d="M4.5 2.2l2.3 2.2-2.3 2.2" />
+                        <path d="M-6.8 4.4h2.7l7.4-8.8h3.4" />
+                        <path d="M4.5 -6.6l2.3 2.2-2.3 2.2" />
+                      </>
+                    )}
+                    {i === 1 && ( /* 单曲循环：循环双弧（带箭头）+ 1 */
+                      <>
+                        <path d="M-5.4 -0.8A5.4 5.4 0 0 1 5.4 -0.8" />
+                        <path d="M3.9 -2.3l1.5 1.5-1.5 1.5" />
+                        <path d="M5.4 0.8A5.4 5.4 0 0 1 -5.4 0.8" />
+                        <path d="M-3.9 2.3L-5.4 0.8l1.5-1.5" />
+                        <path d="M-0.5 -1.4l.9-.9v4.6" />
+                      </>
+                    )}
+                    {i === 2 && ( /* 顺序播放：曲目行 + 向下接续箭头 */
+                      <>
+                        <path d="M-7 -4.2h8.6" />
+                        <path d="M-7 0h5.4" />
+                        <path d="M-7 4.2h8.6" />
+                        <path d="M5.2 -3.4v6.8" />
+                        <path d="M3.3 1.5L5.2 3.4 7.1 1.5" />
+                      </>
+                    )}
+                  </g>
+                  <text className="music-dock-fan-t" x="-0.12em" y="14" textAnchor="middle">{m.label}</text>
                 </g>
               ))}
             </svg>

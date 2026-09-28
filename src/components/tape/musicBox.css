@@ -478,8 +478,10 @@ body:has(.film-detail-overlay.visible) .music-dock {
 }
 .music-dock-fan-t {
   font-family: var(--font-sans);
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.24em;         /* 拉开的中文四字标签：档案微缩标签的排布感 */
+  opacity: 0.82;
   fill: currentColor;
 }
 

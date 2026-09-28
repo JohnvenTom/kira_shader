@@ -296,17 +296,26 @@ function switchTo(i: number): void {
   if (wasPlaying) void play();
 }
 
-/** 下一首（循环）；歌单不足两首时返回 false（dock 用它提示"只有一首"） */
+/** 随机挑一首非当前曲目（不足两首时退回当前序号，切了等于没切） */
+function randomIndex(): number {
+  if (playlist.length < 2) return plIndex;
+  let i = plIndex;
+  while (i === plIndex) i = Math.floor(Math.random() * playlist.length);
+  return i;
+}
+
+/** 下一首（循环）；歌单不足两首时返回 false（dock 用它提示"只有一首"）。
+    随机模式下左右拖切歌也走随机（模式对拖拽同样生效，只认用户选的模式） */
 function next(): boolean {
   if (playlist.length < 2) return false;
-  switchTo(plIndex + 1);
+  switchTo(state.mode === 'random' ? randomIndex() : plIndex + 1);
   return true;
 }
 
-/** 上一首（循环）；歌单不足两首时返回 false */
+/** 上一首（循环）；歌单不足两首时返回 false。随机模式下与 next 同义 */
 function prev(): boolean {
   if (playlist.length < 2) return false;
-  switchTo(plIndex - 1);
+  switchTo(state.mode === 'random' ? randomIndex() : plIndex - 1);
   return true;
 }
 
@@ -376,13 +385,7 @@ function replay(): void {
  */
 function advanceByMode(): void {
   if (playlist.length < 2 || state.mode === 'loop') { replay(); return; }
-  if (state.mode === 'random') {
-    let i = plIndex;
-    while (i === plIndex) i = Math.floor(Math.random() * playlist.length);
-    playIndex(i);
-    return;
-  }
-  playIndex(plIndex + 1);
+  playIndex(state.mode === 'random' ? randomIndex() : plIndex + 1);
 }
 
 /* ---- 元素事件：状态、进度、失败都在这里汇入单例 ---- */
