@@ -234,35 +234,24 @@ body:has(.film-detail-overlay.visible) .music-dock {
   to { transform: none; }
 }
 
-/* ---------- 播放列表：三横线按钮 + 向上展开的曲目面板 ----------
-   列表按钮贴在磁带行左侧、同一块深色芯片上（border-right 让位、
-   margin-right -1px 使两框交界成单线）；面板从 barrow 上方展开。 */
-.music-dock-barrow {
-  display: flex;
-  align-items: stretch;
-}
+/* ---------- 播放列表按钮：bar 内的第一个子按钮（与磁带/播放钮同壳） ----------
+   拖拽切歌的跟手平移作用在整条 bar 上，三个按钮一起动。
+   三横线 ↔ 变叉：上线右旋下移、中线隐、下线左旋上移。 */
 .music-dock-list {
   appearance: none;
-  background: rgba(10, 10, 10, 0.72);
-  border: 1px solid rgba(252, 249, 243, 0.16);
-  border-right: none;
-  margin-right: -1px;
-  backdrop-filter: blur(9px);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid rgba(252, 249, 243, 0.14);
   color: rgba(252, 249, 243, 0.7);
-  padding: 0 9px;
+  padding: 0 10px;
   cursor: pointer;
   display: flex;
   align-items: center;
-  transition: color 0.25s ease, border-color 0.3s ease;
-}
-.music-dock:hover .music-dock-list {
-  border-color: rgba(208, 120, 58, 0.55);
-  border-right-color: rgba(208, 120, 58, 0.55);
+  transition: color 0.25s ease;
 }
 .music-dock-list:hover { color: #d0783a; }
 .music-dock-list.is-open { color: #d0783a; }
 
-/* 三横线 ↔ 变叉：上线右旋下移、中线隐、下线左旋上移 */
 .music-dock-list line {
   transition: transform 0.25s cubic-bezier(.4, 0, .2, 1), opacity 0.18s ease;
   transform-box: view-box;

@@ -287,8 +287,18 @@ export function MusicBoxDock() {
         </div>
       )}
 
-      {/* 列表按钮 + 磁带图标行：列表按钮贴在磁带行左侧 */}
-      <div className="music-dock-barrow">
+      {/* 磁带行：列表按钮 / 磁带图标 / 播放钮三个按钮同壳——
+          左右拖切歌的跟手平移作用在整条 bar 上，三个按钮一起动 */}
+      <div
+        className="music-dock-bar"
+        ref={barRef}
+        style={drag ? { transform: `translateX(${drag.dx * DRAG_DAMP}px)` } : undefined}
+        onPointerDown={onBarPointerDown}
+        onPointerMove={onBarPointerMove}
+        onPointerUp={onBarPointerEnd}
+        onPointerCancel={onBarPointerEnd}
+      >
+        {/* 播放列表：三横线 ↔ 叉 */}
         <button
           className={`music-dock-list${listOpen && !listClosing ? ' is-open' : ''}`}
           onClick={() => (listOpen || listClosing ? closeList() : setListOpen(true))}
@@ -296,7 +306,6 @@ export function MusicBoxDock() {
           aria-expanded={listOpen}
           title={listOpen ? '关闭播放列表' : '播放列表'}
         >
-          {/* 三横线 ↔ 叉：三条线段morph（上线右旋下移、中线隐、下线左旋上移） */}
           <svg viewBox="0 0 18 18" width="15" height="15" aria-hidden="true">
             <line className="music-dock-list-l1" x1="3" y1="5" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             <line className="music-dock-list-l2" x1="3" y1="9" x2="15" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -304,55 +313,45 @@ export function MusicBoxDock() {
           </svg>
         </button>
 
-        <div
-          className="music-dock-bar"
-          ref={barRef}
-          style={drag ? { transform: `translateX(${drag.dx * DRAG_DAMP}px)` } : undefined}
-          onPointerDown={onBarPointerDown}
-          onPointerMove={onBarPointerMove}
-          onPointerUp={onBarPointerEnd}
-          onPointerCancel={onBarPointerEnd}
+        {/* 磁带图标：点它进整页（拖拽松手后的 click 会被 movedAt 抑制） */}
+        <button
+          className="music-dock-main"
+          onClick={openTape}
+          aria-label="打开磁带机（音乐盒）"
+          title="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
         >
-          {/* 磁带图标：点它进整页（拖拽松手后的 click 会被 movedAt 抑制） */}
-          <button
-            className="music-dock-main"
-            onClick={openTape}
-            aria-label="打开磁带机（音乐盒）"
-            title="打开磁带机 · 悬停滚轮调音量 · 左右拖切歌"
-          >
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-              <rect x="1.4" y="4.4" width="21.2" height="15.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
-              <path d="M1.4 16.4h21.2" stroke="currentColor" strokeWidth="1.2" />
-              <g className="music-dock-reel">
-                <circle cx="8.1" cy="11.2" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.1" />
-                <path d="M8.1 8.5v5.4" stroke="currentColor" strokeWidth="1.1" />
-              </g>
-              <g className="music-dock-reel music-dock-reel--b">
-                <circle cx="15.9" cy="11.2" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.1" />
-                <path d="M15.9 8.5v5.4" stroke="currentColor" strokeWidth="1.1" />
-              </g>
-            </svg>
-          </button>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+            <rect x="1.4" y="4.4" width="21.2" height="15.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M1.4 16.4h21.2" stroke="currentColor" strokeWidth="1.2" />
+            <g className="music-dock-reel">
+              <circle cx="8.1" cy="11.2" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.1" />
+              <path d="M8.1 8.5v5.4" stroke="currentColor" strokeWidth="1.1" />
+            </g>
+            <g className="music-dock-reel music-dock-reel--b">
+              <circle cx="15.9" cy="11.2" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.1" />
+              <path d="M15.9 8.5v5.4" stroke="currentColor" strokeWidth="1.1" />
+            </g>
+          </svg>
+        </button>
 
-          {/* 播放 / 暂停 */}
-          <button
-            className="music-dock-toggle"
-            onClick={(e) => { e.stopPropagation(); if (!st.failed) tapeAudio.toggle(); }}
-            disabled={st.failed}
-            aria-label={st.playing ? '暂停' : '播放'}
-            title={st.failed ? '未装带：先打开磁带机装一首' : (st.playing ? '暂停' : '播放')}
-          >
-            {st.playing ? (
-              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-                <path d="M5.3 2.8v10.4M10.7 2.8v10.4" stroke="currentColor" strokeWidth="1.6" fill="none" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-                <path d="M4.8 2.6 12.9 8l-8.1 5.4z" fill="currentColor" />
-              </svg>
-            )}
-          </button>
-        </div>
+        {/* 播放 / 暂停 */}
+        <button
+          className="music-dock-toggle"
+          onClick={(e) => { e.stopPropagation(); if (!st.failed) tapeAudio.toggle(); }}
+          disabled={st.failed}
+          aria-label={st.playing ? '暂停' : '播放'}
+          title={st.failed ? '未装带：先打开磁带机装一首' : (st.playing ? '暂停' : '播放')}
+        >
+          {st.playing ? (
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M5.3 2.8v10.4M10.7 2.8v10.4" stroke="currentColor" strokeWidth="1.6" fill="none" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4.8 2.6 12.9 8l-8.1 5.4z" fill="currentColor" />
+            </svg>
+          )}
+        </button>
       </div>
 
       {/* 细进度线：没有时长（未装带）时不显示 */}
