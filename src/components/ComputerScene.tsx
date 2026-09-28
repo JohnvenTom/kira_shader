@@ -274,144 +274,201 @@ function SmokeLayer({
 }
 
 /**
- * 创建柔光圆点纹理（程序化生成）
+ * 自发光尘埃粒子（Points 批渲染 + 自定义着色器）
  *
- * 功能：在内存中用 canvas 画一个径向渐变白点，作为自发光粒子的贴图
- *       中心全白 → 边缘透明，配合 AdditiveBlending 与 toneMapped=false 可呈现真实"发光"感
+ * 功能：单次绘制调用渲染全部尘埃。每颗粒子的运动/生灭/汇聚全部在顶点着色器内
+ *      由（种子属性, 时间, 滚动进度）计算——位置是状态的纯函数，滚动回退时
+ *      粒子会自然逆向散开，不存在"聚过去回不来"的穿帮。
  *
- * 参数：无
+ * 观感设计（对应视觉诊断的三个短板）：
+ *  - 幂律分布：pow(seed, 2.6) 决定尺寸——少数亮大颗 + 多数暗细尘，自然的尘埃层次
+ *  - 双频漂移：每轴两个不可通约频率的正弦叠加，消除单频正弦的"荡秋千"循环感
+ *  - 生灭循环：每颗粒子按 5~11s 的独立生命周期淡入→亮→淡出（透明度包络），
+ *    粒子永远在轮替，没有"永远在场的同一批"
  *
- * 返回值：THREE.CanvasTexture，可直接用作 spriteMaterial.map
+ * 场景联动（"活粒子"的两条通道）：
+ *  - 屏幕色温：粒子颜色实时混入屏幕 GIF 采样色（与 RectAreaLight/焦散灯同一数据源），
+ *    红屏时尘埃泛红——尘埃属于这个场景，而不是贴上去的贴片
+ *  - 滚动汇聚：滚动推进时粒子向屏幕中心收拢、亮度抬升，穿屏前一刻尘埃
+ *    密集汇聚在屏幕前（无旋转，纯收拢——旋转版实测读感偏"搅拌"已移除）
  *
- * 异常：无
- *
- * 注意事项：
- *  - 仅生成一次（useMemo 缓存），所有粒子共用同一张纹理
- *  - 使用 SRGBColorSpace 保证颜色不偏
+ * 可访问性：prefers-reduced-motion 时冻结自治运动（漂移/生灭/闪烁），
+ *          仅保留滚动驱动的汇聚（用户主动输入，非自主动画）
  */
-function createGlowTexture(): THREE.CanvasTexture {
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const gradient = ctx.createRadialGradient(
-    size / 2, size / 2, 0,
-    size / 2, size / 2, size / 2
-  );
-  gradient.addColorStop(0, 'rgba(255,255,255,1)');
-  gradient.addColorStop(0.2, 'rgba(255,255,255,0.85)');
-  gradient.addColorStop(0.5, 'rgba(255,255,255,0.3)');
-  gradient.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+const GLOW_VERT = /* glsl */ `
+  uniform float uWarp;        // 加速变形时间（滚动越快流速越快，JS 侧累积避免跳变）
+  uniform float uScroll;      // 平滑滚动进度 0~1
+  uniform float uScale;       // 点尺寸换算系数（视口高 × DPR × 投影系数）
+  uniform float uSize;        // 基础粒子尺寸（世界单位）
+  uniform float uOpacity;     // 峰值不透明度
+  uniform vec3 uBaseColor;    // 基础暖色
+  uniform vec3 uScreenColor;  // 屏幕 GIF 采样色（场景联动）
+  uniform vec3 uSwirlCenter;  // 汇聚中心（屏幕中心，本粒子系局部坐标）
+  attribute vec4 aRand;       // 种子：x 尺寸幂律 y 冷暖混色 z 相位 w 生命周期
+  varying vec3 vColor;
+  varying float vAlpha;
+
+  void main() {
+    float rSize = aRand.x, rMix = aRand.y, rPhase = aRand.z, rLife = aRand.w;
+
+    // --- 双频漂移（两组不可通约频率，循环感消除） ---
+    float f1 = 0.8 + rPhase * 0.5;
+    float f2 = 1.1 + rLife * 0.7;
+    float ph = rPhase * 6.2831;
+    vec3 drift = vec3(
+      sin(uWarp * 0.55 * f1 + ph) + 0.5 * sin(uWarp * 1.7 * f2 + ph * 1.7),
+      sin(uWarp * 0.42 * f2 + ph * 1.3) + 0.5 * sin(uWarp * 1.3 * f1 + ph * 2.1),
+      cos(uWarp * 0.48 * f1 + ph * 0.7) + 0.5 * cos(uWarp * 1.5 * f2 + ph * 1.1)
+    ) * 0.11;
+    vec3 pos = position + drift;
+
+    // --- 滚动汇聚：推进时向屏幕中心收缩（无旋转，纯收拢） ---
+    // 位置是 (seed, time, scroll) 的纯函数——回滚自然逆向散开
+    float conv = smoothstep(0.06, 0.95, uScroll);
+    if (conv > 0.001) {
+      pos = uSwirlCenter + (pos - uSwirlCenter) * (1.0 - conv * 0.88);
+    }
+
+    // --- 生灭循环：5~11s 独立生命周期，两端 18% 区间淡入淡出 ---
+    float lifetime = 5.0 + rLife * 6.0;
+    float life = fract(uWarp / lifetime + rPhase);
+    float env = smoothstep(0.0, 0.18, life) * (1.0 - smoothstep(0.82, 1.0, life));
+
+    // --- 闪烁（低频呼吸，与生灭包络相乘）与汇聚亮度抬升 ---
+    float flicker = 0.72 + 0.28 * sin(uWarp * (1.4 + rMix * 1.8) + ph * 2.7);
+    vAlpha = env * flicker * uOpacity * (1.0 + conv * 0.9);
+
+    // --- 颜色：基础暖金 → 冷白微混（层次），再混入屏幕采样色（场景联动） ---
+    vec3 cool = vec3(0.78, 0.83, 0.92);
+    vColor = mix(uBaseColor, cool, rMix * 0.55);
+    vColor = mix(vColor, uScreenColor, 0.35);
+
+    // --- 尺寸：幂律分布 + 生命中期微胀 + 吞噬微增，透视衰减 ---
+    float sizeRand = 0.35 + pow(rSize, 2.6) * 1.9;
+    float size = uSize * sizeRand * (0.85 + env * 0.3) * (1.0 + conv * 0.35);
+
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    gl_PointSize = max(1.0, size * uScale / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const GLOW_FRAG = /* glsl */ `
+  varying vec3 vColor;
+  varying float vAlpha;
+
+  void main() {
+    // 亮核 + 光晕双层衰减（钢琴页微尘同款形态：锐利亮核 + 柔和弥散）
+    float d = length(gl_PointCoord - 0.5) * 2.0;
+    float core = smoothstep(0.42, 0.0, d);
+    float halo = pow(max(0.0, 1.0 - d), 2.6);
+    float a = (core * 0.9 + halo * 0.5) * vAlpha;
+    if (a < 0.003) discard;
+    gl_FragColor = vec4(vColor * (0.8 + core * 0.55), a);
+    #include <colorspace_fragment>
+  }
+`;
 
 interface GlowParticlesProps {
-  /** 粒子数量 */
+  /** 粒子数量（Points 批渲染，几百颗也是一次绘制调用） */
   count?: number;
   /** 粒子在 XYZ 上的扩散范围（世界单位） */
   areaSize?: number;
-  /** 单个粒子基础尺寸（世界单位） */
+  /** 单个粒子基础尺寸（世界单位，实际按幂律 0.35~2.25 倍分布） */
   particleSize?: number;
-  /** 粒子颜色（建议暖色，配合场景暖光更出彩） */
+  /** 基础暖色（建议暖金，配合场景暖光） */
   color?: string;
-  /** 基础不透明度（0~1），实际还会随时间呼吸闪烁 */
+  /** 生命周期内的峰值不透明度 */
   opacity?: number;
+  /** 屏幕采样色输出（ScreenDisplay 每帧写入），粒子色温联动用 */
+  screenColorRef?: React.MutableRefObject<THREE.Color>;
+  /** 平滑滚动进度（0~1），吞噬联动的输入 */
+  scrollRef?: React.MutableRefObject<number>;
 }
 
-/**
- * 自发光粒子层
- *
- * 功能：在自身 group 原点处生成一组始终朝向相机的小光点 sprite，
- *      通过 toneMapped=false + AdditiveBlending 让粒子在暗场景中呈现真实发光感，
- *      每个粒子以低频正弦做小范围、慢速随机飘动，并伴随轻微闪烁。
- *
- * 参数：见 GlowParticlesProps
- *
- * 返回值：React.ReactElement（一个包含若干 <sprite> 的 <group>）
- *
- * 异常：无
- *
- * 注意事项：
- *  - toneMapped=false 是"发光感"的关键：颜色不会被 ACES tone mapping 压暗
- *  - 漂移速度与幅度都压得很小，营造"悬浮尘埃/萤火"的静态氛围
- *  - depthWrite=false 避免小粒子互相遮挡写入深度缓冲
- *  - group 位置由父组件（ComputerScene）在 useFrame 中动态跟随电脑
- */
 function GlowParticles({
-  count = 40,
-  areaSize = 1.6,
+  count = 220,
+  areaSize = 2.4,
   particleSize = 0.14,
   color = '#ffd9a0',
   opacity = 0.95,
+  screenColorRef,
+  scrollRef,
 }: GlowParticlesProps) {
-  // 所有粒子共用一张柔光纹理
-  const texture = useMemo(createGlowTexture, []);
+  const pointsRef = useRef<THREE.Points>(null);
+  // 加速变形时间：JS 侧累积（dt × (1 + 滚动×2.4)），滚动加速平滑无跳变
+  const warpRef = useRef(0);
+  // prefers-reduced-motion：冻结自治运动（漂移/生灭/闪烁），只留滚动汇聚
+  const reducedMotion = useMemo(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches, []
+  );
 
-  // 缓存每个粒子的初始参数，避免每帧重新随机
-  const particles = useMemo(() => {
-    return Array.from({ length: count }, () => ({
-      offsetX: (Math.random() - 0.5) * areaSize,
-      offsetY: (Math.random() - 0.5) * areaSize * 0.8,
-      offsetZ: (Math.random() - 0.5) * areaSize,
-      // 漂移速度：压低，让粒子慢速漂浮
-      driftSpeed: 0.06 + Math.random() * 0.1,
-      // 漂移幅度：压小，限制在小范围内涌动
-      driftAmp: 0.06 + Math.random() * 0.14,
-      // 闪烁相位与频率
-      flickerPhase: Math.random() * Math.PI * 2,
-      flickerSpeed: 1.2 + Math.random() * 1.5,
-      // 个体缩放
-      scale: 0.5 + Math.random() * 0.9,
-    }));
+  const material = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader: GLOW_VERT,
+      fragmentShader: GLOW_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uWarp: { value: 0 },
+        uScroll: { value: 0 },
+        uScale: { value: 600 },
+        uSize: { value: particleSize },
+        uBaseColor: { value: new THREE.Color(color) },
+        uScreenColor: { value: new THREE.Color('#ffffff') },
+        uSwirlCenter: { value: new THREE.Vector3() },
+        uOpacity: { value: opacity },
+      },
+    });
+  }, []);   // 故意空依赖：uniform 每帧直写，不随 props 重建（与场景其他组件同策略）
+
+  // 静态几何：初始盒内位置 + 每颗粒子的 4 维随机种子，一次性生成
+  const geometry = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const rands = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * areaSize;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * areaSize * 0.8;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * areaSize;
+      rands[i * 4] = Math.random();
+      rands[i * 4 + 1] = Math.random();
+      rands[i * 4 + 2] = Math.random();
+      rands[i * 4 + 3] = Math.random();
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('aRand', new THREE.BufferAttribute(rands, 4));
+    return geo;
   }, [count, areaSize]);
 
-  const spritesRef = useRef<THREE.Sprite[]>([]);
+  // 卸载时释放 GPU 资源
+  useEffect(() => () => { geometry.dispose(); material.dispose(); }, [geometry, material]);
 
-  useFrame((state) => {
-    const time = state.clock.elapsedTime;
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
-      const sprite = spritesRef.current[i];
-      if (!sprite) continue;
-      const t = time * p.driftSpeed;
-      // 三轴低频正弦，频率错开避免循环感；幅度小，呈"悬浮"而非"飘移"
-      sprite.position.x = p.offsetX + Math.sin(t + p.flickerPhase) * p.driftAmp;
-      sprite.position.y = p.offsetY + Math.sin(t * 0.7 + p.flickerPhase * 1.3) * p.driftAmp;
-      sprite.position.z = p.offsetZ + Math.cos(t * 0.9 + p.flickerPhase) * p.driftAmp;
-      // 轻微闪烁：0.5~1.0 之间呼吸，模拟尘埃/萤火忽明忽暗
-      const flicker = 0.5 + 0.5 * Math.sin(time * p.flickerSpeed + p.flickerPhase);
-      const mat = sprite.material as THREE.SpriteMaterial;
-      mat.opacity = opacity * flicker;
+  const swirlWorld = useMemo(() => new THREE.Vector3(), []);
+  const selfWorld = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame((state, dt) => {
+    const u = material.uniforms;
+    const scroll = scrollRef?.current ?? 0;
+    // 变形时间：滚动越深流速越快（吞噬的"卷入加速"感）；减少动效时冻结自治运动
+    warpRef.current += reducedMotion ? 0 : Math.min(dt, 0.05) * (1 + scroll * 2.4);
+    u.uWarp.value = warpRef.current;
+    u.uScroll.value = scroll;
+    // 点尺寸换算：视口高 × DPR × 0.5（透视除法前的标准换算）
+    u.uScale.value = state.size.height * state.viewport.dpr * 0.5;
+    // 屏幕采样色联动（同一数据源照亮着环境）
+    if (screenColorRef) u.uScreenColor.value.copy(screenColorRef.current);
+    // 汇聚中心 = 屏幕中心（世界）换算到粒子系局部（粒子系挂在电脑中心）
+    if (pointsRef.current) {
+      pointsRef.current.getWorldPosition(selfWorld);
+      swirlWorld.copy(SCREEN_CENTER).sub(selfWorld);
+      u.uSwirlCenter.value.copy(swirlWorld);
     }
   });
 
   return (
-    <group>
-      {particles.map((p, i) => (
-        <sprite
-          key={i}
-          ref={(el) => {
-            if (el) spritesRef.current[i] = el;
-          }}
-          scale={[particleSize * p.scale, particleSize * p.scale, 1]}
-        >
-          <spriteMaterial
-            map={texture}
-            color={color}
-            transparent
-            opacity={opacity}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-            toneMapped={false}
-          />
-        </sprite>
-      ))}
-    </group>
+    <points ref={pointsRef} geometry={geometry} material={material} frustumCulled={false} />
   );
 }
 
@@ -1570,14 +1627,17 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
         />
       </group>
 
-      {/* 自发光粒子：环绕电脑的发光尘埃，慢速小范围悬浮 + 轻微闪烁 */}
+      {/* 自发光尘埃（Points 批渲染着色器粒子）：幂律分布 + 双频漂移 + 生灭循环，
+          联动屏幕采样色（红屏泛红）与平滑滚动（推进时向屏幕收拢） */}
       <group ref={glowParticlesRef}>
         <GlowParticles
-          count={45}
-          areaSize={2.2}
+          count={220}
+          areaSize={2.4}
           particleSize={0.14}
           color="#ffd9a0"
           opacity={0.95}
+          screenColorRef={screenColorRef}
+          scrollRef={scrollSmoothedRef}
         />
       </group>
 

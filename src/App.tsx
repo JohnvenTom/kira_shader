@@ -62,6 +62,7 @@ function normalizeWheelDelta(e: WheelEvent): number {
  *  - exitStep       {number}  字符之间的飞出阈值步长（让字符逐个飞出而非同时）
  *  - scrollProgress {number}  当前滚动进度（0~1）
  *  - flyDirection   {number}  飞出方向（-1=向左，1=向右），默认 -1（向左飞出）
+ *  - accent         {boolean} 点缀词（斜体微放，混排配方的关键词），默认 false
  *
  * 返回值：ReactNode[] 每个字符对应的 span 节点数组
  *
@@ -71,6 +72,8 @@ function normalizeWheelDelta(e: WheelEvent): number {
  *  - 空格用 \u00A0（不间断空格）替换，防止行内空白被折叠
  *  - 飞出动画通过 inline style 直接控制 transform/opacity，不依赖 CSS 变量
  *    transition 让飞出过程有平滑过渡感（300ms ease-out）
+ *  - 内联 transition 同时声明 text-shadow/filter（1.8s 慢速）：入场特效
+ *    （强辉光+RGB 分裂）在字符就位后缓慢收敛到素颜静止态，收敛节奏逐字错开
  */
 function splitTextToChars(
   text: string,
@@ -79,7 +82,8 @@ function splitTextToChars(
   exitThreshold: number,
   exitStep: number,
   scrollProgress: number,
-  flyDirection: number = -1
+  flyDirection: number = -1,
+  accent: boolean = false
 ): ReactNode[] {
   // 飞出动画的过渡区间长度：超过阈值后用 0.05 的进度完成整个飞出
   // 让字符在 scrollProgress 越过 exitThreshold 后的 0.05 范围内完成飞出
@@ -101,7 +105,7 @@ function splitTextToChars(
     return (
       <span
         key={`${text}-${i}`}
-        className="hero-char"
+        className={`hero-char${accent ? ' is-accent' : ''}`}
         style={{
           transitionDelay: `${baseDelay + i * step}ms`,
           // 飞出动画的 transform/opacity（仅当 exitProgress>0 时生效）
@@ -109,10 +113,11 @@ function splitTextToChars(
             ? `translate(${flyX}px, ${flyY}px) rotate(${rotate}deg)`
             : undefined,
           opacity: exitProgress > 0 ? opacity : undefined,
-          // transition 让 transform/opacity 变化时平滑过渡
-          transitionProperty: 'transform, opacity',
-          transitionDuration: '300ms',
-          transitionTimingFunction: 'ease-out',
+          // transform/opacity 走 300ms（飞出跟手）；text-shadow/filter 走
+          // 1.8s（入场特效的缓慢收敛，"动时带特效、静时收敛"的静时半段）
+          transitionProperty: 'transform, opacity, text-shadow, filter',
+          transitionDuration: '300ms, 300ms, 1.8s, 1.8s',
+          transitionTimingFunction: 'ease-out, ease-out, ease, ease',
           // display:inline-block 让 transform 生效（inline 元素 transform 不起作用）
           display: 'inline-block',
         }}
@@ -464,15 +469,22 @@ export default function App() {
           字符之间 exitThreshold 步长 0.005，让它们一个接一个飞出而非同时 */}
       <div className="content-overlay">
         <div className="hero-block" ref={heroBlockRef}>
+          {/* 档案标签（kicker）：等宽微标签 + 发丝短线，与磁带页终端语言同源，
+              入场最先亮起建立阅读顺序 */}
+          <div className={`hero-kicker${titleVisible ? ' visible' : ''}`}>
+            KIRA SHADER · PERSONAL RENDER LAB
+          </div>
           <h1 className={`hero-title ${titleVisible ? 'visible' : ''}`}>
             <span className="hero-line">
               {splitTextToChars('A Creative', 0, 30, 0.0, 0.02, scrollProgress, -1)}
             </span>
             <span className="hero-line">
-              {splitTextToChars('Developer,Plugged', 350, 30, 0.25, 0.02, scrollProgress, -1)}
+              {splitTextToChars('Developer, Plugged', 350, 30, 0.25, 0.02, scrollProgress, -1)}
             </span>
             <span className="hero-line">
-              {splitTextToChars('into the Future', 950, 30, 0.55, 0.02, scrollProgress, -1)}
+              {splitTextToChars('into the ', 950, 30, 0.55, 0.02, scrollProgress, -1)}
+              {/* 混排点缀词：Future 用同族 Italic 微放（衔接前段延迟与飞出阈值） */}
+              {splitTextToChars('Future', 1250, 30, 0.73, 0.02, scrollProgress, -1, true)}
             </span>
           </h1>
         </div>

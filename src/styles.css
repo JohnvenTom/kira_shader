@@ -1,12 +1,67 @@
 /* === 全局重置与基础样式 === */
-/* 引入优雅细体衬线字体（用于副标题），离线时 fallback 到 STIX/Times */
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&display=swap');
-/* 引入中文衬线（思源宋体，用于高级感中文标题），离线时 fallback 到系统宋体 */
+/* 中文衬线（思源宋体）仍走 CDN（@import 必须置于文件最前），离线时 fallback 到系统宋体 */
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;500;600&display=swap');
-/* 引入老式复古字体（用于胶片屏幕上的数字/角标）：
-   - VT323：老式 CRT 终端像素字体，最贴合复古胶片感
-   - Share Tech Mono：等宽科技感字体，fallback 用 */
-@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+/* 拉丁系字体全部自托管（public/asset/fonts/webfont/，latin 子集 woff2）：
+   无 CDN 依赖、离线可用。原先的 Google Fonts @import 在国内环境时好时坏，
+   实际长期回退到 Times New Roman/Courier——设计意图从未真正渲染过。
+   各字重按实际使用裁剪：Cormorant 300/400/500+斜体500、STIX 400/700、
+   VT323 与 Share Tech Mono 各 400。 */
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/cormorantgaramond-300.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/cormorantgaramond-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/cormorantgaramond-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/cormorantgaramond-500i.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'STIX Two Text';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/stixtwotext-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'STIX Two Text';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/stixtwotext-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Share Tech Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/sharetechmono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'VT323';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/asset/fonts/webfont/vt323-400.woff2') format('woff2');
+}
 
 :root {
   /* 设计令牌（参考 shader.se 风格） */
@@ -139,15 +194,24 @@ body.camera-debug-mode .scroll-container {
   will-change: transform;
 }
 
+/* hero 大标题：Cormorant Garamond 高对比衬线（自托管后真正渲染），
+   500 中字重 + 紧排（行高 1.15 / 字距 -0.01em）——杂志大片式的密排气质；
+   斜体点缀词（Future）由 .hero-char.is-accent 处理 */
 .hero-title {
-  font-family: var(--font-stix);
-  /* 字号大一号：上限从 4.5rem → 5.5rem，下限从 2rem → 2.4rem */
-  font-size: clamp(2.4rem, 6vw, 5.5rem);
-  font-weight: 700;
-  /* 行间距加大：1.1 → 1.35，让每行更松弛 */
-  line-height: 1.35;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(2.8rem, 6.6vw, 6.4rem);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
   max-width: 1000px;
   /* 容器本身不参与动画，由内部 .hero-char 各自动画 */
+}
+
+/* 混排点缀：斜体词——同族 Italic 500 + 微放大，靠斜轴本身制造焦点，
+   不再加重量（Cormorant Italic 的高对比斜轴在 88px 下已经足够优雅） */
+.hero-char.is-accent {
+  font-style: italic;
+  font-size: 1.04em;
 }
 
 /* 每行容器：仅作为块级换行，不参与动画 */
@@ -155,39 +219,66 @@ body.camera-debug-mode .scroll-container {
   display: block;
 }
 
-/* 每个字符 span：默认隐藏 + 下移，父级 .visible 时逐个浮现 */
+/* 每个字符 span：默认隐藏 + 下移，父级 .visible 时逐个浮现。
+   入场态 = 强特效（辉光 + RGB 分裂拉满），特效属于运动 */
 .hero-char {
   display: inline-block;
   opacity: 0;
   transform: translateY(40px) scale(0.85);
-  /* 辉光：用 text-shadow 多层叠加，模拟柔和发光 */
   text-shadow:
-    0 0 8px rgba(255, 244, 224, 0.85),
-    0 0 22px rgba(255, 200, 120, 0.7),
-    0 0 44px rgba(255, 160, 90, 0.5),
-    0 0 80px rgba(255, 130, 70, 0.35);
-  /* 色散：用 drop-shadow 在字符层做 RGB 偏移，营造镜头色差感 */
+    0 0 8px rgba(255, 244, 224, 0.9),
+    0 0 22px rgba(255, 200, 120, 0.75),
+    0 0 44px rgba(255, 160, 90, 0.55),
+    0 0 80px rgba(255, 130, 70, 0.4);
   filter:
-    drop-shadow(2.4px 0 0 rgba(255, 60, 60, 0.85))
-    drop-shadow(-2.4px 0 0 rgba(60, 160, 255, 0.85));
+    drop-shadow(2.6px 0 0 rgba(255, 60, 60, 0.85))
+    drop-shadow(-2.6px 0 0 rgba(60, 160, 255, 0.85));
   transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
               transform 0.6s cubic-bezier(0.16, 1, 0.3, 1),
               filter 0.6s ease,
               text-shadow 0.6s ease;
 }
 
+/* 静止态 = 收敛（高级感的核心动作：动时带特效，静时近乎素颜）：
+   辉光只剩一层极淡暖晕、色散收到 0.4px 若有若无，
+   衬线的收笔细节（Cormorant 的优雅线条）重新锋利可读 */
 .hero-title.visible .hero-char {
   opacity: 1;
   transform: translateY(0) scale(1);
-  /* 出现后辉光与色散保持明显（仅略微收敛，避免过曝） */
-  text-shadow:
-    0 0 6px rgba(255, 244, 224, 0.75),
-    0 0 18px rgba(255, 200, 120, 0.6),
-    0 0 36px rgba(255, 160, 90, 0.42),
-    0 0 64px rgba(255, 130, 70, 0.28);
+  text-shadow: 0 0 24px rgba(255, 180, 110, 0.16);
   filter:
-    drop-shadow(2px 0 0 rgba(255, 60, 60, 0.75))
-    drop-shadow(-2px 0 0 rgba(60, 160, 255, 0.75));
+    drop-shadow(0.4px 0 0 rgba(255, 80, 80, 0.4))
+    drop-shadow(-0.4px 0 0 rgba(80, 170, 255, 0.4));
+}
+
+/* === hero 档案标签（kicker）：等宽微标签 + 发丝短线 ===
+   与磁带页的档案终端语言同源（直角、发丝线、字距拉开的全大写读数），
+   建立标题之上的信息层级；入场最先亮起（transition 无延迟） */
+.hero-kicker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: "Share Tech Mono", var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  opacity: 0;
+  transform: translateY(8px);
+  margin-bottom: 32px;
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+
+.hero-kicker::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: rgba(252, 249, 243, 0.4);
+}
+
+.hero-kicker.visible {
+  opacity: 0.55;
+  transform: translateY(0);
 }
 
 .hero-subtitle {
@@ -219,10 +310,10 @@ body.camera-debug-mode .scroll-container {
 /* === 底部提示 === */
 .scroll-hint {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--foreground);
-  opacity: 0.4;
-  letter-spacing: 2px;
+  opacity: 0.45;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
   display: flex;
   align-items: center;
@@ -232,13 +323,13 @@ body.camera-debug-mode .scroll-container {
 
 .scroll-hint::after {
   content: "↓";
-  font-size: 16px;
-  animation: bounce 2s infinite;
+  font-size: 15px;
+  animation: bounce 2.4s infinite;
 }
 
 @keyframes bounce {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(6px); }
+  50% { transform: translateY(4px); }
 }
 
 /* === 顶部导航 === */
