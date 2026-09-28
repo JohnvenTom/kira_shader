@@ -298,6 +298,12 @@ function addPlaylistTrack(t: PlaylistTrack): void {
   emit();
 }
 
+/** 点选曲目：切到歌单第 i 首并立即播放（播放列表面板点选即播） */
+function playIndex(i: number): void {
+  switchTo(i);
+  void play();
+}
+
 /**
  * 设音量（0~1）：磁带页滚轮与音乐盒角标滚轮共用，写元素 + 记忆 + 广播
  *
@@ -401,6 +407,10 @@ export const tapeAudio = {
   get state(): TapeAudioState { return state; },
   /** 歌单当前曲目（磁带页开机对齐标签文字用） */
   get current(): PlaylistTrack { return currentTrack(); },
+  /** 歌单快照（播放列表面板渲染用；addPlaylistTrack 后引用内容已更新） */
+  get list(): readonly PlaylistTrack[] { return playlist; },
+  /** 当前曲目在歌单里的序号 */
+  get index(): number { return plIndex; },
   /** 歌单曲目数（dock 判断"只有一首"用） */
   get playlistLength(): number { return playlist.length; },
   subscribe,
@@ -409,6 +419,7 @@ export const tapeAudio = {
   toggle,
   next,
   prev,
+  playIndex,
   addPlaylistTrack,
   setVolume,
   suppressAutoplay,

@@ -96,6 +96,18 @@ try {
       await page.mouse.wheel(+args[0], +args[1]);
       console.log(`wheel ${args[0]},${args[1]} ok`);
       break;
+    case 'wheelat': {
+      // CDP 坐标滚轮：playwright 的 mouse.wheel 在本环境固定派发到 (0,0)，
+      // 悬停目标的滚轮监听收不到——用 Input.dispatchMouseEvent 显式传坐标
+      const [x, y, dx, dy] = args.map(Number);
+      const client = await ctx.newCDPSession(page);
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x, y, deltaX: dx || 0, deltaY: dy || 0,
+        pointerType: 'mouse',
+      });
+      console.log(`wheelat ${x},${y} d(${dx || 0},${dy || 0}) ok`);
+      break;
+    }
     case 'drag': {
       // CDP 原始拖拽：playwright 的 mouse.down/up 在本环境会把事件派发到 (0,0)
       // （move 正常），分步拖拽拿不到起点——直接用 Input.dispatchMouseEvent

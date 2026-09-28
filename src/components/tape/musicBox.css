@@ -148,17 +148,33 @@ body:has(.film-detail-overlay.visible) .music-dock {
   color: #d0783a;
 }
 
-/* ---------- 音量行：悬停滚轮调音量时在面板里浮出的一行 ----------
-   左标签 + 中间细条（scaleX 填充）+ 右侧等宽百分比；滚轮停手 1.1s 后随面板一起淡出 */
+/* ---------- 音量气泡：悬停滚轮调音量时浮出的独立小芯片 ----------
+   不挂在信息层里（列表打开时信息层 display:none，气泡需要自有载体）：
+   absolute 定位在整个 dock 顶部之上、右对齐，深色芯片自成一个浮层。
+   显隐由 JS 加 .is-on 切（ref 直写，不走 React 渲染调度）。 */
 .music-dock-volrow {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 3px;
+  padding: 7px 11px;
+  background: rgba(10, 10, 10, 0.85);
+  border: 1px solid rgba(208, 120, 58, 0.4);
+  backdrop-filter: blur(9px);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
   color: rgba(252, 249, 243, 0.62);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+  pointer-events: none;
+}
+.music-dock-volrow.is-on {
+  opacity: 1;
+  visibility: visible;
 }
 .music-dock-volrow u { text-decoration: none; }
 .music-dock-volbar {
@@ -218,6 +234,157 @@ body:has(.film-detail-overlay.visible) .music-dock {
   to { transform: none; }
 }
 
+/* ---------- 播放列表：三横线按钮 + 向上展开的曲目面板 ----------
+   列表按钮贴在磁带行左侧、同一块深色芯片上（border-right 让位、
+   margin-right -1px 使两框交界成单线）；面板从 barrow 上方展开。 */
+.music-dock-barrow {
+  display: flex;
+  align-items: stretch;
+}
+.music-dock-list {
+  appearance: none;
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px solid rgba(252, 249, 243, 0.16);
+  border-right: none;
+  margin-right: -1px;
+  backdrop-filter: blur(9px);
+  color: rgba(252, 249, 243, 0.7);
+  padding: 0 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: color 0.25s ease, border-color 0.3s ease;
+}
+.music-dock:hover .music-dock-list {
+  border-color: rgba(208, 120, 58, 0.55);
+  border-right-color: rgba(208, 120, 58, 0.55);
+}
+.music-dock-list:hover { color: #d0783a; }
+.music-dock-list.is-open { color: #d0783a; }
+
+/* 三横线 ↔ 变叉：上线右旋下移、中线隐、下线左旋上移 */
+.music-dock-list line {
+  transition: transform 0.25s cubic-bezier(.4, 0, .2, 1), opacity 0.18s ease;
+  transform-box: view-box;
+  transform-origin: center;
+}
+.music-dock-list.is-open .music-dock-list-l1 { transform: translateY(4px) rotate(45deg); }
+.music-dock-list.is-open .music-dock-list-l2 { opacity: 0; }
+.music-dock-list.is-open .music-dock-list-l3 { transform: translateY(-4px) rotate(-45deg); }
+
+/* 曲目面板：从下方 barrow 的位置向上展开（origin bottom） */
+.music-dock-playlist {
+  background: rgba(10, 10, 10, 0.88);
+  border: 1px solid rgba(252, 249, 243, 0.16);
+  backdrop-filter: blur(9px);
+  width: min(320px, 78vw);
+  transform-origin: bottom right;
+  animation: music-dock-pl-up 0.3s cubic-bezier(.19, 1, .22, 1) both;
+  overflow: hidden;
+}
+.music-dock-playlist.is-closing {
+  animation: music-dock-pl-down 0.16s ease both;
+}
+@keyframes music-dock-pl-up {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+}
+@keyframes music-dock-pl-down {
+  to { opacity: 0; transform: translateY(8px) scale(0.97); }
+}
+.music-dock-playlist-head {
+  padding: 9px 13px 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.28em;
+  color: #d0783a;
+  border-bottom: 1px solid rgba(252, 249, 243, 0.12);
+}
+.music-dock-playlist-head u { text-decoration: none; color: rgba(252, 249, 243, 0.3); padding: 0 3px; }
+.music-dock-playlist-scroll {
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(208, 120, 58, 0.4) transparent;
+}
+.music-dock-playlist-scroll::-webkit-scrollbar { width: 3px; }
+.music-dock-playlist-scroll::-webkit-scrollbar-thumb { background: rgba(208, 120, 58, 0.4); }
+
+.music-dock-playlist-item {
+  appearance: none;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 13px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(252, 249, 243, 0.06);
+  color: rgba(252, 249, 243, 0.72);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  animation: music-dock-pl-item 0.3s ease both;
+  animation-delay: calc(min(var(--i, 0), 18) * 22ms);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+@keyframes music-dock-pl-item {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: none; }
+}
+.music-dock-playlist-item:hover {
+  background: rgba(208, 120, 58, 0.1);
+  color: #fcf9f3;
+}
+.music-dock-playlist-item.is-current {
+  color: #d0783a;
+  background: rgba(208, 120, 58, 0.07);
+}
+.music-dock-playlist-item u {
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: rgba(252, 249, 243, 0.3);
+  flex-shrink: 0;
+}
+.music-dock-playlist-item.is-current u { color: rgba(208, 120, 58, 0.7); }
+.music-dock-playlist-item b {
+  font-weight: 500;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.music-dock-playlist-item i {
+  font-style: normal;
+  font-size: 10px;
+  color: rgba(252, 249, 243, 0.38);
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+  flex-shrink: 0;
+}
+.music-dock-playlist-now {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: #d0783a;
+  flex-shrink: 0;
+}
+
+/* 列表打开时，悬停信息层彻底让位（display:none 移除占位——否则列表面板
+   会被看不见的 panel 顶得悬在半空，与下方按钮行断成两块） */
+.music-dock.is-list-open .music-dock-panel {
+  display: none;
+}
+
+/* 曲目面板与下方按钮行连成一体：负 margin 吃掉 column 的 7px gap，
+   面板底边框与按钮行顶边框重叠成单线（按钮行绘制在上，交界只有一条线） */
+.music-dock.is-list-open .music-dock-playlist {
+  margin-bottom: -8px;
+}
+
 /* ---------- 窄屏：只留图标与播放钮，信息层靠悬停也没意义 ---------- */
 @media (max-width: 560px) {
   .music-dock { right: 14px; bottom: 14px; }
@@ -232,4 +399,10 @@ body:has(.film-detail-overlay.visible) .music-dock {
   .music-dock.is-launching .music-dock-panel,
   .music-dock.is-landing .music-dock-bar { animation: none; }
   .music-dock-volbar b { transition: none; }
+}
+/* 减少动效补充：列表不展开动画、条目不滑入 */
+@media (prefers-reduced-motion: reduce) {
+  .music-dock-playlist { animation: none; }
+  .music-dock-playlist.is-closing { animation: none; }
+  .music-dock-playlist-item { animation: none; opacity: 1; }
 }
