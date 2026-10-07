@@ -1505,7 +1505,12 @@ function WorkDetailPage({
    * 结构说明：
    *  - 按行分组：外层数组每项是一行，内层数组是行内的 7 张卡片
    *  - 索引计算：rowIdx * cols + colIdx（与 ArikaShow 的 HTML 结构一致）
-   *  - project 字段循环复用 PROJECTS 数据（4 个项目循环填充 42 张卡片）
+   *  - 行取样规则：前 5 行按自然循环（起始偏移 = 行号×7 mod 5 = 0,2,4,1,3，
+   *    互不相同）；第 6 行改用"起始 2、步进 2"的隔行取样（2,4,1,3,0,2,4）。
+   *    因为 5 项目 × 7 列 = 35 张恰好是 5 行一个内容周期，第 6 行若继续
+   *    自然循环会与第 1 行序列完全相同，回绕后两行相邻成"重复行"——
+   *    隔行取样保证任意两行序列都不同，相邻行必不相同
+   *  - project 字段循环复用 PROJECTS 数据（5 个项目循环填充 42 张卡片）
    *  - unit 字段：UNIT_01 ~ UNIT_42 编号（呼应 ArikaShow 的卡片标签）
    *  - 行数取 6：上下各多出一行作回绕缓冲（4 行时网格周期 ≈ 屏幕高度，
    *    余量不足会在拖拽方向对面露出黑边；6 行在任何宽高比下每侧仍余约 1 行）
@@ -1516,7 +1521,11 @@ function WorkDetailPage({
     return Array.from({ length: rows }, (_, rowIdx) =>
       Array.from({ length: cols }, (_, colIdx) => {
         const i = rowIdx * cols + colIdx;
-        const project = PROJECTS[i % PROJECTS.length];
+        const projectIdx =
+          rowIdx < rows - 1
+            ? (rowIdx * cols + colIdx) % PROJECTS.length
+            : (2 + colIdx * 2) % PROJECTS.length;
+        const project = PROJECTS[projectIdx];
         return {
           id: `work-card-${i}`,
           index: i + 1,
