@@ -1405,7 +1405,7 @@ function OfficeDetailPage({
  *      上溢出 → mov_y += container_height（跳到下边）
  *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
  *  - 容器整体 scale 适配不同屏幕（基准宽度 1440px）
- *  - 卡片数据循环复用 PROJECTS（7 列 × 4 行 = 28 张）
+ *  - 卡片数据循环复用 PROJECTS（6 列 × 7 行 = 42 张），上下各多一行作回绕缓冲
  */
 function WorkDetailPage({
   mouseRef,
@@ -1457,8 +1457,12 @@ function WorkDetailPage({
    * 容器/卡片尺寸缓存（resize 时更新，move 时读取）
    *
    * 字段说明：
-   *  - containerWidth/Height 容器实际尺寸（回绕判定边界）
-   *  - photoWidth/Height     单张卡片尺寸（提前回绕阈值 = ±半张卡片）
+   *  - containerWidth/Height 容器实际尺寸（= 网格周期，回绕步长）
+   *  - photoWidth/Height     单张卡片尺寸
+   *  - visibleLeft/Right/Top/Bottom 屏幕可见区在容器本地坐标的边界
+   *                           （容器居中缩放显示，可见区 = 容器中心的一段；
+   *                             回绕判定用可见区而非容器边界，消除"屏幕外
+   *                             但容器内"的死区黑边）
    *  - scaleNums             当前视口相对基准宽度的缩放比例
    *  - standardWidth         设计基准宽度 1440px
    */
@@ -1467,6 +1471,10 @@ function WorkDetailPage({
     containerHeight: 0,
     photoWidth: 0,
     photoHeight: 0,
+    visibleLeft: 0,
+    visibleRight: 0,
+    visibleTop: 0,
+    visibleBottom: 0,
     scaleNums: 1,
     standardWidth: 1440,
   });
@@ -1492,16 +1500,18 @@ function WorkDetailPage({
   });
 
   /**
-   * 卡片数据：4 行 × 7 列 = 28 张，循环复用 PROJECTS（移植自原版结构）
+   * 卡片数据：6 行 × 7 列 = 42 张，循环复用 PROJECTS
    *
    * 结构说明：
    *  - 按行分组：外层数组每项是一行，内层数组是行内的 7 张卡片
    *  - 索引计算：rowIdx * cols + colIdx（与 ArikaShow 的 HTML 结构一致）
-   *  - project 字段循环复用 PROJECTS 数据（4 个项目循环填充 28 张卡片）
-   *  - unit 字段：UNIT_01 ~ UNIT_28 编号（呼应 ArikaShow 的卡片标签）
+   *  - project 字段循环复用 PROJECTS 数据（4 个项目循环填充 42 张卡片）
+   *  - unit 字段：UNIT_01 ~ UNIT_42 编号（呼应 ArikaShow 的卡片标签）
+   *  - 行数取 6：上下各多出一行作回绕缓冲（4 行时网格周期 ≈ 屏幕高度，
+   *    余量不足会在拖拽方向对面露出黑边；6 行在任何宽高比下每侧仍余约 1 行）
    */
   const cardRows = useMemo(() => {
-    const rows = 4;
+    const rows = 6;
     const cols = 7;
     return Array.from({ length: rows }, (_, rowIdx) =>
       Array.from({ length: cols }, (_, colIdx) => {
@@ -1547,6 +1557,14 @@ function WorkDetailPage({
     dims.photoWidth = cards[0].offsetWidth;
     dims.photoHeight = cards[0].offsetHeight;
     dims.scaleNums = document.body.offsetWidth / dims.standardWidth;
+    // 屏幕可见区换算到容器本地坐标：容器在视口中居中（flex 居中 + scale 原点为中心），
+    // 可见区宽高 = 视口宽高 ÷ 缩放比例，再以容器中心对称求出四条边界
+    const visW = window.innerWidth / dims.scaleNums;
+    const visH = window.innerHeight / dims.scaleNums;
+    dims.visibleLeft = (dims.containerWidth - visW) / 2;
+    dims.visibleRight = dims.visibleLeft + visW;
+    dims.visibleTop = (dims.containerHeight - visH) / 2;
+    dims.visibleBottom = dims.visibleTop + visH;
     // 用 CSS 变量设置 scale，避免直接写 style.transform 覆盖视差变量
     // （CSS 中 .work-photos 的 transform 同时包含 scale 和视差变形）
     container.style.setProperty('--scale', String(dims.scaleNums));
@@ -1585,12 +1603,16 @@ function WorkDetailPage({
    * 返回值：无
    *
    * 注意事项：
-   *  - 边界判定与原版一致：卡片完全离开容器才回绕
-   *      右溢出：img.x + img.mov_x > containerWidth（卡片左边超出容器右边）
-   *      左溢出：img.x + img.mov_x < -photoWidth（卡片右边超出容器左边）
-   *      下溢出：img.y + img.mov_y > containerHeight
-   *      上溢出：img.y + img.mov_y < -photoHeight
-   *  - 不能提前回绕，否则卡片还未离开视口就跳到对面，造成重叠遮挡
+   *  - 边界判定按"屏幕可见区"而非容器边界（容器 shrink-wrap 网格，比屏幕
+   *    上下各多出一截；若按容器判定，卡片要走完屏幕外的死区才回绕，期间
+   *    边缘露黑底、回绕时又瞬移补位）：
+   *      右溢出：img.x + img.mov_x > visibleRight + gap（卡片完全出了可见区再余一段）
+   *      左溢出：img.x + img.mov_x < visibleLeft - gap - photoWidth
+   *      下溢出：img.y + img.mov_y > visibleBottom + gap
+   *      上溢出：img.y + img.mov_y < visibleTop - gap - photoHeight
+   *  - gap = 64/scale：容纳行间距（24em）与视差位移（±14px），
+   *    保证回绕发生时卡片确实不可见、落点也恰好接续网格（步长 = 容器尺寸 = 网格周期，
+   *    回绕后卡片正好落在当前最低卡片下方一个行距，平铺永不脱节）
    *  - 新动画前 kill 旧动画，避免 GSAP 动画堆叠冲突
    *  - 位移需除以 scaleNums 补偿容器整体缩放（缩放后鼠标实际拖动距离变小）
    */
@@ -1600,28 +1622,30 @@ function WorkDetailPage({
     const dims = dimsRef.current;
     const distanceX = (x - drag.mouseX) / dims.scaleNums;
     const distanceY = (y - drag.mouseY) / dims.scaleNums;
+    // 回绕余量：行间距 24em + 视差位移 ±14px 的本地换算，再留少量富余
+    const gap = 64 / dims.scaleNums;
 
     imgDataRef.current.forEach(img => {
       let duration = 1;
       img.mov_x += distanceX;
-      // X 轴右溢出：卡片左边超出容器右边 → 跳到左边
-      if (img.x + img.mov_x > dims.containerWidth) {
+      // X 轴右溢出：卡片左边超出可见区右界（含余量）→ 跳到左边
+      if (img.x + img.mov_x > dims.visibleRight + gap) {
         img.mov_x -= dims.containerWidth;
         duration = 0;
       }
-      // X 轴左溢出：卡片右边超出容器左边 → 跳到右边
-      if (img.x + img.mov_x < -dims.photoWidth) {
+      // X 轴左溢出：卡片右边超出可见区左界（含余量）→ 跳到右边
+      if (img.x + img.mov_x < dims.visibleLeft - gap - dims.photoWidth) {
         img.mov_x += dims.containerWidth;
         duration = 0;
       }
       img.mov_y += distanceY;
-      // Y 轴下溢出：卡片上边超出容器下边 → 跳到上边
-      if (img.y + img.mov_y > dims.containerHeight) {
+      // Y 轴下溢出：卡片上边超出可见区下界（含余量）→ 跳到上边
+      if (img.y + img.mov_y > dims.visibleBottom + gap) {
         img.mov_y -= dims.containerHeight;
         duration = 0;
       }
-      // Y 轴上溢出：卡片下边超出容器上边 → 跳到下边
-      if (img.y + img.mov_y < -dims.photoHeight) {
+      // Y 轴上溢出：卡片下边超出可见区上界（含余量）→ 跳到下边
+      if (img.y + img.mov_y < dims.visibleTop - gap - dims.photoHeight) {
         img.mov_y += dims.containerHeight;
         duration = 0;
       }
