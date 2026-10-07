@@ -69,6 +69,49 @@ const SCREEN_CONFIG = {
 };
 
 /**
+ * 屏幕故障/CRT 效果配置（ScreenDisplay 的 ShaderMaterial 使用）
+ *
+ * 功能：集中控制屏幕 GIF 显示层的 glitch 与 CRT 复古效果参数
+ *
+ * 分组说明：
+ *  - Glitch（间歇故障）：
+ *    - baseSplit       常态 RGB 色散底噪（UV 偏移），极轻，让屏幕"活着"
+ *    - burst*          低强度小抽：每 0.8~1.5s 发作一次、持续 0.05~0.12s（一闪而过），
+ *                      峰值包络 0.35~0.65（1 = 切 GIF 大故障的强度）
+ *    - tear*           行撕裂：24 条候选行里每次只随机激活少数几行（平静期 2~3 行、
+ *                      峰值最多 ~5 行），激活位置每 ~60ms 重掷，在屏幕上游走
+ *    - switchDuration  切 GIF 时的大故障时长：把画面切换藏进故障里当转场
+ *  - CRT（常态复古质感）：
+ *    - scanCount/Strength  扫描线：屏幕空间细密暗线，跟随玻璃而非内容
+ *    - vignetteStrength    边缘暗角：CRT 四周变暗
+ *    - flickerStrength     亮度微闪：双频正弦低频呼吸
+ *    - barrelAmount        桶形弯曲：采样坐标向中心收拢（只内收不出界），
+ *                          内容呈现在外凸玻璃上的观感
+ */
+const SCREEN_FX_CONFIG = {
+  // --- Glitch：常态底噪 + 每秒级低强度发作 + 切 GIF 大故障 ---
+  baseSplit: 0.0012,          // 常态 RGB 色散（UV 偏移）
+  burstMinInterval: 0.8,      // 小抽最小间隔（秒）
+  burstMaxInterval: 1.5,      // 小抽最大间隔（秒）
+  burstMinDuration: 0.05,     // 单次小抽最短时长（秒）
+  burstMaxDuration: 0.12,     // 单次小抽最长时长（秒）
+  burstPeakMin: 0.35,         // 小抽峰值包络下限（0~1）
+  burstPeakMax: 0.65,         // 小抽峰值包络上限
+  glitchMaxDisp: 0.012,       // 发作峰值时的最大行撕裂位移（UV）
+  glitchMaxSplit: 0.008,      // 发作峰值时的最大 RGB 分离增量
+  tearBands: 24,              // 行撕裂候选行数（同时只激活其中少数几行）
+  tearActiveCalm: 0.07,       // 低包络期的激活比例（≈24 行中的 1~2 行）
+  tearActivePeak: 0.2,        // 峰值包络的激活比例（≈24 行中的 4~5 行）
+  switchDuration: 0.35,       // 切 GIF 大故障时长（秒）
+  // --- CRT ---
+  scanCount: 64,              // 扫描线对数
+  scanStrength: 0.15,         // 扫描线强度（暗线压低幅度）
+  vignetteStrength: 0.35,     // 边缘暗角强度
+  flickerStrength: 0.035,     // 亮度微闪幅度
+  barrelAmount: 0.32,         // 桶形弯曲（角部最大收拢比例 ≈ 该值 × 0.5）
+};
+
+/**
  * 调试模式开关
  *
  * 功能：开启后启用 OrbitControls 自由视角 + 信息面板 + FOV 滑块
@@ -709,13 +752,123 @@ async function loadGif(url: string): Promise<GifAsset> {
   return { width: gifW, height: gifH, frames, totalDurationMs };
 }
 
+/** 屏幕显示顶点着色器：标准 pass-through，仅传递 UV */
+const SCREEN_VERT = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+/**
+ * 屏幕显示片段着色器：GIF 内容 + Glitch + CRT 复古效果
+ *
+ * 处理顺序（后一步叠在前一步之上）：
+ *  1. 桶形弯曲：采样坐标向中心收拢（只内收不外扩，永不越界采样），
+ *     内容呈现在外凸玻璃上的观感；弯曲作用于"内容"层
+ *  2. 行撕裂：屏幕空间分 24 条候选行，同一时刻只随机激活少数几行
+ *     （低包络 ~2 行 / 峰值 ~5 行），激活位置每 ~60ms 重掷一次，
+ *     撕裂带在屏幕上游走而不是整屏错位；撕裂/噪点带属于"玻璃"层，
+ *     用原始 vUv 计算
+ *  3. RGB 色散：常态极轻底噪 + 发作时按包络平方增强（R 左移 / B 右移）
+ *  4. 噪点带：发作时随机 1 行闪现静态噪声，位置同样随 tick 跳变
+ *  5. 扫描线：屏幕空间正弦暗线（跟随玻璃而非内容，穿屏特写时随屏幕自然放大）
+ *  6. 微闪 + 增益：JS 侧双频正弦传入的带符号闪量 × 亮度增益（对齐原 emissiveIntensity）
+ *  7. 边缘暗角：径向 smoothstep 压暗四周
+ *
+ * uniforms 与 JS 侧的对应（ScreenDisplay 的 useFrame 每帧驱动）：
+ *  - uGlitch  发作包络 0~1（小抽 0.35~0.65 / 切 GIF 到 1），JS 侧调度
+ *  - uSeed    每次发作更换，让撕裂带位置跳变、不重复
+ *  - uFlicker 带符号微闪量（JS 双频正弦 × 强度），reduced-motion 时为 0
+ */
+const SCREEN_FRAG = /* glsl */ `
+  uniform sampler2D uMap;
+  uniform float uTime;
+  uniform float uGlitch;
+  uniform float uSeed;
+  uniform float uBrightness;
+  uniform float uFlicker;
+  uniform float uScanCount;
+  uniform float uScanStrength;
+  uniform float uVignette;
+  uniform float uBarrel;
+  uniform float uBaseSplit;
+  uniform float uMaxDisp;
+  uniform float uMaxSplit;
+  uniform float uTearBands;
+  uniform float uTearActiveCalm;
+  uniform float uTearActivePeak;
+  varying vec2 vUv;
+
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+
+  void main() {
+    // 1. 桶形弯曲：坐标向中心收拢（角部 r2≈0.5，收拢比例 = uBarrel × r2）
+    vec2 c = vUv - 0.5;
+    float r2 = dot(c, c);
+    vec2 suv = vUv - c * (uBarrel * r2);
+
+    // 2. 行撕裂：候选行按哈希阈值激活——阈值随包络从 calm 升到 peak，
+    //    同一时刻只有少数几行错位；tick 每 ~62ms 步进一次并参与哈希，
+    //    让激活的行在发作期间不断跳到新位置（"信号干扰游走"而非固定错位）
+    float env = uGlitch;
+    if (env > 0.001) {
+      float tick = floor(uTime * 16.0);
+      float bandId = floor(vUv.y * uTearBands);
+      float activeFrac = mix(uTearActiveCalm, uTearActivePeak, env);
+      float sel = hash(vec2(bandId, uSeed + tick));
+      if (sel > 1.0 - activeFrac) {
+        float amp = hash(vec2(bandId + 31.7, uSeed + tick));
+        float disp = (amp - 0.5) * 2.0 * uMaxDisp * env;
+        if (amp > 0.85) disp *= 2.2;  // 偶发"热行"位移加倍
+        suv.x += disp;
+      }
+    }
+
+    // 3. RGB 色散：常态底噪 + 发作增强（平方让平静期几乎无感）
+    float split = uBaseSplit + env * env * uMaxSplit;
+    float r = texture2D(uMap, suv + vec2(split, 0.0)).r;
+    float g = texture2D(uMap, suv).g;
+    float b = texture2D(uMap, suv - vec2(split, 0.0)).b;
+    float a = texture2D(uMap, suv).a;
+    vec3 color = vec3(r, g, b);
+
+    // 4. 噪点带：发作时平均只有 1 行闪现静态噪声（40 行 × 2.5% 阈值）
+    if (env > 0.001 && hash(vec2(floor(vUv.y * 40.0), uSeed + floor(uTime * 16.0) + 7.0)) > 0.975) {
+      float n = hash(vUv * 271.0 + uSeed + floor(uTime * 24.0));
+      color = mix(color, vec3(n), env * 0.55);
+    }
+
+    // 5. 扫描线：屏幕空间暗线（玻璃层）
+    float scan = 0.5 + 0.5 * sin(vUv.y * uScanCount * 6.28318);
+    color *= 1.0 - uScanStrength * scan;
+
+    // 6. 微闪 + 增益
+    color *= uBrightness * (1.0 + uFlicker);
+
+    // 7. 边缘暗角
+    color *= 1.0 - uVignette * smoothstep(0.36, 0.72, length(c));
+
+    gl_FragColor = vec4(color, a);
+    #include <colorspace_fragment>
+  }
+`;
+
 /**
  * 屏幕显示组件
  *
  * 功能：
  *  - 用 gifuct-js 解析 4 个 GIF 文件，预合成每一帧的 ImageData
  *  - 用 canvas 中转：每帧按 elapsed time 计算当前帧索引，putImageData 到 canvas
- *  - 用 CanvasTexture 作为 emissiveMap，让屏幕"自发光"（不受场景光照压暗）
+ *  - 用 CanvasTexture 作为自发光纹理（原 emissiveMap，现 ShaderMaterial 的 uMap），
+ *    让屏幕"自发光"（不受场景光照压暗）
+ *  - 自定义 ShaderMaterial 在 GPU 上叠加 glitch 与 CRT 效果：常态轻 RGB 色散
+ *    + 每秒级低强度撕裂小抽 + 切 GIF 大故障转场；扫描线/暗角/微闪/桶形弯曲
+ *    常驻。时间包络在 useFrame 驱动，空间图案在片段着色器计算，
+ *    参数集中在 SCREEN_FX_CONFIG；reduced-motion 时冻结自治动效
  *  - 当前 GIF 播完一轮后自动切换到下一个，循环播放全部 4 个 GIF
  *  - 附加 RectAreaLight 面光源，让屏幕真正照亮电脑外壳/烟雾等周围环境
  *    （emissive 只让屏幕自己亮，不发光照别人；RectAreaLight 才是真实光源）
@@ -743,7 +896,19 @@ function ScreenDisplay({
   // GIF 加载完成标志：所有 GIF 解析完才渲染 mesh
   const [ready, setReady] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null);
-  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  // Glitch 状态机：JS 侧只算时间包络（发作/间隔/种子），空间图案在着色器里
+  const glitchRef = useRef({
+    nextBurstAt: 0,   // 下一次小抽时刻（秒）
+    burstStart: -1,   // 当前小抽起点（-1 = 无）
+    burstDur: 0.2,    // 当前小抽时长（秒）
+    burstPeak: 0.5,   // 当前小抽峰值（0~1）
+    switchStart: -1,  // 切 GIF 大故障起点（-1 = 无）
+    seed: 0,          // 撕裂带种子（每次发作更换）
+  });
+  // prefers-reduced-motion：冻结自治动效（glitch 发作/微闪），静态 CRT 质感保留
+  const reducedMotion = useMemo(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches, []
+  );
   // RectAreaLight 引用：让屏幕真正照亮周围环境（emissive 只让屏幕自己亮，不发光照别人）
   const rectLightRef = useRef<THREE.RectAreaLight>(null);
   // 当前 GIF 索引（用 ref 避免每帧 setState）
@@ -821,6 +986,41 @@ function ScreenDisplay({
     };
   }, []);
 
+  // 屏幕 ShaderMaterial：GIF 显示 + glitch/CRT 效果（GPU 实时）
+  // ready 翻转时（全部 GIF 解析完）构建一次；后续切 GIF 只改 uMap uniform 引用，
+  // 不重建材质。uniform 每帧由下方 useFrame 直写，与场景其他组件同策略
+  const fxMaterial = useMemo(() => {
+    if (!ready) return null;
+    return new THREE.ShaderMaterial({
+      vertexShader: SCREEN_VERT,
+      fragmentShader: SCREEN_FRAG,
+      transparent: true,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uMap: { value: texturesRef.current[0] },
+        uTime: { value: 0 },
+        uGlitch: { value: 0 },
+        uSeed: { value: 0 },
+        // 亮度增益对齐原 emissiveIntensity，保证换材质后屏幕亮度/辉光不变
+        uBrightness: { value: SCREEN_CONFIG.emissiveIntensity },
+        uFlicker: { value: 0 },
+        uScanCount: { value: SCREEN_FX_CONFIG.scanCount },
+        uScanStrength: { value: SCREEN_FX_CONFIG.scanStrength },
+        uVignette: { value: SCREEN_FX_CONFIG.vignetteStrength },
+        uBarrel: { value: SCREEN_FX_CONFIG.barrelAmount },
+        uBaseSplit: { value: SCREEN_FX_CONFIG.baseSplit },
+        uMaxDisp: { value: SCREEN_FX_CONFIG.glitchMaxDisp },
+        uMaxSplit: { value: SCREEN_FX_CONFIG.glitchMaxSplit },
+        uTearBands: { value: SCREEN_FX_CONFIG.tearBands },
+        uTearActiveCalm: { value: SCREEN_FX_CONFIG.tearActiveCalm },
+        uTearActivePeak: { value: SCREEN_FX_CONFIG.tearActivePeak },
+      },
+    });
+  }, [ready]);
+
+  // 卸载时释放材质
+  useEffect(() => () => fxMaterial?.dispose(), [fxMaterial]);
+
   // 每帧：按 elapsed time 计算当前 GIF 的当前帧，putImageData + drawImage 到主 canvas
   useFrame((state) => {
     const assets = assetsRef.current;
@@ -837,10 +1037,11 @@ function ScreenDisplay({
       gifStartRef.current = t;
       idxRef.current = (idxRef.current + 1) % assets.length;
       const tex = textures[idxRef.current];
-      if (matRef.current && tex) {
-        matRef.current.map = tex;
-        matRef.current.emissiveMap = tex;
-        matRef.current.needsUpdate = true;
+      if (fxMaterial && tex) {
+        // 纹理切换藏进大故障转场：换图被故障爆发遮盖，观感是"信号中断后换了台"
+        fxMaterial.uniforms.uMap.value = tex;
+        glitchRef.current.switchStart = t;
+        glitchRef.current.seed = Math.random() * 100.0;
       }
     }
 
@@ -908,10 +1109,55 @@ function ScreenDisplay({
         if (colorRef) colorRef.current.setRGB(r / 255, g / 255, b / 255);
       }
     }
+
+    // === Glitch/CRT 驱动：JS 侧只算时间包络，空间图案全部在着色器 ===
+    if (fxMaterial) {
+      const g = glitchRef.current;
+      const u = fxMaterial.uniforms;
+
+      // 间歇小抽：到点触发一次（reduced-motion 不调度，画面保持干净）
+      if (!reducedMotion && t >= g.nextBurstAt) {
+        g.burstStart = t;
+        g.burstDur = SCREEN_FX_CONFIG.burstMinDuration +
+          Math.random() * (SCREEN_FX_CONFIG.burstMaxDuration - SCREEN_FX_CONFIG.burstMinDuration);
+        g.burstPeak = SCREEN_FX_CONFIG.burstPeakMin +
+          Math.random() * (SCREEN_FX_CONFIG.burstPeakMax - SCREEN_FX_CONFIG.burstPeakMin);
+        g.seed = Math.random() * 100.0;
+        g.nextBurstAt = t + SCREEN_FX_CONFIG.burstMinInterval +
+          Math.random() * (SCREEN_FX_CONFIG.burstMaxInterval - SCREEN_FX_CONFIG.burstMinInterval);
+      }
+
+      // 包络合成：小抽 = 正弦（缓起缓落）；切 GIF 大故障 = sin^0.4（快起慢落，
+      // 确保换纹理那一帧已被故障盖住）；两者同时发作时取最大值
+      let env = 0.0;
+      if (g.burstStart >= 0) {
+        const p = (t - g.burstStart) / g.burstDur;
+        if (p >= 0 && p <= 1) env = Math.sin(p * Math.PI) * g.burstPeak;
+      }
+      if (g.switchStart >= 0) {
+        const p = (t - g.switchStart) / SCREEN_FX_CONFIG.switchDuration;
+        if (p >= 0 && p <= 1) {
+          env = Math.max(env, Math.pow(Math.sin(p * Math.PI), 0.4));
+        } else if (p > 1) {
+          g.switchStart = -1;
+        }
+      }
+
+      // 微闪：双频不可通约正弦，消除规律呼吸感
+      const flicker = reducedMotion
+        ? 0
+        : (Math.sin(t * 11.0) * 0.6 + Math.sin(t * 6.3 + 1.7) * 0.4) *
+          SCREEN_FX_CONFIG.flickerStrength;
+
+      u.uTime.value = t;
+      u.uGlitch.value = reducedMotion ? 0 : env;
+      u.uSeed.value = g.seed;
+      u.uFlicker.value = flicker;
+    }
   });
 
-  // GIF 未加载完时不渲染 mesh
-  if (!ready || texturesRef.current.length === 0) return null;
+  // GIF 未加载完时不渲染 mesh（fxMaterial 与 ready 同步构建，此处必非空）
+  if (!ready || !fxMaterial || texturesRef.current.length === 0) return null;
 
   return (
     <>
@@ -933,16 +1179,7 @@ function ScreenDisplay({
         rotation={[SCREEN_CONFIG.rotX, SCREEN_CONFIG.rotY, SCREEN_CONFIG.rotZ]}
       >
         <planeGeometry args={[SCREEN_CONFIG.width, SCREEN_CONFIG.height]} />
-        <meshStandardMaterial
-          ref={matRef}
-          map={texturesRef.current[0]}
-          emissive="#ffffff"
-          emissiveMap={texturesRef.current[0]}
-          emissiveIntensity={SCREEN_CONFIG.emissiveIntensity}
-          toneMapped={false}
-          transparent
-          side={THREE.DoubleSide}
-        />
+        <primitive object={fxMaterial} attach="material" />
       </mesh>
     </>
   );
