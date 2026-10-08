@@ -1,0 +1,126 @@
+# ========================
+# Java / Maven
+# ========================
+target/
+*.jar
+*.war
+*.ear
+*.class
+hs_err_pid*
+
+# ========================
+# Node.js / npm
+# ========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ========================
+# Vite / 前端构建产物
+# ========================
+dist/
+*.local
+
+# ========================
+# IDE - IntelliJ IDEA
+# ========================
+.idea/
+.trae/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ========================
+# IDE - VSCode
+# ========================
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# ========================
+# OS generated files
+# ========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# ========================
+# Environment & Config
+# ========================
+.env
+.env.local
+.env.*.local
+!frontend-user/.env.production
+!frontend-user/.env.capacitor.example
+frontend-user/.env
+frontend-user/.env.capacitor
+application-local.yml
+application-test.yml
+backend/.env
+!backend/.env.example
+
+# ========================
+# Capacitor
+# ========================
+frontend-user/android/
+frontend-user/ios/
+frontend-user/.capacitor/
+
+# ========================
+# Logs
+# ========================
+logs/
+*.log
+
+# ========================
+# Temporary files
+# ========================
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
