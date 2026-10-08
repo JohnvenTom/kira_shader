@@ -1485,7 +1485,13 @@ function OfficeDetailPage({
  *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
  *  - 容器整体 scale 适配不同屏幕（基准宽度 1440px）
  *  - 卡片数据循环复用 PROJECTS（6 列 × 7 行 = 42 张），上下各多一行作回绕缓冲
+ *  - 两级缩放：标准级下滚蓄力（约 250px）→ 放大一级（×2，一屏两卡高度），
+ *    放大级上滚蓄力 → 还原标准级；蓄力反向清零，CSS transition 平滑过渡
  */
+/** 滚轮蓄力缩放增益：同向持续滚动约 250px（2~3 个滚轮格）充满切换 */
+const WORK_ZOOM_GAIN = 0.004;
+/** 放大级缩放因子：×2 后卡片高度 = 视口一半（一屏恰好两卡） */
+const WORK_ZOOM_FACTOR = 2;
 function WorkDetailPage({
   mouseRef,
   detailOpen,
@@ -1501,6 +1507,10 @@ function WorkDetailPage({
   const particlesLayerRef = useRef<HTMLDivElement>(null);
   // 详情页根元素 ref（用于绑定 wheel 事件，让外层 overlay 处理退出）
   const innerRef = useRef<HTMLDivElement>(null);
+  // 缩放级别：0 标准 / 1 放大（×2，一屏两卡高度）
+  const zoomLevelRef = useRef(0);
+  // 滚轮蓄力进度（同向持续滚动累积，充满切换缩放级别，反向清零）
+  const wheelChargeRef = useRef(0);
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // trace 跳转整页透视飞入转场状态（点击卡片后触发，动画末切 hash）
@@ -1651,7 +1661,8 @@ function WorkDetailPage({
     dims.containerHeight = container.offsetHeight;
     dims.photoWidth = cards[0].offsetWidth;
     dims.photoHeight = cards[0].offsetHeight;
-    dims.scaleNums = document.body.offsetWidth / dims.standardWidth;
+    // 基础适配 × 缩放级别因子（放大态下窗口变化保持一级缩放）
+    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * (zoomLevelRef.current >= 1 ? WORK_ZOOM_FACTOR : 1);
     // 屏幕可见区换算到容器本地坐标：容器在视口中居中（flex 居中 + scale 原点为中心），
     // 可见区宽高 = 视口宽高 ÷ 缩放比例，再以容器中心对称求出四条边界
     const visW = window.innerWidth / dims.scaleNums;
@@ -1681,6 +1692,109 @@ function WorkDetailPage({
       ani: null,
     }));
   }, []);
+
+  /**
+   * 切换缩放级别（0 标准 / 1 放大）
+   *
+   * 功能：
+   *  - 按级别重算 scaleNums（基础适配 × 缩放因子）并更新可见区边界
+   *    （回绕判定跟随缩放，放大后卡片变大一倍、可见区本地坐标减半）
+   *  - 写入 --scale CSS 变量，.work-photos 既有的 transform 0.5s
+   *    transition 自动平滑放大/还原，无需额外动画代码
+   *
+   * 参数：
+   *  - level {number} 目标级别（0 或 1）
+   */
+  const applyZoomLevel = useCallback((level: number) => {
+    zoomLevelRef.current = level;
+    const container = photosRef.current;
+    const dims = dimsRef.current;
+    if (!container || !dims.containerWidth) return;
+    const factor = level >= 1 ? WORK_ZOOM_FACTOR : 1;
+    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * factor;
+    // 可见区换算到容器本地坐标（与 resize 同一套公式，跟随新 scale）
+    const visW = window.innerWidth / dims.scaleNums;
+    const visH = window.innerHeight / dims.scaleNums;
+    dims.visibleLeft = (dims.containerWidth - visW) / 2;
+    dims.visibleRight = dims.visibleLeft + visW;
+    dims.visibleTop = (dims.containerHeight - visH) / 2;
+    dims.visibleBottom = dims.visibleTop + visH;
+    container.style.setProperty('--scale', String(dims.scaleNums));
+
+    // 原位重排：缩放切换后可见区尺寸变了（放大级窗口只有标准级的一半），
+    // 此前按小窗口回绕的卡片覆盖带可能罩不住放大回来的窗口 —— 表现为
+    // 缩小后边缘露黑。对每张卡按新边界做一次纯回绕（越界的卡搬到对面，
+    // 不改变视角中心、不丢失用户拖到的位置），与 move() 的回绕规则同源。
+    const gap = 64 / dims.scaleNums;
+    let anyMoved = false;
+    imgDataRef.current.forEach(img => {
+      const beforeX = img.mov_x;
+      const beforeY = img.mov_y;
+      while (img.x + img.mov_x > dims.visibleRight + gap) img.mov_x -= dims.containerWidth;
+      while (img.x + img.mov_x < dims.visibleLeft - gap - dims.photoWidth) img.mov_x += dims.containerWidth;
+      while (img.y + img.mov_y > dims.visibleBottom + gap) img.mov_y -= dims.containerHeight;
+      while (img.y + img.mov_y < dims.visibleTop - gap - dims.photoHeight) img.mov_y += dims.containerHeight;
+      if (img.mov_x !== beforeX || img.mov_y !== beforeY) {
+        anyMoved = true;
+        if (img.ani) { img.ani.kill(); }
+      }
+    });
+    if (anyMoved) {
+      // 与 0.5s 缩放过渡同步的短动画，卡片滑入补位而不是瞬移
+      imgDataRef.current.forEach(img => {
+        img.ani = gsap.to(img.node, {
+          transform: `translate(${img.mov_x}px,${img.mov_y}px)`,
+          duration: 0.45,
+          ease: 'power3.out',
+        });
+      });
+    }
+  }, []);
+
+  /**
+   * 根元素 wheel 蓄力缩放
+   *
+   * 功能：
+   *  - 标准级：下滚蓄力（充满 ≈250px）→ 放大到一级（一屏两卡）；
+   *    上滚放行冒泡（保留外层"上滑退出详情页"路径）
+   *  - 放大级：上滚蓄力 → 还原标准级，蓄力期间拦截冒泡避免外层退出抢跑；
+   *    下滚拦截（只有一级放大，无更高级别）
+   *  - 反向滚动清零蓄力，与钢琴页蓄力退出同一套手感参数
+   */
+  useEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (zoomLevelRef.current === 0) {
+        if (e.deltaY <= 0) {
+          wheelChargeRef.current = 0;
+          return; // 上滚：冒泡给外层退出逻辑
+        }
+        wheelChargeRef.current = Math.min(1, wheelChargeRef.current + e.deltaY * WORK_ZOOM_GAIN);
+        if (wheelChargeRef.current >= 1) {
+          wheelChargeRef.current = 0;
+          applyZoomLevel(1);
+        }
+        return;
+      }
+      // 放大级
+      if (e.deltaY >= 0) {
+        wheelChargeRef.current = 0;
+        e.stopPropagation(); // 只有一级，下滚无事发生，拦截防误触外层
+        return;
+      }
+      wheelChargeRef.current = Math.min(1, wheelChargeRef.current + (-e.deltaY) * WORK_ZOOM_GAIN);
+      if (wheelChargeRef.current >= 1) {
+        wheelChargeRef.current = 0;
+        applyZoomLevel(0);
+        e.stopPropagation(); // 切回 0 级的这一下不参与外层退出
+        return;
+      }
+      e.stopPropagation(); // 蓄力期间拦截，避免外层退出同时充能
+    };
+    el.addEventListener('wheel', onWheel, { passive: true });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [applyZoomLevel]);
 
   /**
    * 处理单帧拖拽位移（无限滑动核心算法，移植自 ArikaShow photobox.move）
