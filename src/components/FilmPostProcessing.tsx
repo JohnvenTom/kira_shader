@@ -101,7 +101,9 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
  * 注意事项：
  *  - 噪声采样在世界坐标系：雾"长在原地"，镜头平移/拉远时产生正确视差
  *  - 天空/背景（depth=1）也参与雾：视线长度封顶 uMaxDist，避免背景糊死
- *  - 插在 RenderPass 之后、Bloom 之前（雾要吃 bloom）
+ *  - 插在链尾直绘屏幕（Film 调色之后）：链中 pass 的绘制目标是带深度附件的
+ *    RT，采样深度纹理会构成 WebGL 反馈环（draw 被拒绝 → 全屏黑），链尾
+ *    直绘屏幕则没有深度附件，结构上安全（钢琴页 grade 同款架构）
  *  - 步长越长密度按比例缩减，总雾量近似与步数无关（降级不跳变）
  *  - prefers-reduced-motion 时漂移速度置 0（雾静止）
  * ========================================================================= */
@@ -120,7 +122,9 @@ const VolumetricFogShader = {
     // 暖黑褐：贴合 sepia 调色的暗部基调
     uFogColor: { value: new THREE.Color(0.11, 0.085, 0.06) },
     uDensity: { value: 0.22 },
-    uNoiseScale: { value: 0.55 },
+    // 噪声频率：0.75 → 特征约 1.3 世界单位宽，胶片距相机 ~7 单位时
+    // 屏幕上能容纳 4~5 个浓团（0.55 时只有 2~3 个、且被低对比抹平，看不出纹理）
+    uNoiseScale: { value: 0.75 },
     uDrift: { value: REDUCED_MOTION ? 0 : FOG_DRIFT_SPEED },
     uMaxDist: { value: 26.0 },
     uMaxOpacity: { value: 0.45 },
@@ -204,6 +208,7 @@ const VolumetricFogShader = {
       float phase = 0.55 + 0.45 * max(0.0, dot(dirWorld, -uLightDir));
 
       float acc = 0.0;
+      float wsum = 0.0; // 权重和（近距窗口），用于求平均密度给雾"上色"
       for (int i = 0; i < 12; i++) {
         if (float(i) >= uSteps) break;
         float t = (float(i) + 0.5) * stepLen;
@@ -211,12 +216,21 @@ const VolumetricFogShader = {
         // 慢速漂移（各轴异速，避免整体平移感）
         vec3 np = wp * uNoiseScale + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6);
         // 近距窗口：镜头跟前留 0.6~2.2 的清晰区，中距最浓
-        acc += fbm(np) * smoothstep(0.6, 2.2, t);
+        float w = smoothstep(0.6, 2.2, t);
+        // 对比度整形：值噪声 fbm 输出平缓（集中在 0.5 附近），直接累积出的雾
+        // 是一层均匀灰幕；smoothstep 抬高对比后才有"浓团与间隙"的絮状结构
+        float n = smoothstep(0.32, 0.82, fbm(np));
+        acc += n * w;
+        wsum += w;
       }
-      float fog = 1.0 - exp(-acc * densityScale * 1.8);
+      float fog = 1.0 - exp(-acc * densityScale * 2.2);
       fog = clamp(fog, 0.0, 1.0) * uMaxOpacity;
 
-      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase);
+      // 雾亮度跟随局部密度：浓处亮、稀处暗 —— 颜色本身携带密度信息，
+      // 絮状纹理才真正可见（若 fogLit 是常量色，只剩混合比例在变，
+      // 指数累积又会把比例差异抹平，观感即"没有纹理"）
+      float nAvg = wsum > 0.001 ? acc / wsum : 0.0;
+      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.4 + 1.15 * nAvg);
       gl_FragColor = vec4(mix(base.rgb, fogLit, fog), base.a);
     }
   `,
@@ -574,26 +588,17 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     depthTexRef.current = depthTexture;
 
     const c = new EffectComposer(gl, composerRT);
-    // EffectComposer 内部 clone 出 renderTarget2 时会连带克隆一张新的深度纹理，
-    // 我们传入的 depthTexture 只挂在 renderTarget1 上 → 雾 pass 读的那张永远
-    // 不会被写入、保持清屏值 1.0 → 全屏走"远景 26 单位"分支蒙上最大浓雾。
-    // 两个 target 显式指向同一张深度纹理（钢琴页 PianoPostProcessing 同款修法）
-    c.renderTarget2.depthTexture = depthTexture;
+    // 注意：renderTarget2（clone）保留其克隆深度纹理即可，不要与 rt1 显式共享
+    // 同一张纹理对象（否则雾 pass 采样它、又画进挂着它的 rt2，构成 WebGL
+    // 反馈环，Chrome 拒绝整个 draw → 后处理链断掉 → 全屏黑）。
+    // clone 出的深度与 rt1 的共享同一 .source（同一块 GPU 纹理），因此无论
+    // RenderPass 因 ping-pong 写进 rt1 还是 rt2，场景深度总落在同一块纹理里，
+    // 雾 pass 读 rt1 的 depthTexture 永远是本帧深度。
     c.addPass(new RenderPass(scene, camera));
 
     // Bloom 和 MotionBlur 会污染 alpha 通道（假设不透明场景），
     // 透明模式（叠加 Canvas）下跳过它们，只保留镜头畸变 + 色散 + 暗角 + 颗粒
     if (!transparent) {
-      // 体积雾（RenderPass 之后、Bloom 之前：雾气要被 bloom 染上光晕）
-      // 必须禁用自身深度读写：rt1/rt2 共享同一张深度纹理，全屏 quad 默认
-      // 会把深度写成近平面值 0，踩烂雾 pass 正在读的场景深度
-      const fogPass = new ShaderPass(VolumetricFogShader);
-      fogPass.material.depthTest = false;
-      fogPass.material.depthWrite = false;
-      fogPass.uniforms.tDepth.value = depthTexture;
-      c.addPass(fogPass);
-      fogPassRef.current = fogPass;
-
       // Bloom（参考 shader.se 的胶片过曝感）
       const bloom = new UnrealBloomPass(
         new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
@@ -606,17 +611,38 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
 
       // MotionBlur（ping-pong）
       const motionPass = new ShaderPass(MotionBlurShader);
+      motionPass.material.depthTest = false;
+      motionPass.material.depthWrite = false;
       motionPass.uniforms.tPrevious.value = prevRTRef.current.texture;
       motionPass.uniforms.uStrength.value = params.motionBlur;
       c.addPass(motionPass);
       motionPassRef.current = motionPass;
     }
 
-    // Film shader：畸变 + 色差 + 调色 + 颗粒 + 暗角
+    // Film shader：畸变 + 色差 + 调色 + 颗粒 + 暗角（画进 RT；链尾雾才是直绘屏幕的 pass）
     const filmPass = new ShaderPass(FilmShader);
-    filmPass.renderToScreen = true;
+    filmPass.material.depthTest = false;
+    filmPass.material.depthWrite = false;
     c.addPass(filmPass);
     filmPassRef.current = filmPass;
+
+    // 体积雾：链尾直绘屏幕（钢琴页 PianoPostProcessing 的 grade 同款架构）。
+    // 雾 pass 需要采样场景深度纹理，而链中 pass 的绘制目标是带深度附件的 RT ——
+    // 采样与附件同体即触发 WebGL 反馈环（Chrome 直接拒绝该 draw，后处理链
+    // 从此断掉 → 全屏黑）。放在链尾直绘屏幕后，绘制目标是默认 framebuffer，
+    // 没有深度附件，结构上不可能构成反馈环。
+    // 雾在 Film 调色之后：雾气会被暗角/颗粒一并处理，视觉一致。
+    if (!transparent) {
+      const fogPass = new ShaderPass(VolumetricFogShader);
+      fogPass.material.depthTest = false;
+      fogPass.material.depthWrite = false;
+      // 深度纹理用 rt1 那张：renderTarget2 的克隆深度与其共享 .source
+      // （同一块 GPU 纹理），RenderPass 无论因 ping-pong 写进 rt1 还是 rt2，
+      // 场景深度总落在同一块纹理上，这里读到的永远是本帧深度
+      fogPass.uniforms.tDepth.value = c.renderTarget1.depthTexture;
+      c.addPass(fogPass);
+      fogPassRef.current = fogPass;
+    }
 
     composerRef.current = c;
     // eslint-disable-next-line no-console
@@ -635,6 +661,15 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       depthTexRef.current.image.width = Math.max(1, Math.floor(size.width * pr));
       depthTexRef.current.image.height = Math.max(1, Math.floor(size.height * pr));
       depthTexRef.current.dispose();
+    }
+    // rt2 克隆出的深度纹理同步尺寸：构造时取的是 canvas 初始尺寸（常 300×150），
+    // 不手动改 image 会导致 RenderPass 写 rt2 时颜色/深度附件尺寸不匹配
+    const rt2Depth = composerRef.current?.renderTarget2?.depthTexture;
+    if (rt2Depth && rt2Depth !== depthTexRef.current) {
+      const pr = gl.getPixelRatio();
+      rt2Depth.image.width = Math.max(1, Math.floor(size.width * pr));
+      rt2Depth.image.height = Math.max(1, Math.floor(size.height * pr));
+      rt2Depth.dispose();
     }
     if (composerRef.current) {
       composerRef.current.setSize(size.width, size.height);
@@ -744,6 +779,8 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     }
 
     // 体积雾：时间 + 相机矩阵（视线重建；雾锚定世界坐标随镜头产生视差）
+    // tDepth 在创建时一次性绑定 rt1 的深度纹理即可（见创建处注释：
+    // rt1/rt2 的克隆深度共享同一块 GPU 纹理，读哪张都是本帧场景深度）
     if (fogPassRef.current) {
       const u = fogPassRef.current.uniforms;
       u.uTime.value = time;

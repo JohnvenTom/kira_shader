@@ -2448,13 +2448,12 @@ const CAMERA_END = { x: 0, y: 0, z: 0.2 };
 const HOME_FOV = 45;
 const END_FOV = 70;
 
-// 拖速拉镜参数：横向拖动越快，镜头越后退 + FOV 越广
-// （快甩 → 拉远总览 → 段间闪光切换 → 松手回落凑近）
+// 拖速拉镜参数：横向拖动越快，FOV 越广（纯 FOV 变化已足够传达速度感；
+// 不再叠加 z 轴后退 —— 后退会改变主体大小与构图，观感是"拉远"而不是"提速"）
 const DRAG_DOLLY_CONFIG = {
   satVel: 10, // 饱和速度（世界单位/s）：中等偏快的甩动即拉满
-  maxBack: 3, // 最大 z 后退量（世界单位，叠加在滚动推进之上）
   maxFov: 8, // 最大额外 FOV（°）
-  attackLam: 22, // 拉远跟随速率（1/s，快起）
+  attackLam: 22, // 拉广跟随速率（1/s，快起）
   releaseLam: 8, // 回落速率（1/s，≈300ms 收敛，慢落）
 };
 
@@ -2814,9 +2813,9 @@ export function FilmScene({
     camera.position.y =
       CAMERA_HOME.y + (CAMERA_END.y - CAMERA_HOME.y) * cameraT +
       mouseSmoothed.y * 0.08 * parallaxStrength;
+    // z 只由滚动推进决定：拖速不再后退（maxBack 已移除，速度感全交给 FOV）
     camera.position.z =
-      CAMERA_HOME.z + (CAMERA_END.z - CAMERA_HOME.z) * cameraT +
-      speedTRef.current * DRAG_DOLLY_CONFIG.maxBack;
+      CAMERA_HOME.z + (CAMERA_END.z - CAMERA_HOME.z) * cameraT;
 
     // 相机看向当前胶片位置（跟随拖动平滑移动）
     camera.lookAt(cameraX, 0, 0);
