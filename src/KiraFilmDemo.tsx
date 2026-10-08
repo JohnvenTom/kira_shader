@@ -790,7 +790,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
             onSectionChange={handleSectionChange}
             initialSection={startSection}
           />
-          <FilmPostProcessing params={filmParams} />
+          {/* mouseRef 传入后处理：体积雾与鼠标互动（拨开雾气） */}
+          <FilmPostProcessing params={filmParams} mouseRef={mouseRef} />
           <CanvasContextGuard />
         </Canvas>
       </div>

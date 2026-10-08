@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 
 /**
  * 胶片后处理参数（参考 shader.se 扒出的源码）
@@ -82,9 +83,10 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   noiseVelocity: 1.0,
   // 雾浓度按主体距离校准：胶片平面距初始相机约 7 个单位，
   // 密度过高会把深色片基/齿孔整个盖没（0.55 时胶片上约 69% 雾、
-  // 边缘消失）；0.22 + 0.45 时约 29% 薄雾，主体可读
+  // 边缘消失）；0.22 + 0.52 时白团扫过胶片面约 25~30% 混合，
+  // 主体始终透出，背景区浓团稍重
   fogDensity: 0.22,
-  fogOpacity: 0.45,
+  fogOpacity: 0.52,
 };
 
 /* =========================================================================
@@ -107,10 +109,72 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
  *  - 步长越长密度按比例缩减，总雾量近似与步数无关（降级不跳变）
  *  - prefers-reduced-motion 时漂移速度置 0（雾静止）
  * ========================================================================= */
-const FOG_DRIFT_SPEED = 0.05;
+// 雾漂移速度（噪声空间单位/s）：0.8 ≈ 世界空间 2.3 单位/s，
+// 白团约 2.5 秒横穿整个视野 —— 明确的流动感
+const FOG_DRIFT_SPEED = 0.8;
 const REDUCED_MOTION =
   typeof window !== 'undefined' &&
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+/* =========================================================================
+ * FluidAdvShader - 鼠标流场模拟（半拉格朗日自平流 + 高斯注入）
+ *
+ * 功能：维护一张持久 2D 速度纹理（ping-pong），每帧：
+ *  1. 半拉格朗日回溯采样：v(p) ← v(p - v(p)·dt) —— 速度场被自身平流，
+ *     这是"搅一下会卷出漩涡并随流漂走"的流体感来源
+ *  2. 指数耗散：v ← v·exp(-uDiss·dt)，无输入约 2~3 秒平复
+ *  3. 鼠标注入：以光标为中心的圆形高斯核（x 按宽高比校正）叠加上
+ *     clamp 后的鼠标速度（uv/s），划动越快注入越猛
+ * 输出的速度场被体积雾 pass 采样，改写雾的流动方向
+ *
+ * 注意事项：
+ *  - RT 固定 256×256（HalfFloat + Linear），与画布尺寸解耦，开销恒定
+ *  - 速度存 uv 空间（x 右 y 上），幅度 clamp ±1.8 防数值爆炸
+ *  - prefers-reduced-motion 时仍可用（交互驱动，非自主运动）
+ * ========================================================================= */
+const VEL_SIM_SIZE = 256;
+
+const FluidAdvShader = {
+  uniforms: {
+    tPrev: { value: null as THREE.Texture | null },
+    uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+    uMouseVel: { value: new THREE.Vector2(0, 0) },
+    uDt: { value: 0.016 },
+    uDiss: { value: 0.85 },
+    uAspect: { value: 16 / 9 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tPrev;
+    uniform vec2 uMouse;
+    uniform vec2 uMouseVel;
+    uniform float uDt;
+    uniform float uDiss;
+    uniform float uAspect;
+    varying vec2 vUv;
+    void main() {
+      // 1. 半拉格朗日回溯：当前速度决定回溯坐标，取"来处"的速度
+      vec2 vel = texture2D(tPrev, vUv).xy;
+      vec2 coord = clamp(vUv - vel * uDt, vec2(0.0), vec2(1.0));
+      vec2 adv = texture2D(tPrev, coord).xy;
+      // 2. 指数耗散（无输入约 2~3 秒平复）
+      adv *= exp(-uDiss * uDt);
+      // 3. 鼠标注入：圆形高斯核（x 按宽高比压扁校正）
+      vec2 d = vUv - uMouse;
+      d.x *= uAspect;
+      float g = exp(-dot(d, d) / (2.0 * 0.032 * 0.032));
+      adv += clamp(uMouseVel, vec2(-3.0), vec2(3.0)) * g * min(uDt * 24.0, 1.0) * 1.2;
+      adv = clamp(adv, vec2(-3.5), vec2(3.5));
+      gl_FragColor = vec4(adv, 0.0, 1.0);
+    }
+  `,
+};
 
 const VolumetricFogShader = {
   uniforms: {
@@ -119,17 +183,26 @@ const VolumetricFogShader = {
     uProjInv: { value: new THREE.Matrix4() },
     uViewInv: { value: new THREE.Matrix4() },
     uTime: { value: 0 },
-    // 暖黑褐：贴合 sepia 调色的暗部基调
-    uFogColor: { value: new THREE.Color(0.11, 0.085, 0.06) },
+    // 乳白偏暖：白色压到 0.55 量级 + 调制上限收窄，浓团核心不再饱和成
+    // 纯白 —— 读成"柔和白汽"而不是一块发亮的白涂料
+    uFogColor: { value: new THREE.Color(0.55, 0.52, 0.47) },
     uDensity: { value: 0.22 },
-    // 噪声频率：0.75 → 特征约 1.3 世界单位宽，胶片距相机 ~7 单位时
-    // 屏幕上能容纳 4~5 个浓团（0.55 时只有 2~3 个、且被低对比抹平，看不出纹理）
-    uNoiseScale: { value: 0.75 },
+    // 噪声频率 0.35：特征约 2.9 世界单位 —— 团块仍"大块"，但横向拖动切换
+    // section（相机平移 4 单位）时能扫过 1.4 个特征宽度，雾的游移清晰可感
+    // （0.2 时拖一整帧只挪 0.8 个特征宽度，观感即"雾不跟着动"）
+    uNoiseScale: { value: 0.35 },
     uDrift: { value: REDUCED_MOTION ? 0 : FOG_DRIFT_SPEED },
     uMaxDist: { value: 26.0 },
     uMaxOpacity: { value: 0.45 },
     uLightDir: { value: new THREE.Vector3(-0.45, 0.7, 0.35).normalize() },
     uSteps: { value: 12 },
+    // === 鼠标流场交互 ===
+    // tVel：持久速度场（半拉格朗日自平流的 2D 纹理，鼠标划动注入速度）
+    // uVP：视图投影矩阵（把雾采样点投到屏幕上去采样速度场）
+    // uVelStrength：流场对噪声采样坐标的推动强度
+    tVel: { value: null as THREE.Texture | null },
+    uVP: { value: new THREE.Matrix4() },
+    uVelStrength: { value: 2.2 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -152,6 +225,9 @@ const VolumetricFogShader = {
     uniform float uMaxOpacity;
     uniform vec3 uLightDir;
     uniform float uSteps;
+    uniform sampler2D tVel;
+    uniform mat4 uVP;
+    uniform float uVelStrength;
     varying vec2 vUv;
 
     // 3D hash 噪声（整点格 + 三线性插值），无纹理依赖
@@ -178,9 +254,10 @@ const VolumetricFogShader = {
         f.z
       );
     }
-    // 2 octave fbm：细节够用，也是性能降级的第一档
+    // 低频为主的 2 octave fbm：大团雾要"整块、边缘柔和"，
+    // 高频占比过大会碎成絮状（那是上一版碎雾的观感来源）
     float fbm(vec3 p) {
-      return vnoise(p) * 0.65 + vnoise(p * 2.13) * 0.35;
+      return vnoise(p) * 0.8 + vnoise(p * 2.3) * 0.2;
     }
 
     void main() {
@@ -213,24 +290,34 @@ const VolumetricFogShader = {
         if (float(i) >= uSteps) break;
         float t = (float(i) + 0.5) * stepLen;
         vec3 wp = camWorld + dirWorld * t;
-        // 慢速漂移（各轴异速，避免整体平移感）
-        vec3 np = wp * uNoiseScale + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6);
+        // === 鼠标流场：改变雾的流向 ===
+        // 把雾采样点投影到屏幕，读取持久速度场（半拉格朗日自平流 + 鼠标注入），
+        // 用场速度偏移噪声采样坐标 —— 雾的流动方向被鼠标划动真实改写：
+        // 甩一下，附近的雾顺着甩动方向流、卷出漩涡，几秒后耗散平复。
+        // 屏幕速度（uv：x 右 y 上）映射到世界 XY（相机近似朝 -z 看）方向一致。
+        vec4 clipPos = uVP * vec4(wp, 1.0);
+        vec2 suv = clipPos.xy / clipPos.w * 0.5 + 0.5;
+        vec2 flow = texture2D(tVel, clamp(suv, vec2(0.0), vec2(1.0))).xy;
+        vec3 np = wp * uNoiseScale
+          + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6)
+          + vec3(flow * uVelStrength, 0.0);
         // 近距窗口：镜头跟前留 0.6~2.2 的清晰区，中距最浓
         float w = smoothstep(0.6, 2.2, t);
-        // 对比度整形：值噪声 fbm 输出平缓（集中在 0.5 附近），直接累积出的雾
-        // 是一层均匀灰幕；smoothstep 抬高对比后才有"浓团与间隙"的絮状结构
-        float n = smoothstep(0.32, 0.82, fbm(np));
+        // 高阈值整形 + 宽过渡带：阈值以下归零保住"大片留白 + 一大块白团"，
+        // 但过渡带拉宽到 0.44~0.98 —— 密度从零缓慢爬升，边缘呈消散的裙边
+        // 而不是硬切边界（真实雾的边缘是渐稀，不会有明显轮廓线）
+        float n = smoothstep(0.44, 0.98, fbm(np));
         acc += n * w;
         wsum += w;
       }
-      float fog = 1.0 - exp(-acc * densityScale * 2.2);
+      float fog = 1.0 - exp(-acc * densityScale * 3.0);
       fog = clamp(fog, 0.0, 1.0) * uMaxOpacity;
 
-      // 雾亮度跟随局部密度：浓处亮、稀处暗 —— 颜色本身携带密度信息，
-      // 絮状纹理才真正可见（若 fogLit 是常量色，只剩混合比例在变，
-      // 指数累积又会把比例差异抹平，观感即"没有纹理"）
+      // 雾亮度跟随局部密度：浓处亮、稀处暗。调制上限收窄到 0.3 + 1.05，
+      // 配合压暗的雾色，核心最多到 ~1.0（仅正对光源的浓核微饱和），
+      // 不再出现整片刺眼的纯白
       float nAvg = wsum > 0.001 ? acc / wsum : 0.0;
-      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.4 + 1.15 * nAvg);
+      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.3 + 1.05 * nAvg);
       gl_FragColor = vec4(mix(base.rgb, fogLit, fog), base.a);
     }
   `,
@@ -503,6 +590,13 @@ interface FilmPostProcessingProps {
   /** 是否启用后处理 */
   enabled?: boolean;
   /**
+   * 鼠标归一化坐标 ref（-1~1，屏幕向下为正；KiraFilmDemo 的 mouseRef）。
+   * 传入后体积雾与鼠标做流场交互：划动速度注入一张持久速度纹理（每帧
+   * 半拉格朗日自平流 + 耗散），雾按屏幕位置采样该场 —— 流向被真实改写、
+   * 卷出漩涡并随流漂走，无输入约 2~3 秒平复
+   */
+  mouseRef?: React.MutableRefObject<{ x: number; y: number }>;
+  /**
    * 透明模式：用于叠加在另一个 Canvas 上层的场景
    * - 跳过 UnrealBloomPass 和 MotionBlurPass（它们会污染 alpha 通道）
    * - 只保留镜头畸变 + 色散 + 暗角 + 颗粒
@@ -534,7 +628,7 @@ interface FilmPostProcessingProps {
  *  - Bloom 动态闪烁：1.5 × base + 0.03 × base × (4 sin 波) + bloomBoost
  *  - MotionBlur 帧率独立：以 120fps 为基准，dt 大于基准时减弱，小于时增强
  */
-export function FilmPostProcessing({ params, enabled = true, transparent = false }: FilmPostProcessingProps) {
+export function FilmPostProcessing({ params, enabled = true, transparent = false, mouseRef }: FilmPostProcessingProps) {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const filmPassRef = useRef<ShaderPass | null>(null);
@@ -550,6 +644,48 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
 
   // 上一帧时间戳，用于计算 deltaTime
   const prevTimeRef = useRef(0);
+  // 鼠标流场状态：上帧坐标（算注入速度）；ping-pong 速度 RT + 全屏 quad
+  const velMouseLastRef = useRef<{ x: number; y: number } | null>(null);
+  const velReadRef = useRef<THREE.WebGLRenderTarget | null>(null);
+  const velWriteRef = useRef<THREE.WebGLRenderTarget | null>(null);
+  const velQuadRef = useRef<FullScreenQuad | null>(null);
+  // 复用的临时矩阵（uVP = 投影 × 视图）
+  const tmpVPRef = useRef(new THREE.Matrix4());
+
+  // 创建/释放流场模拟资源（256² 双缓冲，与画布尺寸解耦）
+  useEffect(() => {
+    const mk = () => {
+      const rt = new THREE.WebGLRenderTarget(VEL_SIM_SIZE, VEL_SIM_SIZE, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      });
+      rt.texture.minFilter = THREE.LinearFilter;
+      rt.texture.magFilter = THREE.LinearFilter;
+      rt.texture.wrapS = THREE.ClampToEdgeWrapping;
+      rt.texture.wrapT = THREE.ClampToEdgeWrapping;
+      return rt;
+    };
+    velReadRef.current = mk();
+    velWriteRef.current = mk();
+    velQuadRef.current = new FullScreenQuad(
+      new THREE.ShaderMaterial({
+        uniforms: THREE.UniformsUtils.clone(FluidAdvShader.uniforms),
+        vertexShader: FluidAdvShader.vertexShader,
+        fragmentShader: FluidAdvShader.fragmentShader,
+        depthTest: false,
+        depthWrite: false,
+      })
+    );
+    return () => {
+      velReadRef.current?.dispose();
+      velWriteRef.current?.dispose();
+      velQuadRef.current?.dispose();
+      velReadRef.current = null;
+      velWriteRef.current = null;
+      velQuadRef.current = null;
+    };
+  }, []);
 
   // 创建 EffectComposer + 各 Pass
   useMemo(() => {
@@ -778,6 +914,39 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       filmPassRef.current.uniforms.uTime.value = time;
     }
 
+    // === 鼠标流场模拟：先推一步速度场，雾 pass 再采样它 ===
+    if (velQuadRef.current && velReadRef.current && velWriteRef.current) {
+      const dt = Math.min(Math.max(delta, 0.001), 0.05);
+      let mvx = 0;
+      let mvy = 0;
+      let mux = 0.5;
+      let muy = 0.5;
+      if (mouseRef) {
+        const m = mouseRef.current;
+        // NDC → uv（y 取反：屏幕向下 → uv 向上）
+        mux = (m.x + 1) / 2;
+        muy = (1 - m.y) / 2;
+        if (velMouseLastRef.current) {
+          // 鼠标速度（uv/s），clamp 防爆炸
+          mvx = (m.x - velMouseLastRef.current.x) / 2 / dt;
+          mvy = -(m.y - velMouseLastRef.current.y) / 2 / dt;
+        }
+        velMouseLastRef.current = { x: m.x, y: m.y };
+      }
+      const vu = (velQuadRef.current.material as THREE.ShaderMaterial).uniforms;
+      vu.uDt.value = dt;
+      vu.uMouse.value.set(mux, muy);
+      vu.uMouseVel.value.set(mvx, mvy);
+      vu.uAspect.value = size.width / size.height;
+      vu.tPrev.value = velReadRef.current.texture;
+      gl.setRenderTarget(velWriteRef.current);
+      velQuadRef.current.render(gl);
+      // ping-pong 交换
+      const t = velReadRef.current;
+      velReadRef.current = velWriteRef.current;
+      velWriteRef.current = t;
+    }
+
     // 体积雾：时间 + 相机矩阵（视线重建；雾锚定世界坐标随镜头产生视差）
     // tDepth 在创建时一次性绑定 rt1 的深度纹理即可（见创建处注释：
     // rt1/rt2 的克隆深度共享同一块 GPU 纹理，读哪张都是本帧场景深度）
@@ -786,6 +955,14 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       u.uTime.value = time;
       (u.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
       (u.uViewInv.value as THREE.Matrix4).copy(camera.matrixWorld);
+      // 流场纹理 + 视图投影矩阵（把雾采样点投到屏幕去采样速度场）
+      if (velReadRef.current) {
+        u.tVel.value = velReadRef.current.texture;
+      }
+      camera.updateMatrixWorld();
+      (tmpVPRef.current as THREE.Matrix4)
+        .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      (u.uVP.value as THREE.Matrix4).copy(tmpVPRef.current);
     }
 
     // 渲染
