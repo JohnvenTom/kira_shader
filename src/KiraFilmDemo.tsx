@@ -861,8 +861,28 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           /* === Grand Piano 详情页：全屏可弹奏 3D 三角钢琴 ===
            - 程序化建模的 88 键三角钢琴 + WebAudio 加法合成音源
            - 滚动驱动的苹果风镜头旅程（远景 → 键盘 → 演奏位）
-           - 鼠标点击 / 键盘 A~L 行 / MIDI 输入弹奏，含踏板与控制面板 */
-          <PianoDetailPage detailOpen={detailOpen} />
+           - 鼠标点击 / 键盘 A~L 行 / MIDI 输入弹奏，含踏板与控制面板
+           - 蓄力退出：相机拉到最远后继续下滚充满 → onRequestClose 收起详情 */
+          <PianoDetailPage
+            detailOpen={detailOpen}
+            onRequestClose={() => {
+              // 钢琴页蓄力退出：收起详情 + 惯性系统同步归位。
+              // 只 setDetailOpen(false) 不够——display 仍停在 1，下一次
+              // 滚轮唤醒 tickScroll 时滞回判定（display > SCROLL_ENTER 即
+              // 重开详情）会把钢琴页重新弹开并重置旅程（表现为"退出了却
+              // 又回到钢琴页开头"）。把能量清零并留一点负向缓冲、display
+              // 压到退出阈值之下：镜头在淡出掩护下平滑退回 HOME，
+              // 退出后也不会被顺手的一下滚轮立刻拽回详情页
+              const st = scrollStateRef.current;
+              st.energy = -0.25;
+              st.v = 0;
+              st.display = Math.min(st.display, SCROLL_EXIT - 0.01);
+              setScrollProgress(st.display);
+              detailOpenRef.current = false;
+              setDetailOpen(false);
+              ensureScrollLoop();
+            }}
+          />
         ) : mountedSection === 4 ? (
           /* === Black Hole 详情页：实时光线步进黑洞 ===
            - 移植 refactorWeb 的 blackhole_main.frag（引力透镜 + 吸积盘 + 星云）

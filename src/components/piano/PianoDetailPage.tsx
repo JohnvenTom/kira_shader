@@ -12,8 +12,9 @@
  *      · 左下音符读数（弹奏时实时显示音名）与 FPS/三角面统计
  *      · 底部操作提示（拖动/缩放/滑奏/电脑键盘弹奏），首次弹奏后变淡
  *      · 顶部 toast（八度切换等提示）
- *  - 退出路径：交互模式下把相机拉到最远后继续上滑 → 滚轮冒泡到外层
- *    详情覆盖层 → 外层滚动进度回落 → 丝滑退出详情页
+ *  - 退出路径：交互模式下把相机拉到最远（下滚缩到最小）后继续下滚蓄力
+ *    （约 250px 充满）→ 调用 onRequestClose 由外层丝滑收起详情页；
+ *    未蓄满前不退出，缩回相机（上滚）清空蓄力
  *
  * 参数：
  *  - detailOpen 外层详情页是否打开（每次进入时重置内部滚动与镜头旅程）
@@ -57,6 +58,13 @@ const VIEW_BUTTONS: { key: string; label: string }[] = [
   { key: 'detail', label: '键盘特写' },
 ];
 
+/**
+ * 蓄力退出增益：交互模式相机拉到最远（缩到最小）后继续下滚，
+ * 约 250px（2~3 个滚轮格）充满退出 —— 同方向"滚过头"的自然手势；
+ * 拉远过程中（半径未到 max）不蓄力，缩回相机（上滚）清空蓄力
+ */
+const EXIT_CHARGE_GAIN = 0.004;
+
 /** UI 快照初始值（面板按钮文案） */
 const INITIAL_UI: PianoUiSnapshot = {
   lidLabel: '琴盖：全开',
@@ -66,13 +74,24 @@ const INITIAL_UI: PianoUiSnapshot = {
   demoPlaying: false,
 };
 
-export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
+export function PianoDetailPage({
+  detailOpen,
+  onRequestClose,
+}: {
+  detailOpen: boolean;
+  /** 请求关闭详情页（蓄力退出充满时调用；外层置 detailOpen=false 走标准淡出） */
+  onRequestClose?: () => void;
+}) {
   // 内部独立滚动容器 ref（驱动镜头旅程进度）
   const pianoScrollRef = useRef<HTMLDivElement>(null);
   // 镜头旅程滚动进度 0~1（由 PianoScene 每帧读取）
   const pianoProgress = useRef(0);
   // 是否已滚到顶（防止滚轮回退时误触发外层退出逻辑）
   const atTopRef = useRef(true);
+  // 蓄力退出进度 0~1（相机拉到最远后继续下滚累积，充满直接请求关闭）
+  const exitChargeRef = useRef(0);
+  // 蓄力退出是否已触发（防止充满后的连发滚轮重复调用 onClose）
+  const exitFiredRef = useRef(false);
   // 根元素 ref（绑定 wheel 拦截）
   const innerRef = useRef<HTMLDivElement>(null);
   // PianoScene 命令式 API
@@ -151,6 +170,8 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
       el.scrollTop = 0;
       pianoProgress.current = 0;
       atTopRef.current = true;
+      exitChargeRef.current = 0;
+      exitFiredRef.current = false;
       if (contentLayerRef.current) {
         contentLayerRef.current.style.setProperty('--piano-progress', '0');
       }
@@ -166,8 +187,8 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
    *    把 deltaY 转发到内部滚动容器驱动运镜；
    *    已滚到顶且继续上滑 → 放行冒泡，让外层退出详情页
    *  - 交互期间：滚轮交给轨道控制器缩放（canvas 上已 preventDefault）；
-   *    相机已拉到最远且继续上滑 → 放行冒泡退出详情页；
-   *    其余情况 stopPropagation，避免外层滚动误退出
+   *    相机拉到最远（缩到最小）后继续下滚 → 蓄力（约 250px 充满）直接
+   *    请求外层关闭详情页；上滚（缩回相机）清空蓄力
    *
    * 参数：无（通过闭包读取各 ref）
    * 返回值：无
@@ -186,9 +207,21 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
         scrollEl.scrollTop += e.deltaY;
         return;
       }
-      // 交互期间：拉到最远再上滑 → 放行给外层退出
-      if (e.deltaY < 0 && apiRef.current?.isZoomedOut()) return;
-      // 其余交给轨道缩放，阻止冒泡避免外层误退出
+      // 交互期间：拉到最远（缩到最小）后继续下滚 → 蓄力退出。
+      // 下滚在轨道上本来是拉远，半径已在 maxRadius 被 clamp（无副作用），
+      // 继续下滚即为"滚过头"意图：按位移蓄力，充满（≈250px，2~3 格）
+      // 直接请求外层关闭详情页；未蓄满期间阻冒泡，防止外层误触
+      if (e.deltaY > 0 && apiRef.current?.isZoomedOut()) {
+        exitChargeRef.current = Math.min(1, exitChargeRef.current + e.deltaY * EXIT_CHARGE_GAIN);
+        if (exitChargeRef.current >= 1 && !exitFiredRef.current) {
+          exitFiredRef.current = true;
+          onRequestClose?.();
+        }
+        e.stopPropagation();
+        return;
+      }
+      // 上滚（缩回相机）清空蓄力；其余交给轨道缩放，阻冒泡避免外层误退出
+      if (e.deltaY < 0) exitChargeRef.current = 0;
       e.stopPropagation();
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -436,7 +469,7 @@ export function PianoDetailPage({ detailOpen }: { detailOpen: boolean }) {
           <kbd>E</kbd> · <kbd>空格</kbd> 延音踏板 · <kbd>←</kbd>
           <kbd>→</kbd> 移八度
           <br />
-          拉远相机（滚轮向上到最远）后继续上滑可返回胶片
+          滚轮向下拉远相机，拉到最远后继续下滚蓄力（约三格）返回胶片
         </div>
 
         {/* toast 提示（八度切换等，由 PianoScene 写入） */}
