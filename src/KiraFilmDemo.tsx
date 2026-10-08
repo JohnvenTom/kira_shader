@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { FilmScene, SECTIONS, PROJECTS, ContactScene, OfficeScene } from './components/FilmScene';
@@ -38,46 +38,6 @@ export const FILM_SECTION_BY_HASH: Record<string, number> = {
   '#about': 2,
   '#contact': 3,
 };
-
-/**
- * 把字符串拆成逐字 span（用于逐字浮现动画）
- *
- * 功能：将传入的字符串按字符拆分，每个字符包进一个 <span class="hero-char">，
- *      并根据字符索引递增设置 transitionDelay，实现"一个一个字蹦出来"的效果。
- *      空格会渲染为不可折叠的空白 span，避免被 HTML 合并。
- *
- * 参数：
- *  - text           {string}  要拆分的字符串
- *  - baseDelay      {number}  该字符串起始延迟（ms）
- *  - step           {number}  每个字符之间的延迟间隔（ms）
- *  - visible        {boolean} 是否可见（控制 .visible class）
- *
- * 返回值：ReactNode[] 每个字符对应的 span 节点数组
- *
- * 异常：无
- *
- * 注意事项：
- *  - 空格用 \u00A0（不间断空格）替换，防止行内空白被折叠
- *  - display:inline-block 让 transform 生效（inline 元素 transform 不起作用）
- */
-function splitTextToChars(
-  text: string,
-  baseDelay: number,
-  step: number
-): ReactNode[] {
-  return Array.from(text).map((ch, i) => (
-    <span
-      key={`${text}-${i}`}
-      className="hero-char"
-      style={{
-        transitionDelay: `${baseDelay + i * step}ms`,
-        display: 'inline-block',
-      }}
-    >
-      {ch === ' ' ? '\u00A0' : ch}
-    </span>
-  ));
-}
 
 /**
  * === 镜头推进惯性系统参数（速度门控 + 自动回退，双向）===
@@ -836,7 +796,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       </div>
 
       {/* 第 3 层：内容覆盖层 z-45
-          文字 UI 随 section 切换淡入淡出，由 textVisible 控制 */}
+          段号/描述随 section 切换淡入淡出（textVisible 控制）；
+          大标题 + 副标题已移入 3D 场景（FilmScene 的 SectionTitles），
+          作为场景物体吃 bloom/颗粒/色散/运动模糊 */}
       <div className="content-overlay film-content-overlay">
         <div
           className={`hero-block film-hero-block ${textVisible ? 'visible' : ''}`}
@@ -847,18 +809,6 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
             <span className="film-index-separator">/</span>
             <span className="film-index-total">0{SECTIONS.length}</span>
           </div>
-          <h1 className={`hero-title film-hero-title ${textVisible ? 'visible' : ''}`}>
-            {currentSection.title.split(' ').map((word, wi, arr) => (
-              <span className="hero-line" key={wi}>
-                {splitTextToChars(word, wi * 200, 30)}
-                {wi < arr.length - 1 && <span className="hero-char" style={{ display: 'inline-block' }}>{'\u00A0'}</span>}
-              </span>
-            ))}
-          </h1>
-          <p className={`hero-subtitle film-hero-subtitle ${textVisible ? 'visible' : ''}`}
-             style={{ color: currentSection.accentColor }}>
-            {currentSection.subtitle}
-          </p>
           <p className={`film-description ${textVisible ? 'visible' : ''}`}>
             {currentSection.description}
           </p>

@@ -46,6 +46,10 @@ export interface FilmFXParams {
   vignetteSmoothness: number;
   noiseIntensity: number;
   noiseVelocity: number;
+  /** 体积雾密度（0~1.5，越大雾越浓） */
+  fogDensity: number;
+  /** 体积雾最大不透明度（0~1，0 = 完全关闭雾效果） */
+  fogOpacity: number;
 }
 
 /**
@@ -76,6 +80,146 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   vignetteSmoothness: 0.3,
   noiseIntensity: 0.2,
   noiseVelocity: 1.0,
+  // 雾浓度按主体距离校准：胶片平面距初始相机约 7 个单位，
+  // 密度过高会把深色片基/齿孔整个盖没（0.55 时胶片上约 69% 雾、
+  // 边缘消失）；0.22 + 0.45 时约 29% 薄雾，主体可读
+  fogDensity: 0.22,
+  fogOpacity: 0.45,
+};
+
+/* =========================================================================
+ * VolumetricFogShader - 体积雾 pass（深度重建 + 噪声光线步进）
+ *
+ * 功能：模拟胶片走廊里漂浮的雾气，随镜头运动产生真实体积感：
+ *  1. 从 depthTexture 重建像素视线（屏幕 UV → NDC → 逆投影 → 视线段）
+ *  2. 沿视线步进 12 步（固定上限，运行时 uSteps 可降级到 8），
+ *     采样世界坐标 hash 噪声（2 octave fbm）作为雾密度
+ *  3. 密度沿视线累积 → 指数透过率 → 与暖褐雾色混合
+ *  4. 方向光散射近似（phase）：朝光源方向的雾更亮 → 再被后续
+ *     BloomPass 染上光晕，形成"光柱穿过雾气"的胶片质感
+ *
+ * 注意事项：
+ *  - 噪声采样在世界坐标系：雾"长在原地"，镜头平移/拉远时产生正确视差
+ *  - 天空/背景（depth=1）也参与雾：视线长度封顶 uMaxDist，避免背景糊死
+ *  - 插在 RenderPass 之后、Bloom 之前（雾要吃 bloom）
+ *  - 步长越长密度按比例缩减，总雾量近似与步数无关（降级不跳变）
+ *  - prefers-reduced-motion 时漂移速度置 0（雾静止）
+ * ========================================================================= */
+const FOG_DRIFT_SPEED = 0.05;
+const REDUCED_MOTION =
+  typeof window !== 'undefined' &&
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+const VolumetricFogShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    tDepth: { value: null as THREE.Texture | null },
+    uProjInv: { value: new THREE.Matrix4() },
+    uViewInv: { value: new THREE.Matrix4() },
+    uTime: { value: 0 },
+    // 暖黑褐：贴合 sepia 调色的暗部基调
+    uFogColor: { value: new THREE.Color(0.11, 0.085, 0.06) },
+    uDensity: { value: 0.22 },
+    uNoiseScale: { value: 0.55 },
+    uDrift: { value: REDUCED_MOTION ? 0 : FOG_DRIFT_SPEED },
+    uMaxDist: { value: 26.0 },
+    uMaxOpacity: { value: 0.45 },
+    uLightDir: { value: new THREE.Vector3(-0.45, 0.7, 0.35).normalize() },
+    uSteps: { value: 12 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tDepth;
+    uniform mat4 uProjInv;
+    uniform mat4 uViewInv;
+    uniform float uTime;
+    uniform vec3 uFogColor;
+    uniform float uDensity;
+    uniform float uNoiseScale;
+    uniform float uDrift;
+    uniform float uMaxDist;
+    uniform float uMaxOpacity;
+    uniform vec3 uLightDir;
+    uniform float uSteps;
+    varying vec2 vUv;
+
+    // 3D hash 噪声（整点格 + 三线性插值），无纹理依赖
+    float hash13(vec3 p) {
+      p = fract(p * 0.1031);
+      p += dot(p, p.yzx + 33.33);
+      return fract((p.x + p.y) * p.z);
+    }
+    float vnoise(vec3 p) {
+      vec3 i = floor(p);
+      vec3 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float n000 = hash13(i);
+      float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+      float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+      float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+      float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+      float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+      float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+      float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+      return mix(
+        mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+        mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+        f.z
+      );
+    }
+    // 2 octave fbm：细节够用，也是性能降级的第一档
+    float fbm(vec3 p) {
+      return vnoise(p) * 0.65 + vnoise(p * 2.13) * 0.35;
+    }
+
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      float depth = texture2D(tDepth, vUv).x;
+
+      // 屏幕 UV → NDC → 逆投影：视线段两端（视空间，相机在原点看 -Z）
+      vec4 cn = uProjInv * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
+      vec3 vNear = cn.xyz / cn.w;
+      vec4 cf = uProjInv * vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+      vec3 vFar = cf.xyz / cf.w;
+      vec3 dirView = normalize(vFar - vNear);
+
+      // 世界坐标方向/起点：噪声锚定在世界里，镜头移动才有正确视差
+      vec3 camWorld = (uViewInv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+      vec3 dirWorld = normalize((uViewInv * vec4(dirView, 0.0)).xyz);
+
+      // 天空/背景（depth=1）视线长度封顶，避免远背景被雾完全糊死
+      float dist = (depth >= 0.9999) ? uMaxDist : length(vFar);
+
+      float stepLen = dist / uSteps;
+      // 步长越长密度按比例缩减：总雾量近似与步数无关（步数降级不跳变）
+      float densityScale = max(0.05, stepLen) * uDensity;
+      // 前向散射近似：朝光源方向看的雾更亮
+      float phase = 0.55 + 0.45 * max(0.0, dot(dirWorld, -uLightDir));
+
+      float acc = 0.0;
+      for (int i = 0; i < 12; i++) {
+        if (float(i) >= uSteps) break;
+        float t = (float(i) + 0.5) * stepLen;
+        vec3 wp = camWorld + dirWorld * t;
+        // 慢速漂移（各轴异速，避免整体平移感）
+        vec3 np = wp * uNoiseScale + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6);
+        // 近距窗口：镜头跟前留 0.6~2.2 的清晰区，中距最浓
+        acc += fbm(np) * smoothstep(0.6, 2.2, t);
+      }
+      float fog = 1.0 - exp(-acc * densityScale * 1.8);
+      fog = clamp(fog, 0.0, 1.0) * uMaxOpacity;
+
+      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase);
+      gl_FragColor = vec4(mix(base.rgb, fogLit, fog), base.a);
+    }
+  `,
 };
 
 /**
@@ -382,6 +526,9 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
   const filmPassRef = useRef<ShaderPass | null>(null);
   const motionPassRef = useRef<ShaderPass | null>(null);
   const bloomRef = useRef<UnrealBloomPass | null>(null);
+  // 体积雾 pass + 共享深度纹理（RenderPass 写入，雾 pass 读取）
+  const fogPassRef = useRef<ShaderPass | null>(null);
+  const depthTexRef = useRef<THREE.DepthTexture | null>(null);
 
   // ping-pong RT 用于 MotionBlur：保存上一帧
   const prevRTRef = useRef<THREE.WebGLRenderTarget | null>(null);
@@ -411,12 +558,42 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       rtOptions
     );
 
-    const c = new EffectComposer(gl);
+    // 带 depthTexture 的 HDR RT：体积雾需要读场景深度做视线步进
+    // （EffectComposer 内部 clone 出 ping-pong 双缓冲，共享同一个 depthTexture，
+    //   RenderPass 每帧渲染时深度写入该纹理）
+    const depthTexture = new THREE.DepthTexture(
+      gl.domElement.width || 1,
+      gl.domElement.height || 1
+    );
+    depthTexture.type = THREE.UnsignedIntType;
+    const composerRT = new THREE.WebGLRenderTarget(
+      gl.domElement.width || 1,
+      gl.domElement.height || 1,
+      { depthBuffer: true, depthTexture, type: THREE.HalfFloatType }
+    );
+    depthTexRef.current = depthTexture;
+
+    const c = new EffectComposer(gl, composerRT);
+    // EffectComposer 内部 clone 出 renderTarget2 时会连带克隆一张新的深度纹理，
+    // 我们传入的 depthTexture 只挂在 renderTarget1 上 → 雾 pass 读的那张永远
+    // 不会被写入、保持清屏值 1.0 → 全屏走"远景 26 单位"分支蒙上最大浓雾。
+    // 两个 target 显式指向同一张深度纹理（钢琴页 PianoPostProcessing 同款修法）
+    c.renderTarget2.depthTexture = depthTexture;
     c.addPass(new RenderPass(scene, camera));
 
     // Bloom 和 MotionBlur 会污染 alpha 通道（假设不透明场景），
     // 透明模式（叠加 Canvas）下跳过它们，只保留镜头畸变 + 色散 + 暗角 + 颗粒
     if (!transparent) {
+      // 体积雾（RenderPass 之后、Bloom 之前：雾气要被 bloom 染上光晕）
+      // 必须禁用自身深度读写：rt1/rt2 共享同一张深度纹理，全屏 quad 默认
+      // 会把深度写成近平面值 0，踩烂雾 pass 正在读的场景深度
+      const fogPass = new ShaderPass(VolumetricFogShader);
+      fogPass.material.depthTest = false;
+      fogPass.material.depthWrite = false;
+      fogPass.uniforms.tDepth.value = depthTexture;
+      c.addPass(fogPass);
+      fogPassRef.current = fogPass;
+
       // Bloom（参考 shader.se 的胶片过曝感）
       const bloom = new UnrealBloomPass(
         new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
@@ -452,6 +629,13 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
 
   // 同步 size 变化
   useEffect(() => {
+    // depthTexture 显式跟随（逻辑尺寸 × 像素比），dispose 强制按新尺寸重新分配
+    if (depthTexRef.current) {
+      const pr = gl.getPixelRatio();
+      depthTexRef.current.image.width = Math.max(1, Math.floor(size.width * pr));
+      depthTexRef.current.image.height = Math.max(1, Math.floor(size.height * pr));
+      depthTexRef.current.dispose();
+    }
     if (composerRef.current) {
       composerRef.current.setSize(size.width, size.height);
       composerRef.current.setPixelRatio(gl.getPixelRatio());
@@ -489,6 +673,11 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       bloomRef.current.radius = params.bloomRadius;
       bloomRef.current.threshold = params.bloomThreshold;
     }
+
+    if (fogPassRef.current) {
+      fogPassRef.current.uniforms.uDensity.value = params.fogDensity;
+      fogPassRef.current.uniforms.uMaxOpacity.value = params.fogOpacity;
+    }
   }, [params]);
 
   // 卸载时释放资源
@@ -501,6 +690,8 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       filmPassRef.current = null;
       motionPassRef.current = null;
       bloomRef.current = null;
+      fogPassRef.current = null;
+      depthTexRef.current = null;
     };
   }, []);
 
@@ -550,6 +741,14 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     // 更新 Film shader 时间
     if (filmPassRef.current) {
       filmPassRef.current.uniforms.uTime.value = time;
+    }
+
+    // 体积雾：时间 + 相机矩阵（视线重建；雾锚定世界坐标随镜头产生视差）
+    if (fogPassRef.current) {
+      const u = fogPassRef.current.uniforms;
+      u.uTime.value = time;
+      (u.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+      (u.uViewInv.value as THREE.Matrix4).copy(camera.matrixWorld);
     }
 
     // 渲染

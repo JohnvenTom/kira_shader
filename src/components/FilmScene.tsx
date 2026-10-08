@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Html, useGLTF, useTexture } from '@react-three/drei';
+import { Html, Text, useGLTF, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 
 /**
@@ -2448,6 +2448,120 @@ const CAMERA_END = { x: 0, y: 0, z: 0.2 };
 const HOME_FOV = 45;
 const END_FOV = 70;
 
+// 拖速拉镜参数：横向拖动越快，镜头越后退 + FOV 越广
+// （快甩 → 拉远总览 → 段间闪光切换 → 松手回落凑近）
+const DRAG_DOLLY_CONFIG = {
+  satVel: 10, // 饱和速度（世界单位/s）：中等偏快的甩动即拉满
+  maxBack: 3, // 最大 z 后退量（世界单位，叠加在滚动推进之上）
+  maxFov: 8, // 最大额外 FOV（°）
+  attackLam: 22, // 拉远跟随速率（1/s，快起）
+  releaseLam: 8, // 回落速率（1/s，≈300ms 收敛，慢落）
+};
+
+/* =========================================================================
+ * SectionTitles - 3D 段落标题（troika SDF 文字，进场景吃后处理）
+ *
+ * 功能：各段大标题 + 副标题以真实 3D 物体锚定在胶片帧前方：
+ *  - 参与整条后处理链（bloom 辉光 / 胶片颗粒 / 色散 / 运动模糊）
+ *  - 随段间闪光淹没/重现（transitionFlashRef），替代原 DOM 层逐字动画
+ *  - 标题与副标题错峰淡入 + 轻微 z 位移（"牌子推近"感）
+ *  - 只挂载当前段的两个 Text 实例，切换由闪光掩护
+ *
+ * 注意事项：
+ *  - troika 不支持 woff2，用 webfont 同源转出的子集化 TTF（Latin 子集）
+ *  - 该 TTF 实际是 Light 字重：与现有 DOM 渲染观感一致
+ *    （源 webfont 的 300/400/500 内部全是 Light，CSS weight 长期被映射到 Light）
+ *  - material.opacity 由 useFrame 每帧直写（不走 React state，避免重渲染）
+ * ========================================================================= */
+const TITLE_FONT_URL = '/asset/fonts/ttf/cormorantgaramond-light.ttf';
+
+// 3D 标题布局/动画参数（集中可调）
+const TITLE3D_CONFIG = {
+  titleSize: 0.55, // 标题字号（世界单位）
+  subtitleSize: 0.2, // 副标题字号
+  titleY: 1.35, // 标题中心高度（胶片帧中心上方）
+  subtitleY: 0.9, // 副标题中心高度
+  z: 0.45, // 屏幕平面（z=0）前方悬浮距离；相机推到 z=0.2 时标题已越过身后
+  slideZ: 0.28, // 入场时额外 z 偏移（随淡入归零，"推近"入场）
+  fadeIn: 0.45, // 淡入时长（s）
+  subtitleDelay: 0.14, // 副标题相对标题的入场延迟（s）
+  letterSpacing: 0.06,
+};
+
+function SectionTitles({
+  sectionIndex,
+  transitionFlashRef,
+}: {
+  sectionIndex: number;
+  transitionFlashRef: React.MutableRefObject<number>;
+}) {
+  // troika TextMesh 实例（material.opacity 直写，不进 React 状态）
+  const titleRef = useRef<any>(null);
+  const subRef = useRef<any>(null);
+  const bornRef = useRef(-1);
+  const { clock } = useThree();
+
+  // 段落切换瞬间记录时间戳，标题组重新入场
+  useEffect(() => {
+    bornRef.current = clock.getElapsedTime();
+  }, [sectionIndex, clock]);
+
+  useFrame(() => {
+    const t = clock.getElapsedTime() - bornRef.current;
+    if (bornRef.current < 0) return;
+    const flash = transitionFlashRef.current;
+    // 标题/副标题错峰淡入；闪光期间整体压暗（被闪光淹没）
+    const tIn = smoothstep(TITLE3D_CONFIG.fadeIn * 0.25, TITLE3D_CONFIG.fadeIn, t);
+    const sIn = smoothstep(
+      TITLE3D_CONFIG.fadeIn * 0.25 + TITLE3D_CONFIG.subtitleDelay,
+      TITLE3D_CONFIG.fadeIn + TITLE3D_CONFIG.subtitleDelay,
+      t
+    );
+    if (titleRef.current) {
+      titleRef.current.material.opacity = tIn * (1 - flash);
+      titleRef.current.position.z = TITLE3D_CONFIG.z + (1 - tIn) * TITLE3D_CONFIG.slideZ;
+    }
+    if (subRef.current) {
+      subRef.current.material.opacity = sIn * (1 - flash);
+      subRef.current.position.z = TITLE3D_CONFIG.z + (1 - sIn) * TITLE3D_CONFIG.slideZ;
+    }
+  });
+
+  const sec = SECTIONS[sectionIndex];
+  return (
+    <group position={[sectionIndex * 4, 0, 0]}>
+      <Text
+        ref={titleRef}
+        font={TITLE_FONT_URL}
+        fontSize={TITLE3D_CONFIG.titleSize}
+        color="#f7f0e3"
+        anchorX="center"
+        anchorY="middle"
+        position={[0, TITLE3D_CONFIG.titleY, TITLE3D_CONFIG.z]}
+        letterSpacing={TITLE3D_CONFIG.letterSpacing}
+        material-transparent
+        material-opacity={0}
+      >
+        {sec.title}
+      </Text>
+      <Text
+        ref={subRef}
+        font={TITLE_FONT_URL}
+        fontSize={TITLE3D_CONFIG.subtitleSize}
+        color={sec.accentColor}
+        anchorX="center"
+        anchorY="middle"
+        position={[0, TITLE3D_CONFIG.subtitleY, TITLE3D_CONFIG.z]}
+        letterSpacing={TITLE3D_CONFIG.letterSpacing * 1.6}
+        material-transparent
+        material-opacity={0}
+      >
+        {sec.subtitle}
+      </Text>
+    </group>
+  );
+}
+
 /**
  * 创建程序化环境贴图（不依赖外部 HDRI）
  *
@@ -2605,8 +2719,13 @@ export function FilmScene({
     }
   }, [sectionIndex, onSectionChange]);
 
+  // 拖速拉镜状态：smoothed 的瞬时速度 EMA → 0~1 强度（快甩拉远 + FOV 变广）
+  const prevSmoothedRef = useRef(dragOffsetRef.current);
+  const dragVelRef = useRef(0);
+  const speedTRef = useRef(0);
+
   // 每帧更新相机、闪光
-  useFrame(() => {
+  useFrame((_, delta) => {
     const totalProgress = progressRef.current;
     const rawDragOffset = dragOffsetRef.current;  // 原始拖动偏移（0 ~ -12）
 
@@ -2616,6 +2735,17 @@ export function FilmScene({
     const target = rawDragOffset;
     filmXSmoothedRef.current += (target - filmXSmoothedRef.current) * 0.12;
     const smoothed = filmXSmoothedRef.current;
+
+    // === 拖速拉镜：拖得越快镜头越远 ===
+    // smoothed 的瞬时速度 → EMA 抗抖 → 0~1 强度；快起（紧跟甩动）慢落（松手 ≈300ms 回落）
+    const dt = Math.min(0.05, Math.max(delta, 0.001));
+    const vel = Math.abs((smoothed - prevSmoothedRef.current) / dt);
+    prevSmoothedRef.current = smoothed;
+    dragVelRef.current += (vel - dragVelRef.current) * 0.2;
+    const targetT = Math.min(1, dragVelRef.current / DRAG_DOLLY_CONFIG.satVel);
+    const lam =
+      targetT > speedTRef.current ? DRAG_DOLLY_CONFIG.attackLam : DRAG_DOLLY_CONFIG.releaseLam;
+    speedTRef.current += (targetT - speedTRef.current) * (1 - Math.exp(-lam * dt));
 
     // === 根据 dragOffset 计算 sectionIndex ===
     // dragOffset = 0 → sectionIndex = 0
@@ -2684,14 +2814,18 @@ export function FilmScene({
     camera.position.y =
       CAMERA_HOME.y + (CAMERA_END.y - CAMERA_HOME.y) * cameraT +
       mouseSmoothed.y * 0.08 * parallaxStrength;
-    camera.position.z = CAMERA_HOME.z + (CAMERA_END.z - CAMERA_HOME.z) * cameraT;
+    camera.position.z =
+      CAMERA_HOME.z + (CAMERA_END.z - CAMERA_HOME.z) * cameraT +
+      speedTRef.current * DRAG_DOLLY_CONFIG.maxBack;
 
     // 相机看向当前胶片位置（跟随拖动平滑移动）
     camera.lookAt(cameraX, 0, 0);
 
     // FOV：HOME_FOV（远景）→ END_FOV（推入终，广角拉伸）
     const cam = camera as THREE.PerspectiveCamera;
-    cam.fov = HOME_FOV + (END_FOV - HOME_FOV) * cameraT;
+    cam.fov =
+      HOME_FOV + (END_FOV - HOME_FOV) * cameraT +
+      speedTRef.current * DRAG_DOLLY_CONFIG.maxFov;
     cam.updateProjectionMatrix();
   });
 
@@ -2723,6 +2857,9 @@ export function FilmScene({
 
       {/* 屏幕显示（含 RectAreaLight） */}
       <ScreenDisplay sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />
+
+      {/* 3D 段落标题（troika SDF 文字，作为场景物体吃 bloom/颗粒/色散/运动模糊） */}
+      <SectionTitles sectionIndex={sectionIndex} transitionFlashRef={transitionFlashRef} />
 
       {/* 漂浮尘埃粒子 */}
       <DustParticles count={35} areaSize={5} color="#ffd9a0" />
