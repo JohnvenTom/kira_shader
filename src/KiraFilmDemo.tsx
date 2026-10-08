@@ -99,6 +99,11 @@ const SCROLL_DELAY = 0.30;       // 滚轮注入后镜头响应延迟（秒）�
 const SCROLL_ENTER = 0.92;       // 跃进阈值：显示进度超过它 → 进入详情页
 const SCROLL_EXIT = 0.85;        // 退出阈值：显示进度跌破它 → 退回主场景
 const SCROLL_BACK = -0.93;       // 穿回阈值：显示进度跌破它 → 白闪返回主页面
+// 详情覆盖层 CSS 过渡时长 0.6s（+50ms 余量），一兼二用：
+//  1) 关闭详情后延迟这么久再卸载详情页（等淡出动画走完）
+//  2) 打开详情后延迟这么久再暂停主画布（淡入完成才停；起手就停会把
+//     主场景冻在几乎透明的遮罩后面、被用户看见）
+const DETAIL_FADE_MS = 650;
 
 /**
  * wheel 事件位移归一化（像素）
@@ -216,6 +221,21 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 详情覆盖层 ref（用于绑定原生 wheel 事件，转发到 scrollContainer）
   const detailOverlayRef = useRef<HTMLDivElement>(null);
 
+  // 详情页挂载门控（性能关键）：详情页含独立 WebGL Canvas（黑洞的每像素
+  // 300 步 ray march、钢琴整景 + 后处理），只在真正展示期间挂载，关闭后
+  // 等淡出走完即卸载 —— 之前按 sectionIndex 常驻挂载，隐藏（opacity:0）
+  // 状态下仍每帧渲染，是滚过黑洞/钢琴段后页面卡顿的根因
+  //  - mountedSection      当前挂载的详情页 section（-1 = 未挂载）
+  //  - detailUnmountTimer  关闭后延迟卸载的定时器（窗口内重开则取消复用）
+  const [mountedSection, setMountedSection] = useState(-1);
+  const mountedSectionRef = useRef(-1);
+  const detailUnmountTimerRef = useRef<number | null>(null);
+
+  // 主 film 画布暂停：详情页淡入完成后把主 Canvas 的 frameloop 切到
+  // "demand"（停掉被全屏遮挡的 bloom/运动模糊渲染），关闭瞬间恢复 "always"
+  const [filmPaused, setFilmPaused] = useState(false);
+  const filmPauseTimerRef = useRef<number | null>(null);
+
   // mount 后立即触发淡出（用 rAF 确保浏览器先把 entering 状态渲染成白屏）
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
@@ -303,6 +323,88 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     };
     window.addEventListener('hashchange', onHashNav);
     return () => window.removeEventListener('hashchange', onHashNav);
+  }, []);
+
+  /**
+   * 详情页挂载/卸载门控（性能关键路径）
+   *
+   * 功能：详情页只在展示期间存在，代替旧"按 sectionIndex 常驻挂载"：
+   *       1. detailOpen 变 true → 立即挂载当前 section 的详情页
+   *          （0.6s 淡入正好掩护纹理加载/建模）
+   *       2. detailOpen 变 false → 延迟 DETAIL_FADE_MS 卸载，让淡出
+   *          动画走完；窗口内重新打开则取消卸载、复用现有挂载
+   *       3. 淡出窗口内横向拖动切走 section → 立即卸载
+   *          （不让另一段的重型详情页在淡出途中换入）
+   *
+   * 参数：无（依赖 detailOpen / sectionIndex）
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - mountedSectionRef 与 state 同步写，render 分支只读 state
+   *  - 从 trace 页返回的恢复路径（initialRestore）同样走 setDetailOpen，
+   *    本 effect 会随之挂载对应详情页
+   */
+  useEffect(() => {
+    if (detailOpen) {
+      if (detailUnmountTimerRef.current !== null) {
+        clearTimeout(detailUnmountTimerRef.current);
+        detailUnmountTimerRef.current = null;
+      }
+      if (mountedSectionRef.current !== sectionIndex) {
+        mountedSectionRef.current = sectionIndex;
+        setMountedSection(sectionIndex);
+      }
+      return;
+    }
+    if (mountedSectionRef.current === -1) return;
+    if (mountedSectionRef.current !== sectionIndex) {
+      // 淡出途中拖到别的 section：不再等定时器，立即卸载
+      if (detailUnmountTimerRef.current !== null) {
+        clearTimeout(detailUnmountTimerRef.current);
+        detailUnmountTimerRef.current = null;
+      }
+      mountedSectionRef.current = -1;
+      setMountedSection(-1);
+      return;
+    }
+    if (detailUnmountTimerRef.current === null) {
+      detailUnmountTimerRef.current = window.setTimeout(() => {
+        detailUnmountTimerRef.current = null;
+        mountedSectionRef.current = -1;
+        setMountedSection(-1);
+      }, DETAIL_FADE_MS);
+    }
+  }, [detailOpen, sectionIndex]);
+
+  /**
+   * 主 film 画布随详情页启停
+   *
+   * 功能：详情页全屏遮挡时，主 Canvas 的 bloom/运动模糊每帧渲染是纯浪费：
+   *       打开 DETAIL_FADE_MS（淡入完成）后 frameloop 切 "demand" 冻结，
+   *       关闭瞬间切回 "always"（淡出起手主场景就要重新动起来）。
+   *       不能在淡入开始就暂停——遮罩起始几乎透明，冻住会被看见。
+   */
+  useEffect(() => {
+    if (detailOpen) {
+      if (filmPauseTimerRef.current === null) {
+        filmPauseTimerRef.current = window.setTimeout(() => {
+          filmPauseTimerRef.current = null;
+          setFilmPaused(true);
+        }, DETAIL_FADE_MS);
+      }
+      return;
+    }
+    if (filmPauseTimerRef.current !== null) {
+      clearTimeout(filmPauseTimerRef.current);
+      filmPauseTimerRef.current = null;
+    }
+    setFilmPaused(false);
+  }, [detailOpen]);
+
+  // 卸载时清理两个待执行定时器
+  useEffect(() => () => {
+    if (detailUnmountTimerRef.current !== null) clearTimeout(detailUnmountTimerRef.current);
+    if (filmPauseTimerRef.current !== null) clearTimeout(filmPauseTimerRef.current);
   }, []);
 
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
@@ -718,6 +820,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           onCreated={({ gl }) => {
             gl.setClearColor(new THREE.Color('#0a0a0a'), 1);
           }}
+          // 详情页全屏展示期间冻结主画布（淡入完成后切 demand），关闭立即恢复
+          frameloop={filmPaused ? 'demand' : 'always'}
         >
           <FilmScene
             scrollProgress={scrollProgress}
@@ -790,6 +894,10 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           滚轮滚到底（progress>0.92）时丝滑淡入，展示当前 section 的完整信息
           - opacity + transform 由 CSS transition 控制（0.6s cubic-bezier）
           - detailOpen=true 时 visible class 触发淡入
+          - 内容按 mountedSection 门控（不再按 sectionIndex 常驻挂载）：
+            只在展示期间挂载对应详情页的独立 WebGL Canvas，关闭淡出走完
+            （DETAIL_FADE_MS）即卸载，避免隐藏状态下持续渲染黑洞 ray march /
+            钢琴整景造成的滚动卡顿
           - sectionIndex === 3 (CONTACT) 时显示 shader.se/#contact 风格页面：
             独立 3D Canvas 渲染电话模型 + "Hello." 大标题 + 横向联系信息
           - 其他 section：显示项目卡片网格
@@ -798,42 +906,42 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
         ref={detailOverlayRef}
         className={`film-detail-overlay ${detailOpen ? 'visible' : ''} ${sectionIndex === 5 ? 'piano-mode' : ''} ${sectionIndex === 4 ? 'blackhole-mode' : ''} ${sectionIndex === 3 ? 'contact-mode' : ''} ${sectionIndex === 0 ? 'paper-mode' : ''}`}
       >
-        {sectionIndex === 5 ? (
+        {mountedSection === 5 ? (
           /* === Grand Piano 详情页：全屏可弹奏 3D 三角钢琴 ===
            - 程序化建模的 88 键三角钢琴 + WebAudio 加法合成音源
            - 滚动驱动的苹果风镜头旅程（远景 → 键盘 → 演奏位）
            - 鼠标点击 / 键盘 A~L 行 / MIDI 输入弹奏，含踏板与控制面板 */
           <PianoDetailPage detailOpen={detailOpen} />
-        ) : sectionIndex === 4 ? (
+        ) : mountedSection === 4 ? (
           /* === Black Hole 详情页：实时光线步进黑洞 ===
            - 移植 refactorWeb 的 blackhole_main.frag（引力透镜 + 吸积盘 + 星云）
            - 独立滚动容器：滚动拉近镜头 + 说明淡入，滚回顶部上滑退出 */
           <BlackholeDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
-        ) : sectionIndex === 3 ? (
+        ) : mountedSection === 3 ? (
           /* === Contact 详情页：shader.se/#contact 风格 ===
            - 独立滚动容器驱动相机下降动画
            - 初始：相机高处俯视，Hello 居中显示，看不见电话机
            - 滚动后：相机降到电话机水平，露出电话机，显示联系信息 */
           <ContactDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
-        ) : sectionIndex === 2 ? (
+        ) : mountedSection === 2 ? (
           /* === About Us 详情页：格子间办公场景 ===
            - 独立滚动容器驱动相机下降动画
            - 初始：相机高处俯视，About Us 居中显示，看不见格子间
            - 滚动后：相机降到桌子水平，露出 8 个面对面排列的格子间 */
           <OfficeDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
-        ) : sectionIndex === 1 ? (
+        ) : mountedSection === 1 ? (
           /* === Selected Work 详情页：无限滑动展示柜 ===
            - 移植 ArikaShow 的无限滑动实现
            - 进入后可鼠标拖拽任意方向滑动卡片矩阵
            - 卡片超出边界时瞬间回绕到对面，形成无限循环 */
           <WorkDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
-        ) : (
+        ) : mountedSection === 0 ? (
           /* === 默认详情页（section0）：做旧纸张页面 ===
-           - Canvas 2D 绘制文字纹理 → PaperScene 着色器处理成做旧纸张质感
-           - 独立滚动容器驱动内容纹理 UV 偏移（文字在纸张上滚动）
-           - 滚轮回退到顶后继续上滑 → 退出详情页回 3D 场景 */
+          - Canvas 2D 绘制文字纹理 → PaperScene 着色器处理成做旧纸张质感
+          - 独立滚动容器驱动内容纹理 UV 偏移（文字在纸张上滚动）
+          - 滚轮回退到顶后继续上滑 → 退出详情页回 3D 场景 */
           <PaperDetailPage mouseRef={mouseRef} detailOpen={detailOpen} />
-        )}
+        ) : null}
       </div>
     </>
   );
@@ -1433,6 +1541,13 @@ function WorkDetailPage({
     cy: number;
     zt: number;
   } | null>(null);
+  // trace 跳转定时器（点击卡片 700ms 后写 sessionStorage + 切 #trace）：
+  // 详情页现在随关闭卸载，卸载时必须清理，否则定时器会在页面已关掉后
+  // 仍触发整页跳转
+  const traceJumpTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (traceJumpTimerRef.current !== null) clearTimeout(traceJumpTimerRef.current);
+  }, []);
 
   /**
    * 卡片位置索引数据结构
@@ -1704,7 +1819,7 @@ function WorkDetailPage({
       cy: rect.top + rect.height / 2,
       zt,
     });
-    setTimeout(() => {
+    traceJumpTimerRef.current = window.setTimeout(() => {
       try {
         sessionStorage.setItem(
           'kira-return',

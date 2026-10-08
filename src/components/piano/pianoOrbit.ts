@@ -146,12 +146,15 @@ export function createOrbit(camera: THREE.PerspectiveCamera, dom: HTMLElement): 
     radiusD = clamp(radiusD * s, api.minRadius, api.maxRadius);
   };
 
+  // 需具名引用，dispose 时才能成对移除（匿名箭头函数移不掉）
+  const onContext = (e: Event) => e.preventDefault();
+
   dom.addEventListener('pointerdown', onDown);
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
   dom.addEventListener('wheel', onWheel, { passive: false });
-  dom.addEventListener('contextmenu', (e) => e.preventDefault());
+  dom.addEventListener('contextmenu', onContext);
 
   api.update = function (dt: number) {
     if (api.autoRotate && !dragging) thetaD += api.autoRotateSpeed * dt;
@@ -188,6 +191,7 @@ export function createOrbit(camera: THREE.PerspectiveCamera, dom: HTMLElement): 
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
     dom.removeEventListener('wheel', onWheel);
+    dom.removeEventListener('contextmenu', onContext);
   };
 
   return api;

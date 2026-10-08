@@ -845,17 +845,20 @@ export function PianoScene({
   const detailOpenRef = useRef(detailOpen);
   detailOpenRef.current = detailOpen;
   useEffect(() => {
-    if (!detailOpen) {
-      // 关闭详情页：收束全部声音与动画状态
+    if (detailOpen) {
+      // 打开（或重新打开）：显示进度归零，避免阻尼值从上次位置"倒放"运镜
+      stateRef.current.journey = 0;
+    }
+    // 关闭或卸载时收束全部声音与动画状态（详情页随关闭卸载，两者等价）：
+    // panic 停声（否则低音按包络最长余响 ~14s）、停自动演示、踏板复位、
+    // 琴键归位；setSustain(false) 防止延音标志跨挂载粘住
+    return () => {
       PianoAudio.panic();
       stopDemo();
       setSustain(false);
       stateRef.current.pedalT = [0, 0, 0];
       piano.keys.forEach((k) => { k.target = 0; k.held = false; });
-    } else {
-      // 重新打开：显示进度归零，避免阻尼值从上次位置"倒放"运镜
-      stateRef.current.journey = 0;
-    }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailOpen]);
 
