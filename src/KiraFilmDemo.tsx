@@ -1485,13 +1485,17 @@ function OfficeDetailPage({
  *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
  *  - 容器整体 scale 适配不同屏幕（基准宽度 1440px）
  *  - 卡片数据循环复用 PROJECTS（6 列 × 7 行 = 42 张），上下各多一行作回绕缓冲
- *  - 两级缩放：标准级下滚蓄力（约 250px）→ 放大一级（×2，一屏两卡高度），
- *    放大级上滚蓄力 → 还原标准级；蓄力反向清零，CSS transition 平滑过渡
+ *  - 滚轮平滑缩放：下滚连续放大（1→×2，一屏两卡高度），上滚连续缩小，
+ *    完全还原后上滚冒泡走外层退出路径
+ *  - 镜头鱼眼：SVG feDisplacementMap 位图位移滤镜（contact 页同款
+ *    像素级桶形畸变，非卡片网格位移），强度随缩放因子 0→满平滑增强
  */
-/** 滚轮蓄力缩放增益：同向持续滚动约 250px（2~3 个滚轮格）充满切换 */
-const WORK_ZOOM_GAIN = 0.004;
-/** 放大级缩放因子：×2 后卡片高度 = 视口一半（一屏恰好两卡） */
-const WORK_ZOOM_FACTOR = 2;
+/** 滚轮平滑缩放灵敏度：每像素 deltaY 的缩放因子增量（1→2 全程约 450px，4 个滚轮格） */
+const WORK_ZOOM_SENS = 0.0022;
+/** 最大缩放因子：×2 后卡片高度 = 视口一半（一屏恰好两卡） */
+const WORK_ZOOM_MAX = 2;
+/** 镜头鱼眼滤镜最大位移强度（feDisplacementMap scale，容器本地 px） */
+const WORK_FISHEYE_MAX = 310;
 function WorkDetailPage({
   mouseRef,
   detailOpen,
@@ -1507,10 +1511,12 @@ function WorkDetailPage({
   const particlesLayerRef = useRef<HTMLDivElement>(null);
   // 详情页根元素 ref（用于绑定 wheel 事件，让外层 overlay 处理退出）
   const innerRef = useRef<HTMLDivElement>(null);
-  // 缩放级别：0 标准 / 1 放大（×2，一屏两卡高度）
-  const zoomLevelRef = useRef(0);
-  // 滚轮蓄力进度（同向持续滚动累积，充满切换缩放级别，反向清零）
-  const wheelChargeRef = useRef(0);
+  // 连续缩放因子 1~WORK_ZOOM_MAX（1 标准 / ×2 一屏两卡），滚轮平滑驱动
+  const zoomFactorRef = useRef(1);
+  // 鱼眼滤镜：位移图 dataURL（一次性 canvas 生成）+ feDisplacementMap 节点 ref
+  // + GSAP 补间代理（滚轮事件之间平滑过渡滤镜强度）
+  const fisheyeDispRef = useRef<SVGFEDisplacementMapElement | null>(null);
+  const fisheyeProxyRef = useRef({ v: 0 });
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // trace 跳转整页透视飞入转场状态（点击卡片后触发，动画末切 hash）
@@ -1661,8 +1667,8 @@ function WorkDetailPage({
     dims.containerHeight = container.offsetHeight;
     dims.photoWidth = cards[0].offsetWidth;
     dims.photoHeight = cards[0].offsetHeight;
-    // 基础适配 × 缩放级别因子（放大态下窗口变化保持一级缩放）
-    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * (zoomLevelRef.current >= 1 ? WORK_ZOOM_FACTOR : 1);
+    // 基础适配 × 当前缩放因子（滚轮平滑缩放中窗口变化不丢缩放）
+    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * zoomFactorRef.current;
     // 屏幕可见区换算到容器本地坐标：容器在视口中居中（flex 居中 + scale 原点为中心），
     // 可见区宽高 = 视口宽高 ÷ 缩放比例，再以容器中心对称求出四条边界
     const visW = window.innerWidth / dims.scaleNums;
@@ -1691,28 +1697,74 @@ function WorkDetailPage({
       mov_y: 0,
       ani: null,
     }));
+    // resize 后按当前缩放补一次鱼眼变换（放大态下窗口变化鱼眼保持一致）
+    writeCardTransforms(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
-   * 切换缩放级别（0 标准 / 1 放大）
+   * 生成鱼眼位移图（一次性）
+   *
+   * 功能：512² canvas，R/G 通道编码"内向径向位移场"——强度 ∝ r²，
+   *      feDisplacementMap 按它把源像素向中心搬 → 中心放大、边缘压缩
+   *      外弯的桶形镜头畸变（contact 页 shader 鱼眼的 DOM 等价实现）
+   */
+  const fisheyeMapUrl = useMemo(() => {
+    const size = 512;
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    const half = size / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = (x + 0.5 - half) / half; // -1..1
+        const dy = (y + 0.5 - half) / half;
+        const r = Math.min(1, Math.hypot(dx, dy));
+        // 位移 ∝ dx·r（= 径向单位 × r²）：半径越大向中心搬得越多
+        const i = (y * size + x) * 4;
+        img.data[i] = Math.round(255 * Math.max(0, Math.min(1, 0.5 - dx * r)));
+        img.data[i + 1] = Math.round(255 * Math.max(0, Math.min(1, 0.5 - dy * r)));
+        img.data[i + 2] = 128;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return c.toDataURL('image/png');
+  }, []);
+
+  /**
+   * 把回绕偏移统一写入所有卡片（纯 translate，鱼眼由 SVG 滤镜负责）
+   */
+  const writeCardTransforms = useCallback((duration: number, ease = 'power3.out') => {
+    imgDataRef.current.forEach(img => {
+      if (img.ani) { img.ani.kill(); }
+      img.ani = gsap.to(img.node, {
+        transform: `translate(${img.mov_x}px,${img.mov_y}px)`,
+        duration,
+        ease,
+      });
+    });
+  }, []);
+
+  /**
+   * 应用连续缩放因子（滚轮直接驱动，平滑过渡）
    *
    * 功能：
-   *  - 按级别重算 scaleNums（基础适配 × 缩放因子）并更新可见区边界
-   *    （回绕判定跟随缩放，放大后卡片变大一倍、可见区本地坐标减半）
-   *  - 写入 --scale CSS 变量，.work-photos 既有的 transform 0.5s
-   *    transition 自动平滑放大/还原，无需额外动画代码
-   *
-   * 参数：
-   *  - level {number} 目标级别（0 或 1）
+   *  - 重算 scaleNums 与可见区边界（回绕判定跟随缩放）
+   *  - 写入 --scale，.work-photos 既有的 transform 0.5s transition 平滑缩放
+   *  - 原位回绕：此前按小窗口回绕的卡片按新边界重新铺开（防缩小后露黑）
+   *  - 镜头鱼眼：feDisplacementMap 的 scale 属性随缩放因子 GSAP 补间
+   *    （滚轮事件间平滑过渡），k=0 时摘除滤镜避免常态开销
    */
-  const applyZoomLevel = useCallback((level: number) => {
-    zoomLevelRef.current = level;
+  const applyZoomFactor = useCallback((factor: number) => {
+    const clamped = Math.min(WORK_ZOOM_MAX, Math.max(1, factor));
+    zoomFactorRef.current = clamped;
     const container = photosRef.current;
     const dims = dimsRef.current;
     if (!container || !dims.containerWidth) return;
-    const factor = level >= 1 ? WORK_ZOOM_FACTOR : 1;
-    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * factor;
-    // 可见区换算到容器本地坐标（与 resize 同一套公式，跟随新 scale）
+    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * clamped;
     const visW = window.innerWidth / dims.scaleNums;
     const visH = window.innerHeight / dims.scaleNums;
     dims.visibleLeft = (dims.containerWidth - visW) / 2;
@@ -1721,80 +1773,61 @@ function WorkDetailPage({
     dims.visibleBottom = dims.visibleTop + visH;
     container.style.setProperty('--scale', String(dims.scaleNums));
 
-    // 原位重排：缩放切换后可见区尺寸变了（放大级窗口只有标准级的一半），
-    // 此前按小窗口回绕的卡片覆盖带可能罩不住放大回来的窗口 —— 表现为
-    // 缩小后边缘露黑。对每张卡按新边界做一次纯回绕（越界的卡搬到对面，
-    // 不改变视角中心、不丢失用户拖到的位置），与 move() 的回绕规则同源。
+    // 原位回绕：按新边界把越界卡搬到对面（不丢视角），与 move() 同源规则
     const gap = 64 / dims.scaleNums;
-    let anyMoved = false;
     imgDataRef.current.forEach(img => {
-      const beforeX = img.mov_x;
-      const beforeY = img.mov_y;
       while (img.x + img.mov_x > dims.visibleRight + gap) img.mov_x -= dims.containerWidth;
       while (img.x + img.mov_x < dims.visibleLeft - gap - dims.photoWidth) img.mov_x += dims.containerWidth;
       while (img.y + img.mov_y > dims.visibleBottom + gap) img.mov_y -= dims.containerHeight;
       while (img.y + img.mov_y < dims.visibleTop - gap - dims.photoHeight) img.mov_y += dims.containerHeight;
-      if (img.mov_x !== beforeX || img.mov_y !== beforeY) {
-        anyMoved = true;
-        if (img.ani) { img.ani.kill(); }
-      }
     });
-    if (anyMoved) {
-      // 与 0.5s 缩放过渡同步的短动画，卡片滑入补位而不是瞬移
-      imgDataRef.current.forEach(img => {
-        img.ani = gsap.to(img.node, {
-          transform: `translate(${img.mov_x}px,${img.mov_y}px)`,
-          duration: 0.45,
-          ease: 'power3.out',
-        });
+    // 回绕补位写入（0.45s 与缩放过渡同步）
+    writeCardTransforms(0.45);
+
+    // 镜头鱼眼：滤镜强度随缩放因子补间（0.45s 与缩放/回绕同步），
+    // k>0 挂滤镜、k=0 摘除（常态零开销）
+    const k = clamped - 1;
+    const disp = fisheyeDispRef.current;
+    if (disp) {
+      container.style.filter = k > 0.001 ? 'url(#work-fisheye)' : '';
+      gsap.to(fisheyeProxyRef.current, {
+        v: k,
+        duration: 0.45,
+        ease: 'power2.out',
+        overwrite: true,
+        onUpdate: () => {
+          disp.setAttribute('scale', String(Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX)));
+        },
       });
     }
-  }, []);
+  }, [writeCardTransforms]);
 
   /**
-   * 根元素 wheel 蓄力缩放
+   * 根元素 wheel 平滑缩放
    *
    * 功能：
-   *  - 标准级：下滚蓄力（充满 ≈250px）→ 放大到一级（一屏两卡）；
-   *    上滚放行冒泡（保留外层"上滑退出详情页"路径）
-   *  - 放大级：上滚蓄力 → 还原标准级，蓄力期间拦截冒泡避免外层退出抢跑；
-   *    下滚拦截（只有一级放大，无更高级别）
-   *  - 反向滚动清零蓄力，与钢琴页蓄力退出同一套手感参数
+   *  - 下滚：连续放大（clamp 到 ×2），到顶后多余滚动被吞掉
+   *  - 上滚：有缩放余量 → 连续缩小并拦截冒泡（避免外层退出抢跑）；
+   *    完全还原（factor=1）后上滚放行冒泡，保留外层退出路径
    */
   useEffect(() => {
     const el = innerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (zoomLevelRef.current === 0) {
-        if (e.deltaY <= 0) {
-          wheelChargeRef.current = 0;
-          return; // 上滚：冒泡给外层退出逻辑
-        }
-        wheelChargeRef.current = Math.min(1, wheelChargeRef.current + e.deltaY * WORK_ZOOM_GAIN);
-        if (wheelChargeRef.current >= 1) {
-          wheelChargeRef.current = 0;
-          applyZoomLevel(1);
-        }
+      if (e.deltaY > 0) {
+        applyZoomFactor(zoomFactorRef.current + e.deltaY * WORK_ZOOM_SENS);
         return;
       }
-      // 放大级
-      if (e.deltaY >= 0) {
-        wheelChargeRef.current = 0;
-        e.stopPropagation(); // 只有一级，下滚无事发生，拦截防误触外层
+      if (zoomFactorRef.current > 1.001) {
+        applyZoomFactor(zoomFactorRef.current + e.deltaY * WORK_ZOOM_SENS);
+        e.stopPropagation();
         return;
       }
-      wheelChargeRef.current = Math.min(1, wheelChargeRef.current + (-e.deltaY) * WORK_ZOOM_GAIN);
-      if (wheelChargeRef.current >= 1) {
-        wheelChargeRef.current = 0;
-        applyZoomLevel(0);
-        e.stopPropagation(); // 切回 0 级的这一下不参与外层退出
-        return;
-      }
-      e.stopPropagation(); // 蓄力期间拦截，避免外层退出同时充能
+      // 标准级 + 上滚：冒泡给外层退出逻辑
     };
     el.addEventListener('wheel', onWheel, { passive: true });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [applyZoomLevel]);
+  }, [applyZoomFactor]);
 
   /**
    * 处理单帧拖拽位移（无限滑动核心算法，移植自 ArikaShow photobox.move）
@@ -1858,7 +1891,7 @@ function WorkDetailPage({
         img.mov_y += dims.containerHeight;
         duration = 0;
       }
-      // kill 旧动画避免冲突，启动新动画
+      // kill 旧动画避免冲突，启动新动画（纯 translate，鱼眼由 SVG 滤镜负责）
       if (img.ani) img.ani.kill();
       img.ani = gsap.to(img.node, {
         transform: `translate(${img.mov_x}px,${img.mov_y}px)`,
@@ -2321,6 +2354,29 @@ function WorkDetailPage({
           : undefined
       }
     >
+      {/* 镜头鱼眼滤镜：位移图（fisheyeMapUrl）+ feDisplacementMap，
+          强度 scale 由 applyZoomFactor 随缩放因子补间；挂在 .work-photos 上 */}
+      <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
+        <filter id="work-fisheye" x="-5%" y="-5%" width="110%" height="110%" colorInterpolationFilters="sRGB">
+          <feImage
+            href={fisheyeMapUrl}
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            preserveAspectRatio="none"
+            result="map"
+          />
+          <feDisplacementMap
+            ref={fisheyeDispRef}
+            in="SourceGraphic"
+            in2="map"
+            scale="0"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </svg>
       {/* trace 跳转整页透视飞入转场：整个收藏柜以被点卡片中心为原点
           沿 Z 轴冲向镜头（translateZ 0 → --zt），点哪从哪穿进去；
           末段白闪覆盖后切 hash（白闪层在全屏 overlay 上，不参与透视） */}
