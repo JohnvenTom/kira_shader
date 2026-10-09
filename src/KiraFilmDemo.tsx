@@ -6,6 +6,7 @@ import {
   FilmPostProcessing,
   DEFAULT_FILM_PARAMS,
   type FilmFXParams,
+  type MousePathPoint,
 } from './components/FilmPostProcessing';
 import { ContactPostProcessing } from './components/ContactPostProcessing';
 import { NavBar } from './components/NavBar';
@@ -372,6 +373,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   const heroBlockRef = useRef<HTMLDivElement>(null);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
+  // 鼠标轨迹队列（pointermove 逐事件推入，含合并事件，带时间戳）：
+  // FilmPostProcessing 每帧消费并沿轨迹补插值注入雾流场 —— 快滑不断点
+  const mousePathRef = useRef<MousePathPoint[]>([]);
   // 鼠标拖动偏移（世界坐标 x，负值表示胶片向左移动）
   // 范围 0 ~ -(SECTIONS.length-1)*4（section 0 在 x=0，最后一个 section 在 x=-(N-1)*4）
   // 初始值取恢复 section 的中心位置（从 trace 页返回时 mount 即定位）
@@ -622,41 +626,59 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   }, []);
 
   /**
-   * 鼠标视差处理
+   * 鼠标视差 + 轨迹采集处理
    *
-   * 功能：监听鼠标移动，同时驱动两层视差：
+   * 功能：监听指针移动，同时驱动三层：
    *   1. 文字层：写入 hero-block 的 CSS 变量 --px/--py（位移 6px）+ --rx/--ry（旋转 ±6°）
    *   2. 3D 相机层：写入 mouseRef.current.x/y（归一化 -1~1），让相机绕 target 微旋转
+   *   3. 流场层：每个事件点（含 getCoalescedEvents 取回的被合并高频中间点）
+   *      带时间戳推入 mousePathRef 队列，供 FilmPostProcessing 的雾流场
+   *      逐点消费 —— 快速划动时轨迹不丢段（旧版 rAF 节流只保留每帧最后
+   *      一个事件，是体积雾快滑断点的事件层根源）
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
-   *  - 使用 rAF 节流，避免高频 mousemove 引起重渲染
-   *  - 文字位移幅度 6px + 旋转 ±6°，3D 相机视差幅度由 FilmScene 控制
-   *  - perspective 在父级 .content-overlay 上，子元素 .hero-block 的 rotate 才有立体感
+   *  - 轨迹点同步入队（不走 rAF）：入队是纯数组写无渲染开销，消费端每帧清空
+   *  - pointermove 取代 mousemove：可拿 getCoalescedEvents（Chrome/Edge
+   *    合并的 125Hz~1kHz 中间点）；不支持的浏览器自动退化为逐事件本身
+   *  - CSS 视差仍用 rAF 节流（节流的是 DOM 写入，与轨迹数据无关）
+   *  - 队列上限 256 点：防后台标签页恢复瞬间堆积（正常每帧消费远达不到）
    */
   useEffect(() => {
     let raf = 0;
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
+      const q = mousePathRef.current;
+      const coalesced =
+        typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+      const raw = coalesced.length > 0 ? coalesced : [e];
+      for (let i = 0; i < raw.length; i++) {
+        const ev = raw[i];
+        q.push({
+          x: (ev.clientX / window.innerWidth) * 2 - 1,
+          y: (ev.clientY / window.innerHeight) * 2 - 1,
+          t: ev.timeStamp,
+        });
+      }
+      if (q.length > 256) q.splice(0, q.length - 256);
+      const last = q[q.length - 1];
+      mouseRef.current.x = last.x;
+      mouseRef.current.y = last.y;
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        const nx = (e.clientX / window.innerWidth) * 2 - 1;
-        const ny = (e.clientY / window.innerHeight) * 2 - 1;
         const el = heroBlockRef.current;
         if (el) {
-          el.style.setProperty('--px', `${nx * 6}px`);
-          el.style.setProperty('--py', `${ny * 6}px`);
-          el.style.setProperty('--rx', `${ny * 6}deg`);
-          el.style.setProperty('--ry', `${nx * 6}deg`);
+          el.style.setProperty('--px', `${last.x * 6}px`);
+          el.style.setProperty('--py', `${last.y * 6}px`);
+          el.style.setProperty('--rx', `${last.y * 6}deg`);
+          el.style.setProperty('--ry', `${last.x * 6}deg`);
         }
-        mouseRef.current.x = nx;
-        mouseRef.current.y = ny;
       });
     };
-    window.addEventListener('mousemove', onMove);
+    window.addEventListener('pointermove', onMove, { passive: true });
     return () => {
-      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('pointermove', onMove);
       cancelAnimationFrame(raf);
     };
   }, []);
@@ -809,8 +831,13 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
             onSectionChange={handleSectionChange}
             initialSection={startSection}
           />
-          {/* mouseRef 传入后处理：体积雾与鼠标互动（拨开雾气） */}
-          <FilmPostProcessing params={filmParams} mouseRef={mouseRef} />
+          {/* mouseRef/mousePathRef 传入后处理：体积雾与鼠标互动（拨开雾气，
+              轨迹队列逐点消费，快速划动不断点） */}
+          <FilmPostProcessing
+            params={filmParams}
+            mouseRef={mouseRef}
+            mousePathRef={mousePathRef}
+          />
           <CanvasContextGuard />
         </Canvas>
       </div>

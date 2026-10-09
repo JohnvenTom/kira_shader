@@ -119,26 +119,39 @@ const REDUCED_MOTION =
 /* =========================================================================
  * FluidAdvShader - 鼠标流场模拟（半拉格朗日自平流 + 高斯注入）
  *
- * 功能：维护一张持久 2D 速度纹理（ping-pong），每帧：
+ * 功能：维护一张持久 2D 速度纹理（ping-pong），每帧被推进 1~N 个子步：
  *  1. 半拉格朗日回溯采样：v(p) ← v(p - v(p)·dt) —— 速度场被自身平流，
  *     这是"搅一下会卷出漩涡并随流漂走"的流体感来源
  *  2. 指数耗散：v ← v·exp(-uDiss·dt)，无输入约 2~3 秒平复
  *  3. 鼠标注入：以光标为中心的圆形高斯核（x 按宽高比校正）叠加上
- *     clamp 后的鼠标速度（uv/s），划动越快注入越猛
+ *     本子步的鼠标位移 uMouseDelta（uv）。注入按"弧长"计量 —— JS 端沿
+ *     轨迹按 0.5σ 间距补插值出子步，每子步注入等量位移，单位轨迹长度
+ *     沉积的能量与划动速度无关 → 任意速度下雾迹连续且浓度一致
+ *     （旧版每帧只在末点注入一团 + 速度 clamp 饱和，快速划动时雾团
+ *     彼此分离，即"快滑断点"的两个根源）
  * 输出的速度场被体积雾 pass 采样，改写雾的流动方向
  *
  * 注意事项：
  *  - RT 固定 256×256（HalfFloat + Linear），与画布尺寸解耦，开销恒定
- *  - 速度存 uv 空间（x 右 y 上），幅度 clamp ±1.8 防数值爆炸
+ *  - 速度存 uv 空间（x 右 y 上），场值全局 clamp ±3.5 防数值爆炸；
+ *    注入本身不做速度饱和（能量按弧长守恒，快慢划动同等强度）
  *  - prefers-reduced-motion 时仍可用（交互驱动，非自主运动）
  * ========================================================================= */
 const VEL_SIM_SIZE = 256;
+// 高斯核 σ（uv）：shader 字面量由它插值注入，JS 端子步间距 = 0.5σ
+const VEL_SIGMA = 0.032;
+// 子步注入增益：与旧版驻留沉积（≈24·1.2·2σ ≈ 1.8 场值/单位弧长）等能量
+// 对齐 —— 单位轨迹长度沉积 √(2π)·σ·gain ≈ 1.8，慢滑观感与修复前一致
+const VEL_SPLAT_GAIN = 23.0;
+// 每帧子步上限：极快甩动（单帧 >1 屏）时拉大子步间距而非丢轨迹，
+// 有界 draw 数（256² 小 RT，多步开销可忽略）
+const VEL_MAX_SUBSTEPS = 24;
 
 const FluidAdvShader = {
   uniforms: {
     tPrev: { value: null as THREE.Texture | null },
     uMouse: { value: new THREE.Vector2(0.5, 0.5) },
-    uMouseVel: { value: new THREE.Vector2(0, 0) },
+    uMouseDelta: { value: new THREE.Vector2(0, 0) },
     uDt: { value: 0.016 },
     uDiss: { value: 0.85 },
     uAspect: { value: 16 / 9 },
@@ -153,7 +166,7 @@ const FluidAdvShader = {
   fragmentShader: `
     uniform sampler2D tPrev;
     uniform vec2 uMouse;
-    uniform vec2 uMouseVel;
+    uniform vec2 uMouseDelta;
     uniform float uDt;
     uniform float uDiss;
     uniform float uAspect;
@@ -165,11 +178,12 @@ const FluidAdvShader = {
       vec2 adv = texture2D(tPrev, coord).xy;
       // 2. 指数耗散（无输入约 2~3 秒平复）
       adv *= exp(-uDiss * uDt);
-      // 3. 鼠标注入：圆形高斯核（x 按宽高比压扁校正）
+      // 3. 鼠标注入：圆形高斯核（x 按宽高比压扁校正）× 本子步位移 ——
+      //    能量按弧长计量（见文件头注释），无速度饱和
       vec2 d = vUv - uMouse;
       d.x *= uAspect;
-      float g = exp(-dot(d, d) / (2.0 * 0.032 * 0.032));
-      adv += clamp(uMouseVel, vec2(-3.0), vec2(3.0)) * g * min(uDt * 24.0, 1.0) * 1.2;
+      float g = exp(-dot(d, d) / (2.0 * ${VEL_SIGMA.toFixed(3)} * ${VEL_SIGMA.toFixed(3)}));
+      adv += uMouseDelta * g * ${VEL_SPLAT_GAIN.toFixed(1)};
       adv = clamp(adv, vec2(-3.5), vec2(3.5));
       gl_FragColor = vec4(adv, 0.0, 1.0);
     }
@@ -584,6 +598,18 @@ const MotionBlurShader = {
   `,
 };
 
+/**
+ * 鼠标轨迹点（KiraFilmDemo 的 pointermove 监听逐事件推入，含合并事件）
+ */
+export interface MousePathPoint {
+  /** NDC x（-1~1，同 mouseRef） */
+  x: number;
+  /** NDC y（-1~1，屏幕向下为正） */
+  y: number;
+  /** 事件时间戳（ms，event.timeStamp，备用/调试） */
+  t: number;
+}
+
 interface FilmPostProcessingProps {
   /** 后处理参数（外部传入，实时更新） */
   params: FilmFXParams;
@@ -596,6 +622,13 @@ interface FilmPostProcessingProps {
    * 卷出漩涡并随流漂走，无输入约 2~3 秒平复
    */
   mouseRef?: React.MutableRefObject<{ x: number; y: number }>;
+  /**
+   * 鼠标轨迹队列 ref（pointermove 逐事件推入，含 getCoalescedEvents
+   * 合并的高频中间点）。每帧被流场模拟整体消费：沿折线按 0.5σ 间距
+   * 补插值出子步、逐子步注入 —— 快速划动不再丢轨迹（断点修复）。
+   * 不传时退化为 mouseRef 末点单次注入（黑洞页等无鼠标场景的旧行为）
+   */
+  mousePathRef?: React.MutableRefObject<MousePathPoint[]>;
   /**
    * 透明模式：用于叠加在另一个 Canvas 上层的场景
    * - 跳过 UnrealBloomPass 和 MotionBlurPass（它们会污染 alpha 通道）
@@ -628,7 +661,7 @@ interface FilmPostProcessingProps {
  *  - Bloom 动态闪烁：1.5 × base + 0.03 × base × (4 sin 波) + bloomBoost
  *  - MotionBlur 帧率独立：以 120fps 为基准，dt 大于基准时减弱，小于时增强
  */
-export function FilmPostProcessing({ params, enabled = true, transparent = false, mouseRef }: FilmPostProcessingProps) {
+export function FilmPostProcessing({ params, enabled = true, transparent = false, mouseRef, mousePathRef }: FilmPostProcessingProps) {
   const { gl, scene, camera, size } = useThree();
   const composerRef = useRef<EffectComposer | null>(null);
   const filmPassRef = useRef<ShaderPass | null>(null);
@@ -644,8 +677,9 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
 
   // 上一帧时间戳，用于计算 deltaTime
   const prevTimeRef = useRef(0);
-  // 鼠标流场状态：上帧坐标（算注入速度）；ping-pong 速度 RT + 全屏 quad
-  const velMouseLastRef = useRef<{ x: number; y: number } | null>(null);
+  // 鼠标流场状态：上帧消费到的轨迹末点（帧间桥接，保证跨帧轨迹连续）；
+  // ping-pong 速度 RT + 全屏 quad
+  const pathLastRef = useRef<MousePathPoint | null>(null);
   const velReadRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velWriteRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velQuadRef = useRef<FullScreenQuad | null>(null);
@@ -914,37 +948,88 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       filmPassRef.current.uniforms.uTime.value = time;
     }
 
-    // === 鼠标流场模拟：先推一步速度场，雾 pass 再采样它 ===
+    // === 鼠标流场模拟：先推速度场，雾 pass 再采样它 ===
+    // 本帧消费整个轨迹队列：上一帧末点桥接在前 → 沿折线按 0.5σ 间距
+    // 补插值出等距子步 → 每子步推进一步模拟并注入该子步的位移。
+    // 快速划动时轨迹被密集子步覆盖（连续），注入能量按弧长守恒（不随
+    // 速度饱和/衰减）；无输入时整帧推进一步（仅平流 + 耗散）
     if (velQuadRef.current && velReadRef.current && velWriteRef.current) {
       const dt = Math.min(Math.max(delta, 0.001), 0.05);
-      let mvx = 0;
-      let mvy = 0;
-      let mux = 0.5;
-      let muy = 0.5;
-      if (mouseRef) {
-        const m = mouseRef.current;
-        // NDC → uv（y 取反：屏幕向下 → uv 向上）
-        mux = (m.x + 1) / 2;
-        muy = (1 - m.y) / 2;
-        if (velMouseLastRef.current) {
-          // 鼠标速度（uv/s），clamp 防爆炸
-          mvx = (m.x - velMouseLastRef.current.x) / 2 / dt;
-          mvy = -(m.y - velMouseLastRef.current.y) / 2 / dt;
-        }
-        velMouseLastRef.current = { x: m.x, y: m.y };
-      }
       const vu = (velQuadRef.current.material as THREE.ShaderMaterial).uniforms;
-      vu.uDt.value = dt;
-      vu.uMouse.value.set(mux, muy);
-      vu.uMouseVel.value.set(mvx, mvy);
-      vu.uAspect.value = size.width / size.height;
-      vu.tPrev.value = velReadRef.current.texture;
-      gl.setRenderTarget(velWriteRef.current);
-      velQuadRef.current.render(gl);
-      // ping-pong 交换
-      const t = velReadRef.current;
-      velReadRef.current = velWriteRef.current;
-      velWriteRef.current = t;
+      const aspect = size.width / Math.max(1, size.height);
+      vu.uAspect.value = aspect;
+
+      const q = mousePathRef ? mousePathRef.current : null;
+      const pts: MousePathPoint[] = [];
+      if (q && q.length > 0) {
+        if (pathLastRef.current) pts.push(pathLastRef.current);
+        for (let i = 0; i < q.length; i++) pts.push(q[i]);
+        q.length = 0;
+        pathLastRef.current = pts[pts.length - 1];
+      }
+
+      // 推进一个子步：高斯中心 (mux,muy) + 本子步位移 (dx,dy)（uv，y 上）
+      const stepSim = (mux: number, muy: number, dx: number, dy: number, subDt: number) => {
+        vu.uMouse.value.set(mux, muy);
+        vu.uMouseDelta.value.set(dx, dy);
+        vu.uDt.value = subDt;
+        vu.tPrev.value = velReadRef.current!.texture;
+        gl.setRenderTarget(velWriteRef.current!);
+        velQuadRef.current!.render(gl);
+        // ping-pong 交换
+        const t = velReadRef.current!;
+        velReadRef.current = velWriteRef.current!;
+        velWriteRef.current = t;
+      };
+
+      if (pts.length >= 2) {
+        // 弧长在 aspect 校正空间度量（x·aspect，与高斯核同尺度），NDC 宽 2 → uv 宽 1
+        const segLen: number[] = [];
+        let arc = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const l =
+            Math.hypot((pts[i].x - pts[i - 1].x) * aspect, pts[i].y - pts[i - 1].y) / 2;
+          segLen.push(l);
+          arc += l;
+        }
+        // 0.5σ 间距细分子步；超过上限时拉大间距（轨迹仍全覆盖，不丢段）
+        const n = Math.min(VEL_MAX_SUBSTEPS, Math.max(1, Math.ceil(arc / (VEL_SIGMA * 0.5))));
+        // 等弧长采样：起点 + n-1 个中间点 + 终点
+        const sx: number[] = [pts[0].x];
+        const sy: number[] = [pts[0].y];
+        let seg = 0;
+        let consumed = 0;
+        for (let k = 1; k < n; k++) {
+          let need = arc / n;
+          while (seg < segLen.length - 1 && need > segLen[seg] - consumed) {
+            need -= segLen[seg] - consumed;
+            seg++;
+            consumed = 0;
+          }
+          consumed += need;
+          const l = segLen[seg];
+          const tt = l > 1e-9 ? Math.min(1, consumed / l) : 1;
+          sx.push(pts[seg].x + (pts[seg + 1].x - pts[seg].x) * tt);
+          sy.push(pts[seg].y + (pts[seg + 1].y - pts[seg].y) * tt);
+        }
+        sx.push(pts[pts.length - 1].x);
+        sy.push(pts[pts.length - 1].y);
+        // 逐子步注入：NDC → uv（y 取反：屏幕向下 → uv 向上）
+        const subDt = dt / n;
+        for (let k = 1; k < sx.length; k++) {
+          stepSim(
+            (sx[k] + 1) / 2,
+            (1 - sy[k]) / 2,
+            (sx[k] - sx[k - 1]) / 2,
+            -(sy[k] - sy[k - 1]) / 2,
+            subDt
+          );
+        }
+      } else {
+        // 无输入：整帧推进一步（注入为零，仅平流 + 耗散）
+        const m = mouseRef ? mouseRef.current : null;
+        stepSim(m ? (m.x + 1) / 2 : 0.5, m ? (1 - m.y) / 2 : 0.5, 0, 0, dt);
+      }
     }
 
     // 体积雾：时间 + 相机矩阵（视线重建；雾锚定世界坐标随镜头产生视差）
