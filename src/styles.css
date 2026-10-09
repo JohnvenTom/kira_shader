@@ -4595,6 +4595,7 @@ a.trace-proc-file:hover {
 .lusion-item {
   width: 44%;
   min-width: 300px;
+  position: relative;
 }
 
 /* 偶数卡（0/2/4）左侧，奇数卡右侧并下移错位 */
@@ -4662,6 +4663,61 @@ a.trace-proc-file:hover {
   will-change: transform;
 }
 
+/* ---------- 斜对角元信息（WebGL 模式下仅作布局锚点，内容隐藏） ---------- */
+.lusion-item-meta {
+  position: absolute;
+  width: min(300px, 24vw);
+  aspect-ratio: 4 / 5;
+  pointer-events: none;
+}
+
+/* 左侧卡（奇数 child，index 偶）→ 元信息放卡片右上空白 */
+.lusion-item:nth-child(odd) .lusion-item-meta.meta-right {
+  left: calc(100% + 4vw);
+  top: -8%;
+  text-align: left;
+}
+
+/* 右侧卡（偶数 child，index 奇）→ 元信息放卡片左下空白 */
+.lusion-item:nth-child(even) .lusion-item-meta.meta-left {
+  right: calc(100% + 4vw);
+  bottom: -8%;
+  text-align: right;
+}
+
+/* 指针精细（WebGL 渲染）：锚点内容隐藏，仅保留布局矩形 */
+.lusion-overlay.fine .lusion-item-meta {
+  visibility: hidden;
+}
+
+/* 触屏降级：锚点内直接显示文字 */
+.lusion-meta-number {
+  display: block;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 300;
+  font-size: clamp(56px, 6vw, 88px);
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.16);
+}
+
+.lusion-meta-year {
+  display: block;
+  margin-top: 18px;
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lusion-meta-desc {
+  margin: 14px 0 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.5);
+}
+
 /* ---------- 底部收尾 ---------- */
 .lusion-footer {
   display: flex;
@@ -4678,6 +4734,11 @@ a.trace-proc-file:hover {
   .lusion-item {
     width: 100%;
     min-width: 0;
+  }
+
+  /* 单列满宽卡片没有斜对角空白，隐藏元信息锚点 */
+  .lusion-item-meta {
+    display: none;
   }
 
   .lusion-item:nth-child(even) {

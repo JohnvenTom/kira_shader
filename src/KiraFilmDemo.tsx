@@ -1004,6 +1004,8 @@ function ContactDetailPage({
   const contactScrollRef = useRef<HTMLDivElement>(null);
   // contact 详情页内部滚动进度 0~1（驱动相机下降）
   const contactScrollProgress = useRef(0);
+  // 滚动目标进度（原始 scrollTop 换算，未经平滑）
+  const contactScrollTarget = useRef(0);
   // 是否已经滚到顶部（防止滚轮回退时误触发外层退出逻辑）
   const atTopRef = useRef(true);
   // 内容层 ref（用于写入 CSS 变量 --contact-progress 驱动子元素淡入）
@@ -1014,9 +1016,9 @@ function ContactDetailPage({
   /**
    * contact 详情页内部滚动事件处理
    *
-   * 功能：读取 contactScrollRef 的 scrollTop，计算 0~1 的进度
-   *      1. 写入 contactScrollProgress.current（驱动 3D 相机下降，由 useFrame 读取）
-   *      2. 写入内容层的 CSS 变量 --contact-progress（驱动联系信息淡入）
+   * 功能：读取 contactScrollRef 的 scrollTop，计算 0~1 的进度，
+   *      只写入目标值 contactScrollTarget —— 平滑由下方 rAF 阻尼循环完成，
+   *      避免滚轮离散 delta 直接驱动文字层台阶式跳动。
    *
    * 参数：无
    * 返回值：无
@@ -1024,20 +1026,43 @@ function ContactDetailPage({
    * 注意事项：
    *  - 用 passive 监听提升性能
    *  - 不触发 React 重渲染（用 ref + CSS 变量直接驱动样式）
-   *  - CSS 变量驱动副标题/联系信息卡片随滚动进度淡入
    */
   const handleContactScroll = useCallback(() => {
     const el = contactScrollRef.current;
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
     const progress = max > 0 ? el.scrollTop / max : 0;
-    const clamped = Math.max(0, Math.min(1, progress));
-    contactScrollProgress.current = clamped;
+    contactScrollTarget.current = Math.max(0, Math.min(1, progress));
     atTopRef.current = el.scrollTop <= 0;
-    // 写入 CSS 变量驱动子元素淡入（副标题/联系信息卡片）
-    if (contentLayerRef.current) {
-      contentLayerRef.current.style.setProperty('--contact-progress', String(clamped));
-    }
+  }, []);
+
+  // 平滑循环：帧率无关指数阻尼（λ=12，与主页面 SCROLL_SMOOTH / 相机阻尼一致），
+  // 把 contactScrollProgress 阻尼追随目标值，并同步写入 --contact-progress
+  // 驱动文字层（Hello 上移淡出 / 联系卡片淡入）连续滑动而非台阶跳动。
+  // 相机和后处理各自还有一层阻尼，共用该平滑值不会产生冲突，只叠更柔。
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const k = 1 - Math.exp(-12 * dt);
+      contactScrollProgress.current +=
+        (contactScrollTarget.current - contactScrollProgress.current) * k;
+      // 收敛判定：足够接近时贴合，避免无限尾差
+      if (Math.abs(contactScrollTarget.current - contactScrollProgress.current) < 0.0005) {
+        contactScrollProgress.current = contactScrollTarget.current;
+      }
+      if (contentLayerRef.current) {
+        contentLayerRef.current.style.setProperty(
+          '--contact-progress',
+          String(contactScrollProgress.current)
+        );
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   // 绑定滚动监听
@@ -1046,6 +1071,7 @@ function ContactDetailPage({
     if (!el) return;
     el.scrollTop = 0;
     contactScrollProgress.current = 0;
+    contactScrollTarget.current = 0;
     el.addEventListener('scroll', handleContactScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleContactScroll);
   }, [handleContactScroll]);
@@ -1078,6 +1104,7 @@ function ContactDetailPage({
     const raf = requestAnimationFrame(() => {
       el.scrollTop = 0;
       contactScrollProgress.current = 0;
+      contactScrollTarget.current = 0;
       atTopRef.current = true;
       if (contentLayerRef.current) {
         contentLayerRef.current.style.setProperty('--contact-progress', '0');

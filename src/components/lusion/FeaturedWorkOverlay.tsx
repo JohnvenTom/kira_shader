@@ -25,6 +25,7 @@ import {
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { LusionCard } from './LusionCard';
+import { LusionMeta } from './LusionMeta';
 
 /* ---------- 项目数据（lusion 首页 Featured Work，资源已本地化） ---------- */
 interface ProjectDef {
@@ -32,15 +33,18 @@ interface ProjectDef {
   title: string;
   category: string;
   colorBg: string;
+  /** 斜对角元信息：年份 + 一句短描述 */
+  year: string;
+  blurb: string;
 }
 
 const PROJECTS: ProjectDef[] = [
-  { id: 'oryzo_ai', title: 'Oryzo AI', category: 'concept • web • design • development • 3d • animation', colorBg: '#0e0f0c' },
-  { id: 'atlas_motion', title: 'Atlas Motion', category: 'concept • web • design • development • 3d • animation', colorBg: '#0c0d10' },
-  { id: 'devin_ai', title: 'Devin AI', category: 'web • design • development • 3d', colorBg: '#101013' },
-  { id: 'of_the_oak', title: 'Of The Oak', category: 'web • design • development • 3d • animation', colorBg: '#0d100d' },
-  { id: 'everswap', title: 'Everswap', category: 'concept • web • design • development • 3d • animation', colorBg: '#0e0c10' },
-  { id: 'synthetic_human', title: 'Synthetic Human', category: 'concept • web • design • development • 3d • animation', colorBg: '#100f0e' },
+  { id: 'oryzo_ai', title: 'Oryzo AI', category: 'concept • web • design • development • 3d • animation', colorBg: '#0e0f0c', year: '2025', blurb: 'An AI-native brand platform with generative design at its core.' },
+  { id: 'atlas_motion', title: 'Atlas Motion', category: 'concept • web • design • development • 3d • animation', colorBg: '#0c0d10', year: '2024', blurb: 'A motion studio portfolio built around a real-time WebGL film reel.' },
+  { id: 'devin_ai', title: 'Devin AI', category: 'web • design • development • 3d', colorBg: '#101013', year: '2025', blurb: 'Product site for the first autonomous software engineer.' },
+  { id: 'of_the_oak', title: 'Of The Oak', category: 'web • design • development • 3d • animation', colorBg: '#0d100d', year: '2023', blurb: 'An interactive documentary rooted in a living forest ecosystem.' },
+  { id: 'everswap', title: 'Everswap', category: 'concept • web • design • development • 3d • animation', colorBg: '#0e0c10', year: '2024', blurb: 'A trading experience visualised through fluid particle economies.' },
+  { id: 'synthetic_human', title: 'Synthetic Human', category: 'concept • web • design • development • 3d • animation', colorBg: '#100f0e', year: '2025', blurb: 'Real-time portrait studies exploring the uncanny valley.' },
 ];
 
 const TEX_ROOT = '/asset/textures/projects';
@@ -68,6 +72,7 @@ export default function FeaturedWorkOverlay({
   const line1Refs = useRef<(HTMLDivElement | null)[]>([]);
   const line2Refs = useRef<(HTMLDivElement | null)[]>([]);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const metaRefs = useRef<(HTMLDivElement | null)[]>([]);
   const mouseRef = useRef({ x: -1e4, y: -1e4 });
 
   /* 触屏降级（一次性判定） */
@@ -174,7 +179,7 @@ export default function FeaturedWorkOverlay({
 
   return (
     <div
-      className={`lusion-overlay ${active ? 'visible' : ''}`}
+      className={`lusion-overlay ${active ? 'visible' : ''} ${isCoarse ? '' : 'fine'}`}
       onMouseMove={isCoarse ? undefined : handleMouseMove}
     >
       {/* 底层：固定 R3F canvas（DOM 同步 WebGL 卡片） */}
@@ -192,6 +197,7 @@ export default function FeaturedWorkOverlay({
                 mainRefs={mainRefs}
                 line1Refs={line1Refs}
                 line2Refs={line2Refs}
+                metaRefs={metaRefs}
                 mouseRef={mouseRef}
                 cardsRef={cardsRef}
               />
@@ -257,6 +263,16 @@ export default function FeaturedWorkOverlay({
                   {isCoarse ? p.title.toUpperCase() : ''}
                 </div>
               </div>
+              {/* 斜对角空白处元信息锚点：WebGL 模式下仅提供布局矩形（内容隐藏），
+                  触屏降级时直接显示文字 */}
+              <div
+                ref={(el) => { metaRefs.current[i] = el; }}
+                className={`lusion-item-meta ${i % 2 === 0 ? 'meta-right' : 'meta-left'}`}
+              >
+                <span className="lusion-meta-number">{String(i + 1).padStart(2, '0')}</span>
+                <span className="lusion-meta-year">{p.year}</span>
+                <p className="lusion-meta-desc">{p.blurb}</p>
+              </div>
             </div>
           ))}
         </div>
@@ -278,6 +294,7 @@ interface LusionSceneProps {
   mainRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
   line1Refs: React.MutableRefObject<(HTMLDivElement | null)[]>;
   line2Refs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  metaRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
   cardsRef: React.MutableRefObject<LusionCard[]>;
 }
@@ -286,11 +303,13 @@ function LusionScene({
   mainRefs,
   line1Refs,
   line2Refs,
+  metaRefs,
   mouseRef,
   cardsRef,
 }: LusionSceneProps) {
   const { camera, gl, scene } = useThree();
   const size = useThree((s) => s.size);
+  const metasRef = useRef<LusionMeta[]>([]);
 
   /* ---------- 纹理加载 ---------- */
   const colorUrls = useMemo(
@@ -382,6 +401,21 @@ function LusionScene({
     });
     cardsRef.current = cards;
     cards.forEach((c) => scene.add(c.mesh));
+
+    /* 斜对角元信息网格（与卡片一一配对：滑入方向相反、hover 联动） */
+    const metas: LusionMeta[] = cards.map((c) => {
+      const meta = new LusionMeta({
+        number: String(c.index + 1).padStart(2, '0'),
+        year: PROJECTS[c.index].year,
+        desc: PROJECTS[c.index].blurb,
+        domMeta: metaRefs.current[c.index]!,
+        // 左侧卡（index 偶）元信息在其右侧 → 从左滑入；右侧卡反之
+        dir: c.index % 2 === 0 ? 1 : -1,
+      });
+      scene.add(meta.mesh);
+      return meta;
+    });
+    metasRef.current = metas;
     // 调试钩子：浏览器控制台可直读卡片状态机（window.__lusionCards）
     (window as unknown as Record<string, unknown>).__lusionCards = cards;
 
@@ -393,6 +427,11 @@ function LusionScene({
         scene.remove(c.mesh);
         c.dispose();
       });
+      metasRef.current.forEach((m) => {
+        scene.remove(m.mesh);
+        m.dispose();
+      });
+      metasRef.current = [];
       cardsRef.current = [];
       delete (window as unknown as Record<string, unknown>).__lusionCards;
     };
@@ -418,6 +457,10 @@ function LusionScene({
     for (const card of cardsRef.current) {
       card.update(dt, mouseRef.current, shared.timeUniform.value);
     }
+    // 元信息跟随配对卡片（滑入 + hover 联动）
+    metasRef.current.forEach((m, i) => {
+      m.update(dt, cardsRef.current[i]?.hoverRatio ?? 0);
+    });
   });
 
   return null;
