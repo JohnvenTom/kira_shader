@@ -13,6 +13,7 @@ import { PaperScene } from './components/PaperScene';
 import { BlackholeScene } from './components/BlackholeScene';
 import { PianoDetailPage } from './components/piano/PianoDetailPage';
 import { CanvasContextGuard } from './components/CanvasContextGuard';
+import FeaturedWorkOverlay from './components/lusion/FeaturedWorkOverlay';
 import gsap from 'gsap';
 
 /**
@@ -766,6 +767,24 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           不再做原生滚动（wheel/touch 由惯性推进系统拦截处理），
           仅作为最上层事件接收者：滚轮速度门控驱动镜头"有阻力跃进" */}
       <div ref={scrollContainerRef} className="scroll-container film-scroll-container" />
+
+      {/* Lusion Featured Work 卡片墙 z-55
+          第 0 帧（CREATIVE STUDIO）整帧接管：原生滚动浏览 6 张深度视差卡片，
+          滚到底继续下滚 → 写 dragOffset 滑向第 1 帧（镜像 hash 跳帧，能量归零）；
+          顶部上滚 → 注入负能量（保留"穿回首页"语义） */}
+      <FeaturedWorkOverlay
+        active={sectionIndex === 0 && !detailOpen}
+        onAdvance={() => {
+          dragOffsetRef.current = -1 * 4;
+          const st = scrollStateRef.current;
+          st.energy = 0;
+          st.display = 0;
+          setScrollProgress(0);
+        }}
+        onRetreat={(dy) => {
+          injectScroll(dy, performance.now());
+        }}
+      />
 
       {/* 第 2 层：WebGL Canvas z-40 */}
       <div className="canvas-wrapper">

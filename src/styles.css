@@ -4457,3 +4457,241 @@ a.trace-proc-file:hover {
   }
 }
 
+
+/* ==================================================================== */
+/* === Lusion Featured Work 卡片墙（film 页第 0 帧覆盖层）=== */
+/* ==================================================================== */
+
+/*
+ * 层级：z-55（高于滚轮捕获 z-50，低于 NavBar/详情页 z-60）
+ * 结构：.lusion-overlay（fixed 全屏）
+ *        ├ .lusion-canvas  固定 R3F canvas（pointer-events:none，卡片渲染层）
+ *        └ .lusion-scroll  原生滚动 DOM（占位矩形 + 文字，事件层）
+ */
+.lusion-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: #0b0b0d;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.65s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.lusion-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 底层 canvas：不接事件，卡片画在占位矩形处 */
+.lusion-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* 上层滚动容器：透明背景让 canvas 透出 */
+.lusion-scroll {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.lusion-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- 页头 hero（CREATIVE STUDIO 压缩排版） ---------- */
+.lusion-hero {
+  position: relative;
+  padding: 15vh 6vw 9vh;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+/* 右侧平衡文案：贴住列表容器右缘，填补首屏右上空白 */
+.lusion-hero-side {
+  position: absolute;
+  top: calc(15vh + 10px);
+  right: 6vw;
+  width: 320px;
+  animation: lusion-hero-side-in 1.4s cubic-bezier(0.16, 1, 0.3, 1) 0.5s both;
+}
+
+.lusion-hero-side-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 14px;
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+.lusion-hero-side-text {
+  font-size: 14px;
+  line-height: 1.75;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+}
+
+@keyframes lusion-hero-side-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lusion-hero-index {
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  color: rgba(255, 255, 255, 0.35);
+  margin-bottom: 18px;
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+.lusion-hero-title {
+  font-size: clamp(38px, 6vw, 76px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+  color: #f2f2f0;
+  margin: 0 0 14px;
+}
+
+.lusion-hero-subtitle {
+  font-size: clamp(15px, 1.6vw, 19px);
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 8px;
+  letter-spacing: 0.01em;
+}
+
+.lusion-hero-desc {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.32);
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- 卡片列表：交错双列杂志排版 ---------- */
+.lusion-list {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 6vw 10vh;
+  display: flex;
+  flex-direction: column;
+  gap: 7vh;
+}
+
+.lusion-item {
+  width: 44%;
+  min-width: 300px;
+}
+
+/* 偶数卡（0/2/4）左侧，奇数卡右侧并下移错位 */
+.lusion-item:nth-child(even) {
+  margin-left: auto;
+  transform: translateY(6vh);
+}
+
+/* 卡片占位（WebGL 画布在此矩形渲染；透明但接收 hover） */
+.lusion-item-main {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  cursor: pointer;
+}
+
+/* 触屏降级：直接显示图片 */
+.lusion-item-main img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 20px;
+}
+
+/* ---------- 文字区 ---------- */
+.lusion-item-line-1 {
+  margin-top: 14px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.38);
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lusion-item-line-2 {
+  margin-top: 6px;
+  font-size: clamp(20px, 2vw, 28px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #f2f2f0;
+}
+
+.lusion-item-line-2-inner {
+  display: flex;
+  line-height: 1.1;
+}
+
+/* 字母列：overflow hidden 裁出滑入轨道 */
+.lusion-letter-col {
+  display: inline-block;
+  overflow: hidden;
+  height: 1.1em;
+  vertical-align: top;
+}
+
+.lusion-letter-col.lusion-letter-space {
+  width: 0.32em;
+}
+
+.lusion-letter {
+  display: block;
+  will-change: transform;
+}
+
+/* ---------- 底部收尾 ---------- */
+.lusion-footer {
+  display: flex;
+  justify-content: center;
+  padding: 0 0 12vh;
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.28);
+}
+
+/* ---------- 响应式：窄屏单列 ---------- */
+@media (max-width: 760px) {
+  .lusion-item {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .lusion-item:nth-child(even) {
+    transform: none;
+  }
+
+  .lusion-hero {
+    padding: 13vh 7vw 7vh;
+  }
+
+  /* 窄屏：侧文案改为流式排在 hero 内容之后，不再绝对定位 */
+  .lusion-hero-side {
+    position: static;
+    width: auto;
+    margin-top: 28px;
+  }
+}
