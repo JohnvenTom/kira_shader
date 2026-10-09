@@ -1561,13 +1561,14 @@ function OfficeDetailPage({
  *  - 滚轮平滑缩放：下滚连续放大（1→×2，一屏两卡高度），上滚连续缩小，
  *    完全还原后上滚冒泡走外层退出路径
  *  - 镜头鱼眼：SVG feDisplacementMap 位图位移滤镜（contact 页同款
- *    像素级桶形畸变，非卡片网格位移），强度随缩放因子 0→满平滑增强
+ *    像素级畸变，非卡片网格位移），单条连续曲线：未放大满枕形内弯
+ *    → 缩放中点过零 → ×2 满桶形外弯，两侧等幅，随缩放因子平滑过渡
  */
 /** 滚轮平滑缩放灵敏度：每像素 deltaY 的缩放因子增量（1→2 全程约 450px，4 个滚轮格） */
 const WORK_ZOOM_SENS = 0.0022;
 /** 最大缩放因子：×2 后卡片高度 = 视口一半（一屏恰好两卡） */
 const WORK_ZOOM_MAX = 2;
-/** 镜头鱼眼滤镜最大位移强度（feDisplacementMap scale，容器本地 px） */
+/** 镜头鱼眼滤镜最大位移强度（feDisplacementMap scale，容器本地 px，两侧等幅） */
 const WORK_FISHEYE_MAX = 310;
 function WorkDetailPage({
   mouseRef,
@@ -1770,7 +1771,8 @@ function WorkDetailPage({
       mov_y: 0,
       ani: null,
     }));
-    // resize 后按当前缩放补一次鱼眼变换（放大态下窗口变化鱼眼保持一致）
+    // resize 后按当前缩放补一次鱼眼变换（进入页面/窗口变化时内弯态保持一致）
+    applyFisheye(zoomFactorRef.current);
     writeCardTransforms(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1808,6 +1810,44 @@ function WorkDetailPage({
   }, []);
 
   /**
+   * 应用镜头鱼眼（连续曲线，随缩放因子）
+   *
+   * 功能：k = (2·factor − (1+MAX)) / (MAX−1)，factor=1（未放大）为满枕形
+   *      内弯（scale 负）、中点过零、factor=MAX 为满桶形外弯，两侧等幅。
+   *      feDisplacementMap 的 scale 随 k GSAP 补间（0.45s 平滑过渡）。
+   *      常态即挂滤镜（进入页面/resize 也会调用，进入时从 0 收敛到内弯）。
+   *
+   * 参数：
+   *  - factor {number} 当前缩放因子（1~WORK_ZOOM_MAX）
+   * 返回值：无
+   *
+   * 注意事项：
+   *  - 去重守卫：取整值不变不写 attribute —— feDisplacementMap 每次变更
+   *    都触发整容器 SVG 滤镜重栅格化，开销大
+   */
+  const applyFisheye = useCallback((factor: number) => {
+    const container = photosRef.current;
+    const disp = fisheyeDispRef.current;
+    if (!container || !disp) return;
+    const k = (2 * factor - (1 + WORK_ZOOM_MAX)) / (WORK_ZOOM_MAX - 1);
+    container.style.filter = Math.abs(k) > 0.001 ? 'url(#work-fisheye)' : '';
+    let lastScale = Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX);
+    gsap.to(fisheyeProxyRef.current, {
+      v: k,
+      duration: 0.45,
+      ease: 'power2.out',
+      overwrite: true,
+      onUpdate: () => {
+        const s = Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX);
+        if (s !== lastScale) {
+          lastScale = s;
+          disp.setAttribute('scale', String(s));
+        }
+      },
+    });
+  }, []);
+
+  /**
    * 把回绕偏移统一写入所有卡片（纯 translate，鱼眼由 SVG 滤镜负责）
    */
   const writeCardTransforms = useCallback((duration: number, ease = 'power3.out') => {
@@ -1828,8 +1868,8 @@ function WorkDetailPage({
    *  - 重算 scaleNums 与可见区边界（回绕判定跟随缩放）
    *  - 写入 --scale，.work-photos 既有的 transform 0.5s transition 平滑缩放
    *  - 原位回绕：此前按小窗口回绕的卡片按新边界重新铺开（防缩小后露黑）
-   *  - 镜头鱼眼：feDisplacementMap 的 scale 属性随缩放因子 GSAP 补间
-   *    （滚轮事件间平滑过渡），k=0 时摘除滤镜避免常态开销
+   *  - 镜头鱼眼：applyFisheye 按连续曲线补间（未放大满内弯 → 中点
+   *    过零 → ×2 满外弯），滚轮事件间平滑过渡
    */
   const applyZoomFactor = useCallback((factor: number) => {
     const clamped = Math.min(WORK_ZOOM_MAX, Math.max(1, factor));
@@ -1857,23 +1897,11 @@ function WorkDetailPage({
     // 回绕补位写入（0.45s 与缩放过渡同步）
     writeCardTransforms(0.45);
 
-    // 镜头鱼眼：滤镜强度随缩放因子补间（0.45s 与缩放/回绕同步），
-    // k>0 挂滤镜、k=0 摘除（常态零开销）
-    const k = clamped - 1;
-    const disp = fisheyeDispRef.current;
-    if (disp) {
-      container.style.filter = k > 0.001 ? 'url(#work-fisheye)' : '';
-      gsap.to(fisheyeProxyRef.current, {
-        v: k,
-        duration: 0.45,
-        ease: 'power2.out',
-        overwrite: true,
-        onUpdate: () => {
-          disp.setAttribute('scale', String(Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX)));
-        },
-      });
-    }
-  }, [writeCardTransforms]);
+    // 镜头鱼眼：一条连续曲线，无分界分段 ——
+    //  factor=1（未放大）满枕形内弯（scale 负）→ 中点过零 → factor=2 满桶形外弯
+    //  两侧等幅对称；|k|>0.001 挂滤镜（常态即挂载，进入页面即为内弯态）
+    applyFisheye(clamped);
+  }, [writeCardTransforms, applyFisheye]);
 
   /**
    * 根元素 wheel 平滑缩放
