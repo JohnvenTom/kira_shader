@@ -73,9 +73,44 @@ export const GLYPH_ORDER = Object.keys(FONT_5X7);
  * 行 2：版本行（进度条下方居中） 行 3：版权行（底部居中）
  * 行 4：BGM 解锁行（两态：点击前 "PRESS ANYWHERE TO PLAY BGM" /
  *      点击后 "AUDIO: ON"，纹理按态切换，见 bootShader 的文本纹理双态）
+ * 行 6：内存检测行（数字部分由着色器动态绘制，见 bootDigitsPx；
+ *      静态部分只烘焙标签与 "K" 后缀，6 个空格是数字的占位）
+ * 行 7-10：硬件信息两栏表（GPU/分辨率为真实探测值，构建纹理时写入）
+ * 行 11：启动源行（行尾闪烁光标由着色器绘制）
+ * 行 12：键提示行（纯 BIOS 装饰）
  */
 export const BOOT_AUDIO_LINE_OFF = 'PRESS ANYWHERE TO PLAY BGM';
 export const BOOT_AUDIO_LINE_ON = 'AUDIO: ON';
+
+/** GPU 渲染器字符串（真实探测，构建纹理时固化；失败退回通用占位） */
+function detectGpuRenderer(): string {
+  try {
+    const c = document.createElement('canvas');
+    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext | null;
+    if (!gl) return 'SOFTWARE RASTERIZER';
+    const raw = String(gl.getParameter(gl.RENDERER) || 'UNKNOWN GPU');
+    // 只保留字体表收录的字符（其余替换为空格），截断到 56 字符适配栏宽
+    return raw.toUpperCase().replace(/[^A-Z0-9 .:/()-]/g, ' ').trim().slice(0, 56) || 'UNKNOWN GPU';
+  } catch {
+    return 'UNKNOWN GPU';
+  }
+}
+
+/** 显示分辨率 + DPR（构建纹理时固化） */
+function detectDisplay(): string {
+  const dpr = Number(window.devicePixelRatio || 1);
+  const dprStr = Number.isInteger(dpr) ? String(dpr) : dpr.toFixed(2);
+  return `${screen.width}X${screen.height} DPR ${dprStr}`;
+}
+
+/** 硬件表行：key 左对齐 + 点线填充 + 值（BIOS 两栏风味） */
+function hwRow(key: string, value: string): string {
+  const dots = '.'.repeat(Math.max(2, 11 - key.length - 1));
+  return `${key} ${dots} ${value}`;
+}
+
+/** 内存检测行的静态部分（"MEMORY TEST ......... " 22 字符标签 + 6 空格数字占位 + K） */
+export const MEMORY_LINE = `MEMORY TEST ......... ${' '.repeat(6)}K`;
 
 export const BOOT_TEXT_LINES = [
   'KIRA SHADER',
@@ -83,6 +118,14 @@ export const BOOT_TEXT_LINES = [
   'WEBSITE / VERSION 1.0',
   '(C) 2026 KIRA SHADER. ALL RIGHTS RESERVED.',
   BOOT_AUDIO_LINE_OFF,
+  '', // 行 5 保留（AUDIO: ON 态由纹理整体切换，不单独占行）
+  MEMORY_LINE,
+  hwRow('CPU', 'RENDER PIPELINE'),
+  hwRow('GPU', detectGpuRenderer()),
+  hwRow('DISPLAY', detectDisplay()),
+  hwRow('AUDIO', 'TAPE DECK / SIDE A'),
+  'BOOTING FROM /DEV/SHADER0 ...',
+  'DEL: SETUP   F1: HELP   F12: BOOT MENU',
 ];
 
 /** BGM 行的"已解锁"态：其余行不变，仅第 5 行换文案 */
@@ -90,9 +133,13 @@ export const BOOT_TEXT_LINES_ON = BOOT_TEXT_LINES.map((l, i) =>
   i === 4 ? BOOT_AUDIO_LINE_ON : l
 );
 
+/** 内存计数：6 位数字在行内的起始列（"MEMORY TEST ......... " 22 字符） */
+export const MEMORY_DIGITS_COL = 22;
+
 /**
  * 各文本行的布局元数据：[起始 x, 起始 y, 像素放大倍数, 行号]（720×400 参考网格）
- * 与 shader.se 的 boot_screen.png 排版同构：左上 logo 区 + 居中进度条 + 居中版本行
+ * 与 shader.se 的 boot_screen.png 排版同构：左上 logo 区 + 居中进度条 + 居中版本行，
+ * 下半屏为 POST 面板（分隔线/内存检测/硬件表/启动源/键提示）
  */
 export const BOOT_LINE_META: [number, number, number, number][] = [
   [116, 42, 2, 0],   // KIRA SHADER（字标，紧邻条纹球 logo 右侧）
@@ -100,10 +147,21 @@ export const BOOT_LINE_META: [number, number, number, number][] = [
   [297, 176, 1, 2],  // WEBSITE / VERSION 1.0（进度条下方居中，21 字符 ×6px=126 宽）
   [234, 368, 1, 3],  // 版权行（底部居中，42 字符 ×6px=252 宽）
   [282, 208, 1, 4],  // BGM 解锁行（居中，26 字符 ×6px=156 宽；AUDIO: ON 态换 x=333）
+  [0, 0, 1, 5],      // 保留行，不绘制内容（空字符串）
+  [72, 242, 1, 6],   // 内存检测行（左侧起，动态数字 + K/OK 后缀）
+  [72, 264, 1, 7],   // 硬件表：CPU
+  [72, 278, 1, 8],   // 硬件表：GPU（真实渲染器名）
+  [72, 292, 1, 9],   // 硬件表：DISPLAY（分辨率 + DPR）
+  [72, 306, 1, 10],  // 硬件表：AUDIO
+  [72, 328, 1, 11],  // 启动源行（行尾闪烁光标由着色器绘制）
+  [243, 346, 1, 12], // 键提示行（居中装饰）
 ];
 
 /** BGM 行"已解锁"态的布局（AUDIO: ON 共 9 字符 ×6px=54 宽，居中 x=333） */
 export const BOOT_AUDIO_LINE_ON_X = 333;
+
+/** 启动源行长度（字符），行尾光标的 x = 72 + 该值 ×6 */
+export const BOOT_LINE_CHARS = 30;
 
 /** 字符间距（5px 字形 + 1px 间隔 = 6px 步进） */
 export const GLYPH_CELL_W = 6;

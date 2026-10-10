@@ -874,7 +874,11 @@ const SCREEN_FRAG = /* glsl */ `
   uniform sampler2D uBootTest;
   uniform vec2 uBootTextSize;
   uniform float uBootGlyphCount;
-  uniform vec4 uLineMeta[5];
+  uniform float uBootDigitBase;
+  uniform float uBootGlyphO;
+  uniform float uBootGlyphK;
+  uniform float uBootTime;
+  uniform vec4 uLineMeta[13];
   uniform float uBootMix;
   uniform float uBootProgress;
   varying vec2 vUv;
@@ -1113,6 +1117,10 @@ function ScreenDisplay({
         uBootTest: { value: bootTex.uBootTest.value },
         uBootTextSize: { value: bootTex.uBootTextSize.value.clone() },
         uBootGlyphCount: { value: bootTex.uBootGlyphCount.value },
+        uBootDigitBase: { value: bootTex.uBootDigitBase.value },
+        uBootGlyphO: { value: bootTex.uBootGlyphO.value },
+        uBootGlyphK: { value: bootTex.uBootGlyphK.value },
+        uBootTime: { value: 0 },
         uLineMeta: { value: bootLineMetaUniform() },
         uBootMix: { value: 1 },
         uBootProgress: { value: 0 },
@@ -1267,6 +1275,7 @@ function ScreenDisplay({
       // （smoothstep(0.05, 0.55, 1-s)，与 shader.se 显示器内容切换同曲线）
       u.uBootMix.value = THREE.MathUtils.smoothstep(1 - bootStore.spring, 0.05, 0.55);
       u.uBootProgress.value = bootStore.displayProgress;
+      u.uBootTime.value = t;
       // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"（与 BootPass 同步）
       applyBootAudioState(u);
     }

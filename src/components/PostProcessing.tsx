@@ -492,6 +492,7 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
     const bootPass = bootPassRef.current;
     if (bootPass) {
       bootPass.uniforms.uProgress.value = bootStore.displayProgress;
+      bootPass.uniforms.uBootTime.value = _state.clock.elapsedTime;
       const alpha =
         bootStore.phase === 'reveal' ? Math.max(0, 1 - bootStore.spring) : bootStore.springDone ? 0 : 1;
       bootPass.uniforms.uBootAlpha.value = alpha;
