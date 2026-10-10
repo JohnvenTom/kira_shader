@@ -6,6 +6,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { MotionBlurPass } from './MotionBlurPass';
+import { BootPassShader } from '../boot/bootShader';
+import { bootStore } from '../boot/bootStore';
 /**
  * 后处理参数（运行时可调）
  *
@@ -327,6 +329,9 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
   const motionBlurRef = useRef<MotionBlurPass | null>(null);
   // 景深通道引用：焦点距离每帧由 focusRef 阻尼驱动
   const dofRef = useRef<ShaderPass | null>(null);
+  // boot 合成层：紧贴 RenderPass 之后、Bloom 之前——boot 屏与场景
+  // 共享整条后处理链（辉光/色散/暗角/圆角/运动模糊），显现为管线内混合
+  const bootPassRef = useRef<ShaderPass | null>(null);
   // focusRef 的 ref 镜像（避免闭包旧值）
   const focusTargetRef = useRef<React.MutableRefObject<THREE.Vector3> | undefined>(focusRef);
   focusTargetRef.current = focusRef;
@@ -360,6 +365,14 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
     c.renderTarget2.depthTexture = depthTexture;
 
     c.addPass(new RenderPass(scene, camera));
+
+    // Boot 合成层：boot 屏（进度条阶段）盖在场景之上，随显现弹簧淡出。
+    // 放在 Bloom 前——白色文字/进度条会吃辉光，色散/暗角/圆角统一作用于合成结果
+    const bootPass = new ShaderPass(BootPassShader);
+    const dbSize0 = gl.getDrawingBufferSize(new THREE.Vector2());
+    bootPass.uniforms.uResolution.value.set(dbSize0.x, dbSize0.y);
+    c.addPass(bootPass);
+    bootPassRef.current = bootPass;
 
     // Bloom 辉光：让屏幕 emissive 自发光部分向四周扩散彩色光晕
     // 顺序：Bloom 必须在色散/鱼眼前，否则色散会把 Bloom 的光晕也拆成 RGB 分离
@@ -427,6 +440,10 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
       const db = gl.getDrawingBufferSize(new THREE.Vector2());
       dofRef.current.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
     }
+    if (bootPassRef.current) {
+      const db = gl.getDrawingBufferSize(new THREE.Vector2());
+      bootPassRef.current.uniforms.uResolution.value.set(db.x, db.y);
+    }
   }, [size, gl]);
 
   // 同步 params 到 shader uniforms 和 bloom 属性
@@ -468,6 +485,18 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
   useFrame((_state, delta) => {
     if (!enabled || !composerRef.current) return;
     motionBlurRef.current?.update(delta);
+
+    // boot 合成层：进度条显示值 + 显现弹簧驱动的混合系数。
+    // 显现期 bootAlpha = 1 − spring（可过冲到负值 → clamp 到 0）；
+    // 弹簧收敛后直接禁用该通道，省一整帧全屏 quad 的开销
+    const bootPass = bootPassRef.current;
+    if (bootPass) {
+      bootPass.uniforms.uProgress.value = bootStore.displayProgress;
+      const alpha =
+        bootStore.phase === 'reveal' ? Math.max(0, 1 - bootStore.spring) : bootStore.springDone ? 0 : 1;
+      bootPass.uniforms.uBootAlpha.value = alpha;
+      bootPass.enabled = alpha > 0.001;
+    }
 
     // 景深焦点：相机到"鼠标指向表面命中点"的距离，阻尼逼近平滑过渡。
     // lambda=14（约 70ms 收敛）：与钢琴页同一档跟手度，快速扫动时焦点连续滑动

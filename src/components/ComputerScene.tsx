@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF, useTexture } from '@react-three/drei';
+import { useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { parseGIF, decompressFrames, type GifFrame } from 'gifuct-js';
 import { CameraDebugger } from './CameraDebugger';
+import { bootStore, registerBootAsset } from '../boot/bootStore';
+import { BOOT_COMMON_GLSL, bootLineMetaUniform, getBootTextures } from '../boot/bootShader';
 
 /**
  * 初始化 RectAreaLight 所需的着色器 uniform
@@ -199,12 +203,44 @@ export const SCREEN_CENTER = new THREE.Vector3(
   SCREEN_CONFIG.posZ
 );
 
+/** 模型缓存：跨 hash 路由往返复用同一份 Group（useGLTF 缓存的行为等价物） */
+const modelCache = new Map<string, THREE.Group>();
+/** in-flight 加载共享：StrictMode 双挂载/快速重挂载不触发二次下载 */
+let modelInflight: Promise<THREE.Group> | null = null;
+/** 字节进度出口：xhr 回调 → 当前挂载的 boot 资产句柄 */
+let modelProgressSink: ((p: number) => void) | null = null;
+
 /**
- * 预配置 Draco 解码器路径
- * 功能：在模块加载时设置 useGLTF 的 Draco 解码器位置
- * 注意：必须在组件渲染前执行；drei 的 useGLTF 内置 Draco 支持，仅需提供 wasm 路径
+ * 加载 computer.glb（Draco），带字节级进度出口
+ *
+ * 功能：手动驱动 GLTFLoader（不再走 useGLTF/suspense），换取 xhr.onProgress
+ *      字节进度——boot 进度条前半段的真实信号源；结果与 in-flight promise
+ *      均模块级缓存，重挂载零成本
  */
-useGLTF.setDecoderPath(DRACO_DECODER_PATH);
+function loadModelScene(): Promise<THREE.Group> {
+  const cached = modelCache.get(MODEL_URL);
+  if (cached) return Promise.resolve(cached);
+  if (!modelInflight) {
+    const loader = new GLTFLoader();
+    const draco = new DRACOLoader();
+    draco.setDecoderPath(DRACO_DECODER_PATH);
+    loader.setDRACOLoader(draco);
+    modelInflight = new Promise<THREE.Group>((resolve, reject) => {
+      loader.load(
+        MODEL_URL,
+        (gltf) => {
+          modelCache.set(MODEL_URL, gltf.scene);
+          resolve(gltf.scene);
+        },
+        (xhr) => {
+          if (xhr.total > 0) modelProgressSink?.(Math.min(1, xhr.loaded / xhr.total));
+        },
+        reject
+      );
+    });
+  }
+  return modelInflight;
+}
 
 interface SmokeLayerProps {
   /** 烟雾纹理（带 alpha 通道） */
@@ -592,8 +628,6 @@ function createCausticsTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
 interface ComputerSceneProps {
   /** 滚动进度 0~1，驱动相机与模型动画 */
   scrollProgress: number;
-  /** 模型加载完成回调 */
-  onLoaded: () => void;
   /** 鼠标归一化坐标 ref（-1~1），驱动相机绕 target 做小角度视差旋转 */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
   /** DOF 焦点目标（本组件每帧写入：鼠标指向表面的代理命中点），供 PostProcessing 读 */
@@ -669,6 +703,41 @@ interface GifAsset {
 }
 
 /**
+ * 带进度回调的 ArrayBuffer 下载（Content-Length 流式计数）
+ *
+ * 功能：fetch 流式读取，按已读字节/总字节回调 0~1；无 Content-Length 或
+ *      无流式 body 时直接读完并回调 1——boot 进度条的真实信号源之一
+ */
+async function fetchArrayBufferTracked(
+  url: string,
+  onProgress?: (p: number) => void
+): Promise<ArrayBuffer> {
+  const resp = await fetch(url);
+  const total = Number(resp.headers.get('content-length') || 0);
+  if (!resp.body || total <= 0) {
+    onProgress?.(1);
+    return resp.arrayBuffer();
+  }
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    onProgress?.(loaded / total);
+  }
+  const out = new Uint8Array(loaded);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out.buffer;
+}
+
+/**
  * 加载并解析 GIF 文件，预合成每一帧
  *
  * 功能：
@@ -678,6 +747,7 @@ interface GifAsset {
  *
  * 参数：
  *  - url {string} GIF 文件 URL（经 Vite hash 处理后的路径）
+ *  - onProgress {(p:number)=>void} 可选下载进度回调（0~1，喂 boot 进度条）
  *
  * 返回值：Promise<GifAsset>，包含预合成帧列表
  *
@@ -690,8 +760,8 @@ interface GifAsset {
  *  - disposalType=3 时下一帧绘制前需恢复为前一帧状态（这里用上一帧 ImageData 回填）
  *  - delay=0 的帧按 100ms 处理（浏览器默认行为）
  */
-async function loadGif(url: string): Promise<GifAsset> {
-  const buffer = await fetch(url).then((r) => r.arrayBuffer());
+async function loadGif(url: string, onProgress?: (p: number) => void): Promise<GifAsset> {
+  const buffer = await fetchArrayBufferTracked(url, onProgress);
   const parsed = parseGIF(buffer);
   const rawFrames = decompressFrames(parsed, true);
   if (rawFrames.length === 0) throw new Error(`GIF 无帧数据: ${url}`);
@@ -799,11 +869,21 @@ const SCREEN_FRAG = /* glsl */ `
   uniform float uTearBands;
   uniform float uTearActiveCalm;
   uniform float uTearActivePeak;
+  // === boot 屏内容（加载期显示器同步显示 boot 画面，显现期切回 GIF） ===
+  uniform sampler2D uBootFont;
+  uniform sampler2D uBootTest;
+  uniform vec2 uBootTextSize;
+  uniform float uBootGlyphCount;
+  uniform vec4 uLineMeta[4];
+  uniform float uBootMix;
+  uniform float uBootProgress;
   varying vec2 vUv;
 
   float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
   }
+
+${BOOT_COMMON_GLSL}
 
   void main() {
     // 1. 桶形弯曲：坐标向中心收拢（角部 r2≈0.5，收拢比例 = uBarrel × r2）
@@ -851,6 +931,14 @@ const SCREEN_FRAG = /* glsl */ `
 
     // 7. 边缘暗角
     color *= 1.0 - uVignette * smoothstep(0.36, 0.72, length(c));
+
+    // 8. boot 屏内容混合：uBootMix=1 时显示器显示 boot 画面（BIOS 蓝 + 进度条），
+    //    随显现弹簧 smoothstep(0.05~0.55) 切回 GIF；虚拟分辨率 720x550
+    //    （网格 1.8 宽高比 contain 进显示器 1.31 宽高比，上下留蓝边）
+    {
+      vec3 bootCol = bootContent(vUv, vec2(720.0, 550.0), uBootProgress);
+      color = mix(color, bootCol * uBrightness, uBootMix);
+    }
 
     gl_FragColor = vec4(color, a);
     #include <colorspace_fragment>
@@ -923,12 +1011,14 @@ function ScreenDisplay({
   // 单帧 patch canvas（GIF 逻辑尺寸），用于 putImageData 后再 drawImage 缩放到主 canvas
   const patchCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // 异步加载并解析所有 GIF
+  // 异步加载并解析所有 GIF（每个 GIF 作为独立资产登记进 boot 进度条）
   useEffect(() => {
     let cancelled = false;
     const textures: THREE.CanvasTexture[] = [];
     const canvases: HTMLCanvasElement[] = [];
     const assets: GifAsset[] = [];
+    // 4 个 GIF 合计权重 0.3（模型 0.62 / 烟雾 0.08）
+    const gifAssets = SCREEN_GIF_URLS.map((_, i) => registerBootAsset(`screen-gif-${i}`, 0.075));
 
     // 公用 patch canvas（尺寸会按当前 GIF 动态调整）
     const patchCanvas = document.createElement('canvas');
@@ -936,7 +1026,8 @@ function ScreenDisplay({
 
     Promise.all(
       SCREEN_GIF_URLS.map(async (url, i) => {
-        const asset = await loadGif(url);
+        const asset = await loadGif(url, (p) => gifAssets[i].setProgress(p));
+        gifAssets[i].markDone();
         if (cancelled) return;
 
         // 每个 GIF 配一个独立主 canvas（固定 512×512，作为 CanvasTexture 源）
@@ -978,6 +1069,8 @@ function ScreenDisplay({
       .catch((err) => {
         // eslint-disable-next-line no-console
         console.error('[ScreenDisplay] GIF 加载失败:', err);
+        // 失败也放行 boot：单资产失败不应把进度条卡死在 loading 阶段
+        gifAssets.forEach((a) => a.markDone());
       });
 
     return () => {
@@ -991,6 +1084,7 @@ function ScreenDisplay({
   // 不重建材质。uniform 每帧由下方 useFrame 直写，与场景其他组件同策略
   const fxMaterial = useMemo(() => {
     if (!ready) return null;
+    const bootTex = getBootTextures();
     return new THREE.ShaderMaterial({
       vertexShader: SCREEN_VERT,
       fragmentShader: SCREEN_FRAG,
@@ -1014,6 +1108,14 @@ function ScreenDisplay({
         uTearBands: { value: SCREEN_FX_CONFIG.tearBands },
         uTearActiveCalm: { value: SCREEN_FX_CONFIG.tearActiveCalm },
         uTearActivePeak: { value: SCREEN_FX_CONFIG.tearActivePeak },
+        // boot 内容：与 BootPass 共享同一批字体/文本纹理实例
+        uBootFont: { value: bootTex.uBootFont.value },
+        uBootTest: { value: bootTex.uBootTest.value },
+        uBootTextSize: { value: bootTex.uBootTextSize.value.clone() },
+        uBootGlyphCount: { value: bootTex.uBootGlyphCount.value },
+        uLineMeta: { value: bootLineMetaUniform() },
+        uBootMix: { value: 1 },
+        uBootProgress: { value: 0 },
       },
     });
   }, [ready]);
@@ -1101,12 +1203,19 @@ function ScreenDisplay({
         b /= count;
         // 人眼亮度公式：0.299R + 0.587G + 0.114B
         const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        rectLightRef.current.color.setRGB(r / 255, g / 255, b / 255);
+        // boot 期混入 BIOS 蓝：显示器显示什么颜色，环境就被什么颜色照亮——
+        // 加载期屏幕是蓝屏，面光/焦散灯/粒子色温同步泛蓝（与着色器 uBootMix 同源）
+        const bootMix = THREE.MathUtils.smoothstep(1 - bootStore.spring, 0.05, 0.55);
+        const mixR = (r / 255) * (1 - bootMix);
+        const mixG = (g / 255) * (1 - bootMix);
+        const mixB = (b / 255) * (1 - bootMix) + bootMix;
+        const mixLum = luminance * (1 - bootMix) + 0.5 * bootMix;
+        rectLightRef.current.color.setRGB(mixR, mixG, mixB);
         // 强度 = 基础强度 × (0.4 + 0.6 × 亮度)，保证暗帧也有最低光照
         rectLightRef.current.intensity =
-          SCREEN_CONFIG.rectLightIntensity * (0.4 + 0.6 * luminance);
+          SCREEN_CONFIG.rectLightIntensity * (0.4 + 0.6 * mixLum);
         // 屏幕焦散灯跟随同一份采样色（红 GIF 投红纹、蓝 GIF 投蓝纹）
-        if (colorRef) colorRef.current.setRGB(r / 255, g / 255, b / 255);
+        if (colorRef) colorRef.current.setRGB(mixR, mixG, mixB);
       }
     }
 
@@ -1153,6 +1262,11 @@ function ScreenDisplay({
       u.uGlitch.value = reducedMotion ? 0 : env;
       u.uSeed.value = g.seed;
       u.uFlicker.value = flicker;
+
+      // boot 屏内容：加载期显示器显示 boot 画面，显现弹簧前半程切回 GIF
+      // （smoothstep(0.05, 0.55, 1-s)，与 shader.se 显示器内容切换同曲线）
+      u.uBootMix.value = THREE.MathUtils.smoothstep(1 - bootStore.spring, 0.05, 0.55);
+      u.uBootProgress.value = bootStore.displayProgress;
     }
   });
 
@@ -1307,7 +1421,7 @@ function analyzeScreenGeometry(
  *  - 相机距离基于 FOV 与模型包围盒动态计算，避免过大/过小模型显示异常
  *  - 滚动进度通过 useFrame 中读取最新 props 实现，避免重渲染
  */
-export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: ComputerSceneProps) {
+export function ComputerScene({ scrollProgress, mouseRef, focusRef }: ComputerSceneProps) {
   // 使用 ref 保存最新的滚动进度，避免每帧触发 React 重渲染
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
@@ -1315,10 +1429,6 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
   // 鼠标视差平滑值：每帧 lerp 向 mouseRef 靠近，避免相机紧贴鼠标产生生硬感
   // 初始为 {0,0}（屏幕中心），后续会逐渐追随真实鼠标位置
   const mouseSmoothedRef = useRef({ x: 0, y: 0 });
-
-  // 入场动画进度（0=刚加载完，1=已到达默认相机位置）
-  // 模型加载完成后会重置为 0，useFrame 每帧递增到 1
-  const introProgressRef = useRef(0);
 
   // 滚动进度平滑值：每帧 lerp 向 props 的 scrollProgress 靠近，
   // 避免滚轮离散跳动让相机产生顿挫感（lerp 系数 0.1 → 轻微惯性）
@@ -1360,6 +1470,7 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
   const setupRef = useRef<{ scaledSize: THREE.Vector3; distance: number } | null>(null);
 
   // 烟雾纹理：useTexture 同步加载，sRGB 保证颜色正确
+  // （作为 boot 资产登记：解析完成即 markDone——PNG 体量小，粗粒度可接受）
   const smokeTexture = useTexture(SMOKE_TEXTURE_URL);
   useEffect(() => {
     if (smokeTexture) {
@@ -1367,6 +1478,11 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
       // 烟雾边缘柔和，关闭 mip 偏移避免闪烁
       smokeTexture.minFilter = THREE.LinearFilter;
     }
+  }, [smokeTexture]);
+  const smokeAssetRef = useRef<ReturnType<typeof registerBootAsset> | null>(null);
+  if (!smokeAssetRef.current) smokeAssetRef.current = registerBootAsset('smoke', 0.08);
+  useEffect(() => {
+    if (smokeTexture) smokeAssetRef.current?.markDone();
   }, [smokeTexture]);
 
   // 前后两层烟雾的 group 引用：位置由下方 useFrame 动态更新
@@ -1380,10 +1496,35 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
   const spotLightRef = useRef<THREE.SpotLight>(null);
   const spotTargetRef = useRef<THREE.Object3D>(null);
 
-  // 加载模型，useGLTF 内部已配置 Draco
-  const { scene: modelScene } = useGLTF(MODEL_URL) as unknown as {
-    scene: THREE.Group;
-  };
+  // 加载模型：手动 GLTFLoader（字节进度喂 boot 进度条），模块级缓存跨挂载复用
+  const [modelScene, setModelScene] = useState<THREE.Group | null>(() =>
+    modelCache.get(MODEL_URL) ?? null
+  );
+  useEffect(() => {
+    const asset = registerBootAsset('model-glb', 0.62);
+    if (modelScene) {
+      asset.markDone();
+      return;
+    }
+    modelProgressSink = (p) => asset.setProgress(p);
+    let alive = true;
+    loadModelScene()
+      .then((scene) => {
+        if (!alive) return;
+        asset.markDone();
+        setModelScene(scene);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[ComputerScene] 模型加载失败:', err);
+        // 失败也放行 boot，避免进度条卡死
+        asset.markDone();
+      });
+    return () => {
+      alive = false;
+      modelProgressSink = null;
+    };
+  }, [modelScene]);
 
   // 计算包围盒、缩放、相机距离 —— 仅在模型加载后执行一次
   const setup = useMemo(() => {
@@ -1462,15 +1603,8 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
     return { scaledSize, distance };
   }, [modelScene, camera]);
 
-  // 用 ref 保存最新的 onLoaded 引用，避免 useEffect 依赖 onLoaded 导致重跑
-  // （onLoaded 若是 inline 箭头函数，每次父组件重渲染都会变 → useEffect 重新执行
-  //   → 重置 introProgressRef → 入场动画被重播。用 ref 解耦后此问题彻底消除）
-  const onLoadedRef = useRef(onLoaded);
-  onLoadedRef.current = onLoaded;
-
-  // 模型加载完成后触发回调并设置环境贴图
+  // 模型加载完成后设置环境贴图与入场起始相机
   // 依赖数组只放真正的"模型相关"依赖：modelScene/setup/gl/scene/camera
-  // onLoaded 用 ref 读取，不进依赖，防止回调引用变化导致 useEffect 重跑
   useEffect(() => {
     if (!modelScene || !setup) return;
 
@@ -1494,8 +1628,8 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
 
     // 设置初始相机位置 = 屏幕特写位置（入场动画的起点）
     // 相机贴近屏幕中心，沿屏幕法线往前推 INTRO_CONFIG.START_CAMERA_DISTANCE
-    // 这样 LoadingScreen 淡出时，用户先看到屏幕上的 GIF 特写，
-    // 然后 useFrame 里的入场动画把相机拉远到默认位置
+    // boot 显现弹簧启动前相机停在此特写位（introEase=0），
+    // 弹簧驱动 useFrame 把相机拉远到默认位置
     const startPosX = SCREEN_CONFIG.posX + SCREEN_NORMAL.x * INTRO_CONFIG.START_CAMERA_DISTANCE;
     const startPosY = SCREEN_CONFIG.posY;
     const startPosZ = SCREEN_CONFIG.posZ + SCREEN_NORMAL.z * INTRO_CONFIG.START_CAMERA_DISTANCE;
@@ -1507,13 +1641,6 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
     const cam = camera as THREE.PerspectiveCamera;
     cam.fov = INTRO_CONFIG.START_FOV;
     cam.updateProjectionMatrix();
-
-    // 重置入场动画进度 → 启动动画（useFrame 每帧递增到 1）
-    introProgressRef.current = 0;
-
-    // 通知外部已加载（触发 LoadingScreen 淡出，与入场动画同步开始）
-    // 通过 ref 调用，避免 onLoaded 进 useEffect 依赖导致重跑
-    onLoadedRef.current();
   }, [modelScene, setup, gl, scene, camera]);
 
   // 关联聚光灯与其目标点：spotLight.target 默认指向场景原点的新 Object3D，
@@ -1540,11 +1667,11 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
   // DEBUG 模式下让 OrbitControls 接管
   //
   // 两阶段完全独立，互不干扰：
-  //   阶段 1（入场，只播一次）：加载完成后 introT 从 0→1，相机从屏幕特写 → 默认位置
-  //                            introT 到 1 后永远停在那里，不再重播
-  //   阶段 2（滚动推入）：introT=1 后才激活，相机从默认位置 → 屏幕背面
+  //   阶段 1（入场，只播一次）：boot 显现弹簧驱动 introEase 0→1，
+  //                            相机从屏幕特写 → 默认位置；收敛后永不再动
+  //   阶段 2（滚动推入）：弹簧收敛后才激活，相机从默认位置 → 屏幕背面
   //                      由 scrollProgress 驱动，可来回滚动
-  useFrame((_state, delta) => {
+  useFrame((_state, _delta) => {
     if (!setup) return;
     // DEBUG 模式：跳过固定相机控制，让 OrbitControls 自由操作
     if (DEBUG) return;
@@ -1556,21 +1683,17 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
     const targetYWorld = scaledSize.y * CAMERA_CONFIG.lookAtY;
     const targetZ = scaledSize.z * CAMERA_CONFIG.lookAtZ;
 
-    // === 入场动画进度（只播一次）===
-    // introT 从 0（屏幕特写）线性增长到 1（默认相机位置），到 1 后永不再动
-    // introEase = ease-out cubic：1 - (1-t)^3，前期快、后期慢，营造"缓缓到位"感
-    const introT = introProgressRef.current;
-    const introEase = 1 - Math.pow(1 - introT, 3);
-    if (introT < 1) {
-      // delta 是上一帧到本帧的时间间隔（秒），保证动画速度与帧率无关
-      introProgressRef.current = Math.min(1, introT + delta / INTRO_CONFIG.DURATION);
-    }
+    // === 入场进度：由 boot 显现弹簧单源驱动（只播一次）===
+    // 弹簧前 20% 相机保持屏幕特写（弹簧蓄力），随后 pow1.4 ease-out 拉远到全景。
+    // 曲线逆向自 shader.se：introEase = clamp((spring - 0.2) / 0.8) ^ 1.4
+    const introT = THREE.MathUtils.clamp((bootStore.spring - 0.2) / 0.8, 0, 1);
+    const introEase = Math.pow(introT, 1.4);
 
-    // === 滚动推入进度（仅入场完成后激活）===
-    // 入场期间 scrollSmoothed 强制为 0，相机只走入场路径
-    // 入场完成后 scrollSmoothed lerp 追赶真实 scrollProgress，相机走推入路径
-    // 这样滚动推入完全独立于入场，滚回顶部也只退到默认位置，不会重播入场动画
-    if (introT >= 1) {
+    // === 滚动推入进度（仅显现收敛后激活）===
+    // 入场期间 scrollSmoothed 强制为 0，相机只走入场路径；
+    // 收敛后 scrollSmoothed lerp 追赶真实 scrollProgress，相机走推入路径——
+    // 滚动推入完全独立于入场，滚回顶部也只退到默认位置，不会重播入场动画
+    if (bootStore.springDone) {
       scrollSmoothedRef.current += (scrollProgress - scrollSmoothedRef.current) * 0.1;
     } else {
       scrollSmoothedRef.current = 0;
@@ -1831,8 +1954,8 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
         position={[0, 10, 0]}
       />
 
-      {/* 模型本体 */}
-      <primitive object={modelScene} />
+      {/* 模型本体（手动加载，就绪前不挂载） */}
+      {modelScene && <primitive object={modelScene} />}
 
       {/* 电脑屏幕：显示 GIF 动画，自发光效果；世界坐标定位。
           colorRef 输出每帧 GIF 采样色，供屏幕焦散灯跟随 */}
@@ -1893,6 +2016,3 @@ export function ComputerScene({ scrollProgress, onLoaded, mouseRef, focusRef }: 
     </>
   );
 }
-
-// 预加载模型，加速首次访问
-useGLTF.preload(MODEL_URL);

@@ -6,6 +6,7 @@ import TraceDetailPage from './components/trace/TraceDetailPage';
 import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import { BgmSplash } from './components/tape/BgmSplash';
+import { bootStore, subscribeBoot } from './boot/bootStore';
 import './styles.css';
 
 /**
@@ -61,6 +62,20 @@ function useHashRoute() {
 function Root() {
   const hash = useHashRoute();
   const isTape = hash.split('?')[0] === '#tape';
+  // 首页（App）是否已跑完 boot 显现：BgmSplash 在 boot 完成后才出现——
+  // 与旧 DOM LoadingScreen 时代的行为等价（z-100 的加载屏一直盖着它，
+  // 淡出后才露出），不让"点击解锁 BGM"层盖住 boot 屏的编排
+  const [homeBootDone, setHomeBootDone] = useState(false);
+  useEffect(
+    () =>
+      subscribeBoot(() => {
+        if (bootStore.springDone) setHomeBootDone(true);
+      }),
+    []
+  );
+  const isFilm =
+    hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
+  const isHome = !isTape && hash !== '#trace' && !isFilm;
   // 页面本体：三者互斥
   const page = isTape
     // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
@@ -71,7 +86,7 @@ function Root() {
       : (
         // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
         <React.StrictMode>
-          {hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined ? (
+          {isFilm ? (
             <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
           ) : (
             <App key="app" />
@@ -86,8 +101,9 @@ function Root() {
           tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断 */}
       {!isTape && <MusicBoxDock />}
       {/* 开屏 BGM 引导层：BGM 未播放时全屏出现，点击任意处解锁自动播放，
-          磁带飞进音乐盒后自行卸载（音频策略随刷新重置，故每次整页加载都可能出现） */}
-      {!isTape && <BgmSplash />}
+          磁带飞进音乐盒后自行卸载（音频策略随刷新重置，故每次整页加载都可能出现）。
+          首页（App）在 boot 显现收敛后再挂载；其他页面（#film/#trace）无 boot 流程直接挂 */}
+      {!isTape && (!isHome || homeBootDone) && <BgmSplash />}
     </>
   );
 }

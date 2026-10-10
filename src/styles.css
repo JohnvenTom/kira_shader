@@ -229,14 +229,18 @@ body.camera-debug-mode .scroll-container {
   font-size: 1.04em;
 }
 
-/* 每个字符 span：默认隐藏 + 下移，父级 .visible 时逐个浮现。
+/* 每个字符 span：默认隐藏 + 翻转 90°，父级 .visible 时逐个翻正出现
+   （shader.se 式 rotationX -90°→0° 入场，触发时机 = 显现弹簧 ≥0.9，
+   相机基本落位后文字再动——文字不与相机运动重叠）。
    --z 由 JS 逐字写入（行内弧面 ±8px + 点缀词抬高），入场/静止/飞出
    三个状态的 transform 都带上它——Z 深度贯穿始终。
+   transform-origin 落在字底：像翻牌一样从底边立起。
    入场态 = 强特效（辉光 + RGB 分裂拉满），特效属于运动 */
 .hero-char {
   display: inline-block;
   opacity: 0;
-  transform: translateY(40px) scale(0.85) translateZ(var(--z, 0px));
+  transform: perspective(600px) rotateX(-90deg) translateZ(var(--z, 0px));
+  transform-origin: 50% 100%;
   text-shadow:
     0 0 8px rgba(255, 244, 224, 0.9),
     0 0 22px rgba(255, 200, 120, 0.75),
@@ -246,7 +250,7 @@ body.camera-debug-mode .scroll-container {
     drop-shadow(2.6px 0 0 rgba(255, 60, 60, 0.85))
     drop-shadow(-2.6px 0 0 rgba(60, 160, 255, 0.85));
   transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.22, 1.4, 0.36, 1),
               filter 0.6s ease,
               text-shadow 0.6s ease;
 }
@@ -256,7 +260,7 @@ body.camera-debug-mode .scroll-container {
    衬线的收笔细节（Cormorant 的优雅线条）重新锋利可读 */
 .hero-title.visible .hero-char {
   opacity: 1;
-  transform: translateY(0) scale(1) translateZ(var(--z, 0px));
+  transform: perspective(600px) rotateX(0deg) translateZ(var(--z, 0px));
   text-shadow: 0 0 24px rgba(255, 180, 110, 0.16);
   filter:
     drop-shadow(0.4px 0 0 rgba(255, 80, 80, 0.4))
@@ -326,13 +330,19 @@ body.camera-debug-mode .scroll-container {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--foreground);
-  opacity: 0.45;
+  opacity: 0;
   letter-spacing: 0.3em;
   text-transform: uppercase;
   display: flex;
   align-items: center;
   gap: 12px;
   align-self: center;
+  /* boot 显现、标题入场后一并亮起（与 .nav-bar.visible 同一门） */
+  transition: opacity 0.8s ease 0.6s;
+}
+
+.scroll-hint.visible {
+  opacity: 0.45;
 }
 
 .scroll-hint::after {
@@ -358,6 +368,15 @@ body.camera-debug-mode .scroll-container {
   align-items: center;
   padding: 24px 48px;
   pointer-events: none;
+  /* boot 显现、标题入场后一并亮起（shader.se 的 UI 门：boot 期间整层隐藏） */
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.nav-bar.visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .nav-bar .logo {
@@ -387,79 +406,9 @@ body.camera-debug-mode .scroll-container {
   opacity: 1;
 }
 
-/* === 加载状态 === */
-.loading-screen {
-  position: fixed;
-  inset: 0;
-  background: var(--background);
-  z-index: 100;
-  overflow: hidden;
-  transition: opacity 0.6s ease;
-}
-
-.loading-screen.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* 全屏背景图：cover 适配，铺满整个视口 */
-.loading-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  /* 略微压暗背景，让前景进度条更突出 */
-  filter: brightness(0.7);
-}
-
-/* 背景遮罩：底部渐变加深，让进度条区域更聚焦 */
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0) 55%,
-    rgba(0, 0, 0, 0.55) 100%
-  );
-}
-
-/* 10 格进度条容器：水平居中，垂直位于画面下 1/3 */
-.loading-cells {
-  position: absolute;
-  left: 50%;
-  /* 顶部偏移 66.67vh ≈ 下 1/3 位置 */
-  top: 66.67vh;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 8px;
-  /* 格子整体宽度 */
-  width: min(420px, 70vw);
-  /* 固定高度：竖向长条 */
-  height: 60px;
-  /* 外边框：粗白框包围整个进度条 */
-  border: 4px solid #ffffff;
-  /* 内边距：让格子与外框留出间隙 */
-  padding: 6px;
-  box-sizing: border-box;
-}
-
-/* 单个格子：默认完全透明（不预画方框），激活后纯白竖向长条 */
-.loading-cell {
-  flex: 1;
-  height: 100%;
-  background: transparent;
-  border: none;
-  /* 无圆角：模拟老电脑像素方块 */
-  border-radius: 0;
-  transition: background 0.15s steps(1);
-}
-
-/* 激活格子：纯白实心长条，无辉光，无边框 */
-.loading-cell.active {
-  background: #ffffff;
-}
+/* === 加载状态 ===
+   （原 DOM 版 .loading-* 已移除：boot 屏迁移到 WebGL 合成层 BootPass，
+     见 src/boot/bootShader.ts 与 PostProcessing.tsx） */
 
 /* ====================================================================
  * KiraFilmDemo 样式（#film hash 下的多 section 滚动版）

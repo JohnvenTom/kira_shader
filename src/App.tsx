@@ -3,9 +3,10 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ComputerScene, SCREEN_CENTER } from './components/ComputerScene';
 import { CanvasContextGuard } from './components/CanvasContextGuard';
-import { LoadingScreen } from './components/LoadingScreen';
+import { BootController } from './components/BootController';
 import { NavBar } from './components/NavBar';
 import { PostProcessing, type PostFXParams } from './components/PostProcessing';
+import { bootStore, subscribeBoot } from './boot/bootStore';
 
 /**
  * === 镜头推进惯性系统参数（速度门控 + 自动回退）===
@@ -173,13 +174,7 @@ export default function App() {
   // 注意：injectScroll（下方）引用这两个变量，声明必须在其之前
   const [flashVisible, setFlashVisible] = useState(false);
   const switchingRef = useRef(false);
-  // 模型加载状态
-  const [loaded, setLoaded] = useState(false);
-  // 加载完成回调：用 useCallback 稳定引用，避免 inline 箭头函数每次重渲染都变 →
-  // 触发 ComputerScene 的 useEffect 重新执行 → 重置 introProgressRef → 入场动画重播
-  // 空依赖数组：setLoaded 是稳定引用，函数永远不变
-  const handleLoaded = useCallback(() => setLoaded(true), []);
-  // 首屏标题是否已显现
+  // 首屏标题是否已显现（boot 显现弹簧 ≥0.9 才翻转出现——相机先落位，文字后入场）
   const [titleVisible, setTitleVisible] = useState(false);
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
@@ -308,6 +303,8 @@ export default function App() {
    *  - energy 上限 1.08，给"冲过头"留余量再回弹，手感更自然
    */
   const injectScroll = useCallback((dy: number, now: number) => {
+    // boot 显现弹簧收敛前锁定滚轮（shader.se 的 initialTransitionDone 门）
+    if (!bootStore.springDone) return;
     const st = scrollStateRef.current;
     const dt = Math.max(now - st.lastTs, 8);
     st.lastTs = now;
@@ -388,13 +385,14 @@ export default function App() {
     }
   }, [scrollProgress, flashVisible]);
 
-  // 加载完成后短暂延迟再显示标题，制造入场动画
-  useEffect(() => {
-    if (loaded) {
-      const t = setTimeout(() => setTitleVisible(true), 200);
-      return () => clearTimeout(t);
-    }
-  }, [loaded]);
+  // 标题门：boot 显现弹簧 ≥0.9 时翻转出现（相机基本落位后文字再入场）
+  useEffect(
+    () =>
+      subscribeBoot(() => {
+        setTitleVisible(bootStore.titleGate);
+      }),
+    []
+  );
 
   /**
    * 鼠标视差处理
@@ -441,14 +439,11 @@ export default function App() {
 
   return (
     <>
-      {/* 加载屏 */}
-      <LoadingScreen hidden={loaded} />
-
       {/* 跨 demo 切换闪光层：滚动到末尾时白色渐强，掩盖相机穿过屏幕的切换 */}
       <div className={`demo-flash ${flashVisible ? 'visible' : ''}`} />
 
-      {/* 顶部导航 */}
-      <NavBar />
+      {/* 顶部导航（boot 显现、标题入场时一并亮起） */}
+      <NavBar visible={titleVisible} />
 
       {/* 第 1 层：输入捕获容器 z-50（无原生滚动，wheel/touch 由惯性推进系统处理） */}
       <div
@@ -471,9 +466,10 @@ export default function App() {
             gl.setClearColor(new THREE.Color('#0a0a0a'), 1);
           }}
         >
+          {/* boot 流程控制器：必须排在场景组件之前（状态机先于相机/渲染更新） */}
+          <BootController />
           <ComputerScene
             scrollProgress={scrollProgress}
-            onLoaded={handleLoaded}
             mouseRef={mouseRef}
             focusRef={focusRef}
           />
@@ -508,7 +504,7 @@ export default function App() {
             </span>
           </h1>
         </div>
-        <div className="scroll-hint">Scroll to Explore</div>
+        <div className={`scroll-hint${titleVisible ? ' visible' : ''}`}>Scroll to Explore</div>
       </div>
     </>
   );

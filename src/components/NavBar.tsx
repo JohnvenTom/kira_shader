@@ -3,13 +3,15 @@
  *
  * 功能：固定在顶部的极简导航栏，包含 logo 与若干锚点链接
  *
- * 参数：无
+ * 参数：
+ *  - visible: boolean，boot 显现、标题入场后为 true（此前随 boot 屏一起隐藏）
+ *
  * 返回值：React.ReactElement
  * 异常：无
  */
-export function NavBar() {
+export function NavBar({ visible = true }: { visible?: boolean }) {
   return (
-    <nav className="nav-bar">
+    <nav className={`nav-bar${visible ? ' visible' : ''}`}>
       <div className="logo">Kira</div>
       <div className="nav-links">
         <a href="#home">Home</a>
