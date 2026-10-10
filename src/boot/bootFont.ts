@@ -103,14 +103,30 @@ function detectDisplay(): string {
   return `${screen.width}X${screen.height} DPR ${dprStr}`;
 }
 
-/** 硬件表行：key 左对齐 + 点线填充 + 值（BIOS 两栏风味） */
-function hwRow(key: string, value: string): string {
-  const dots = '.'.repeat(Math.max(2, 11 - key.length - 1));
-  return `${key} ${dots} ${value}`;
-}
-
 /** 内存检测行的静态部分（"MEMORY TEST ......... " 22 字符标签 + 6 空格数字占位 + K） */
 export const MEMORY_LINE = `MEMORY TEST ......... ${' '.repeat(6)}K`;
+
+/** 终端滚动日志行（真实数据在构建纹理时固化；逐条滚入，见 bootShader 的日志窗） */
+function buildLogLines(): string[] {
+  const row = (k: string, v: string) => `${k} ${'.'.repeat(Math.max(2, 11 - k.length - 1))} ${v}`;
+  const host = (location.host || 'LOCAL').toUpperCase().slice(0, 40);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const clock = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return [
+    row('GPU', detectGpuRenderer()),
+    row('DISPLAY', detectDisplay()),
+    row('HOST', host),
+    row('CLOCK', clock),
+    row('AUDIO', 'TAPE DECK SIDE A READY'),
+    row('INPUT', 'POINTER / KEYBOARD'),
+    row('DRACO', 'DECODER READY'),
+    row('ASSETS', '6/6 LOADED'),
+    row('WARMUP', '24 FRAMES OK'),
+    'NO ERRORS FOUND',
+    'STARTING SHADER ...',
+  ];
+}
 
 export const BOOT_TEXT_LINES = [
   'KIRA SHADER',
@@ -120,10 +136,7 @@ export const BOOT_TEXT_LINES = [
   BOOT_AUDIO_LINE_OFF,
   '', // 行 5 保留（AUDIO: ON 态由纹理整体切换，不单独占行）
   MEMORY_LINE,
-  hwRow('CPU', 'RENDER PIPELINE'),
-  hwRow('GPU', detectGpuRenderer()),
-  hwRow('DISPLAY', detectDisplay()),
-  hwRow('AUDIO', 'TAPE DECK / SIDE A'),
+  ...buildLogLines(),
   'BOOTING FROM /DEV/SHADER0 ...',
   'DEL: SETUP   F1: HELP   F12: BOOT MENU',
 ];
@@ -133,35 +146,31 @@ export const BOOT_TEXT_LINES_ON = BOOT_TEXT_LINES.map((l, i) =>
   i === 4 ? BOOT_AUDIO_LINE_ON : l
 );
 
-/** 内存计数：6 位数字在行内的起始列（"MEMORY TEST ......... " 22 字符） */
-export const MEMORY_DIGITS_COL = 22;
+/** 日志窗配置：日志首行在文本纹理中的行号 + 可见行数 + 行距 + 首行 y */
+export const BOOT_LOG_LINE_BASE = 7;
+export const BOOT_LOG_TOTAL = 11;
+export const BOOT_LOG_ROWS = 5;
+export const BOOT_LOG_SPACING = 14;
+export const BOOT_LOG_Y0 = 256;
 
 /**
- * 各文本行的布局元数据：[起始 x, 起始 y, 像素放大倍数, 行号]（720×400 参考网格）
- * 与 shader.se 的 boot_screen.png 排版同构：左上 logo 区 + 居中进度条 + 居中版本行，
- * 下半屏为 POST 面板（分隔线/内存检测/硬件表/启动源/键提示）
+ * 静态布局元数据：[起始 x, 起始 y, 像素放大倍数, 行号]（720×400 参考网格）
+ * 日志行不在此列（由 bootLogPx 按滚动窗动态绘制）
  */
 export const BOOT_LINE_META: [number, number, number, number][] = [
   [116, 42, 2, 0],   // KIRA SHADER（字标，紧邻条纹球 logo 右侧）
   [118, 64, 1, 1],   // PERSONAL RENDER LAB
-  [297, 176, 1, 2],  // WEBSITE / VERSION 1.0（进度条下方居中，21 字符 ×6px=126 宽）
-  [234, 368, 1, 3],  // 版权行（底部居中，42 字符 ×6px=252 宽）
-  [282, 208, 1, 4],  // BGM 解锁行（居中，26 字符 ×6px=156 宽；AUDIO: ON 态换 x=333）
+  [297, 176, 1, 2],  // WEBSITE / VERSION 1.0（进度条下方居中）
+  [234, 368, 1, 3],  // 版权行（底部居中）
+  [282, 208, 1, 4],  // BGM 解锁行（AUDIO: ON 态换 x=333）
   [0, 0, 1, 5],      // 保留行，不绘制内容（空字符串）
-  [72, 242, 1, 6],   // 内存检测行（左侧起，动态数字 + K/OK 后缀）
-  [72, 264, 1, 7],   // 硬件表：CPU
-  [72, 278, 1, 8],   // 硬件表：GPU（真实渲染器名）
-  [72, 292, 1, 9],   // 硬件表：DISPLAY（分辨率 + DPR）
-  [72, 306, 1, 10],  // 硬件表：AUDIO
-  [72, 328, 1, 11],  // 启动源行（行尾闪烁光标由着色器绘制）
-  [243, 346, 1, 12], // 键提示行（居中装饰）
+  [72, 242, 1, 6],   // 内存检测行（动态数字 + K/OK 后缀）
+  [72, 328, 1, 18],  // 启动源行（行尾闪烁光标由着色器绘制）
+  [243, 346, 1, 19], // 键提示行（居中装饰）
 ];
 
 /** BGM 行"已解锁"态的布局（AUDIO: ON 共 9 字符 ×6px=54 宽，居中 x=333） */
 export const BOOT_AUDIO_LINE_ON_X = 333;
-
-/** 启动源行长度（字符），行尾光标的 x = 72 + 该值 ×6 */
-export const BOOT_LINE_CHARS = 30;
 
 /** 字符间距（5px 字形 + 1px 间隔 = 6px 步进） */
 export const GLYPH_CELL_W = 6;

@@ -878,7 +878,7 @@ const SCREEN_FRAG = /* glsl */ `
   uniform float uBootGlyphO;
   uniform float uBootGlyphK;
   uniform float uBootTime;
-  uniform vec4 uLineMeta[13];
+  uniform vec4 uLineMeta[8];
   uniform float uBootMix;
   uniform float uBootProgress;
   varying vec2 vUv;

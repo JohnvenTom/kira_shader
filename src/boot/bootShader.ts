@@ -82,7 +82,6 @@ export function bootLineMetaUniform(): THREE.Vector4[] {
 export const BOOT_COMMON_GLSL = /* glsl */ `
   const vec2 BOOT_GRID = vec2(720.0, 400.0);
   const vec3 BOOT_BLUE = vec3(0.0, 0.0, 1.0);
-  const float BOOT_LINE_COUNT = 13.0;
 
   /** contain 适配：屏幕 uv → 720x400 参考网格坐标（越界=背景区）。
       v 轴翻转：GL 的 vUv 是 y=0 在底部向上增长，而布局表（BOOT_LINE_META）
@@ -141,6 +140,31 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
     return step(0.5, lit);
   }
 
+  /**
+   * 终端日志行：与 bootTextPx 同构，但行号直接指定（滚动窗动态映射），
+   * 且带字符截断（打字机效果：最新一行逐字浮现）
+   */
+  float bootLogPx(vec2 gp, float lineIdx, vec2 origin, float charCutoff) {
+    vec2 d = floor(gp) - origin;
+    if (d.x < 0.0 || d.y < 0.0) return 0.0;
+    vec2 cellSize = vec2(6.0, 8.0);
+    vec2 cell = floor(d / cellSize);
+    if (cell.x >= uBootTextSize.x || cell.y >= 1.0) return 0.0;
+    if (cell.x >= charCutoff) return 0.0;                       // 打字机截断
+    vec2 lp = floor(d) - cell * cellSize;
+    if (lp.x >= 5.0 || lp.y >= 7.0) return 0.0;
+    float ch = floor(texture2D(uBootTest, vec2(
+      (cell.x + 0.5) / uBootTextSize.x,
+      (lineIdx + 0.5) / uBootTextSize.y
+    )).r * 255.0 + 0.5);
+    if (ch < 0.5) return 0.0;
+    float lit = texture2D(uBootFont, vec2(
+      (lp.x + 0.5) / 5.0,
+      ((ch - 1.0) * 7.0 + lp.y + 0.5) / (7.0 * uBootGlyphCount)
+    )).r;
+    return step(0.5, lit);
+  }
+
   /** n 位零填充十进制数字（内存计数等动态数值） */
   float bootDigitsPx(vec2 gp, vec2 origin, float value, float n) {
     vec2 d = floor(gp) - origin;
@@ -181,19 +205,39 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
     return dy < 1.0 ? 1.0 : 0.0;
   }
 
-  /** boot 屏完整内容：蓝底 + 白色 logo/文字/进度条 + POST 面板 + 网格行扫描线 */
+  /** boot 屏完整内容：蓝底 + 白色 logo/文字/进度条 + 终端滚动日志 + 网格行扫描线 */
   vec3 bootContent(vec2 uv, vec2 resolution, float progress) {
     vec2 gp = bootFitGrid(uv, resolution);
     float white = 0.0;
-    white = max(white, bootLogoPx(gp));
-    for (int i = 0; i < 13; i++) {
+    // 静态行（uLineMeta 共 8 条：字标/副题/版本/版权/BGM/保留/内存标签/启动源/键提示）
+    for (int i = 0; i < 8; i++) {
       white = max(white, bootTextPx(gp, uLineMeta[i]));
     }
+    white = max(white, bootLogoPx(gp));
     white = max(white, bootBarPx(gp, progress));
 
-    // === POST 面板动态元素 ===
+    // === 终端滚动日志窗：11 条真实信息随进度逐条滚入，最新行打字机浮现 ===
+    // reveal ∈ [0, 11)：进度驱动；超出窗高（5 行）后整体向上滚动
+    {
+      const float LOG_BASE = 7.0;    // 日志首行在文本纹理中的行号
+      const float LOG_TOTAL = 11.0;
+      const float LOG_ROWS = 5.0;
+      const float LOG_Y0 = 256.0;
+      const float LOG_SPACING = 14.0;
+      float reveal = progress / 100.0 * LOG_TOTAL;
+      float scroll = clamp(reveal - LOG_ROWS, 0.0, LOG_TOTAL - LOG_ROWS);
+      float lastLine = min(floor(reveal), LOG_TOTAL - 1.0);   // 最新可见行
+      for (int r = 0; r < 5; r++) {
+        float li = LOG_BASE + scroll + float(r);
+        if (li - LOG_BASE > lastLine) continue;
+        // 最新一行逐字打字机（reveal 的小数部分 × 32 字符）；其余行整行显示
+        float cutoff = (li - LOG_BASE >= lastLine) ? fract(reveal) * 32.0 + 0.99 : 999.0;
+        white = max(white, bootLogPx(gp, li, vec2(72.0, LOG_Y0 + float(r) * LOG_SPACING), cutoff));
+      }
+    }
+
+    // === POST 动态元素 ===
     // 内存计数：0~262144K 随进度滚动；走满后 K 后面出现 OK
-    // （数字起点 x = 72 + 22 列 × 6px，见 BOOT_LINE_META 行 6 的 MEMORY_DIGITS_COL）
     vec2 memOrigin = vec2(72.0 + 22.0 * 6.0, 242.0);
     float mem = floor(progress / 100.0 * 262144.0 + 0.5);
     white = max(white, bootDigitsPx(gp, memOrigin, mem, 6.0));
@@ -201,7 +245,7 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
       white = max(white, bootGlyphAtPx(gp, vec2(252.0, 242.0), uBootGlyphO));
       white = max(white, bootGlyphAtPx(gp, vec2(258.0, 242.0), uBootGlyphK));
     }
-    // 启动源行尾的闪烁光标（1Hz 方波，6x8 实心块；行 11 共 29 字符，光标 x = 72 + 29×6）
+    // 启动源行尾的闪烁光标（1Hz 方波，6x8 实心块；行 18 共 29 字符，光标 x = 72 + 29×6）
     if (fract(uBootTime) < 0.5) {
       vec2 cp = floor(gp) - vec2(72.0 + 29.0 * 6.0, 328.0);
       if (cp.x >= 0.0 && cp.y >= 0.0 && cp.x < 6.0 && cp.y < 8.0) white = 1.0;
@@ -247,7 +291,7 @@ export const BootPassShader = {
     uniform float uBootGlyphO;
     uniform float uBootGlyphK;
     uniform float uBootTime;
-    uniform vec4 uLineMeta[13];
+    uniform vec4 uLineMeta[8];
     varying vec2 vUv;
     ${BOOT_COMMON_GLSL}
     void main() {
