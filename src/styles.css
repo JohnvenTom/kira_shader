@@ -229,18 +229,40 @@ body.camera-debug-mode .scroll-container {
   font-size: 1.04em;
 }
 
-/* 每个字符 span：默认隐藏 + 翻转 90°，父级 .visible 时逐个翻正出现
-   （shader.se 式 rotationX -90°→0° 入场，触发时机 = 显现弹簧 ≥0.9，
-   相机基本落位后文字再动——文字不与相机运动重叠）。
+/* 每个字符 span：两段式入场（性能重构版）
+   第一段（翻转）：只过渡 transform + opacity——两者都是合成器属性，
+   字形层缓存后动起来零重绘（此前 filter/text-shadow 参与过渡导致
+   43 字 × 60fps 的逐帧模糊重绘，标题入场期帧率掉到 ~31fps）。
+   第二段（辉光熄灭）：强辉光住在 ::before 伪元素里（data-ch 同字叠加），
+   .visible 后延迟 2.9s（翻转波浪走完）以 opacity 淡出——模糊效果只在
+   首次出现时光栅化一次，淡出全程走合成器。
+   本体常驻"素颜淡辉光"（静止态），不再参与任何过渡。
    --z 由 JS 逐字写入（行内弧面 ±8px + 点缀词抬高），入场/静止/飞出
-   三个状态的 transform 都带上它——Z 深度贯穿始终。
-   transform-origin 落在字底：像翻牌一样从底边立起。
-   入场态 = 强特效（辉光 + RGB 分裂拉满），特效属于运动 */
+   三个状态的 transform 都带上它——Z 深度贯穿始终。 */
 .hero-char {
   display: inline-block;
+  position: relative;
   opacity: 0;
   transform: perspective(600px) rotateX(-90deg) translateZ(var(--z, 0px));
   transform-origin: 50% 100%;
+  text-shadow: 0 0 24px rgba(255, 180, 110, 0.16);
+  filter:
+    drop-shadow(0.4px 0 0 rgba(255, 80, 80, 0.4))
+    drop-shadow(-0.4px 0 0 rgba(80, 170, 255, 0.4));
+  will-change: transform, opacity;
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.22, 1.4, 0.36, 1);
+}
+
+/* 强辉光层：与本体同字（data-ch）、绝对定位叠加对齐。
+   入场期可见（"动时带特效"），翻转波浪走完后 2.9s 起 0.9s 淡出。
+   font-style 等全部继承本体（含 .is-accent 的斜体） */
+.hero-char::before {
+  content: attr(data-ch);
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
   text-shadow:
     0 0 8px rgba(255, 244, 224, 0.9),
     0 0 22px rgba(255, 200, 120, 0.75),
@@ -249,22 +271,19 @@ body.camera-debug-mode .scroll-container {
   filter:
     drop-shadow(2.6px 0 0 rgba(255, 60, 60, 0.85))
     drop-shadow(-2.6px 0 0 rgba(60, 160, 255, 0.85));
-  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.7s cubic-bezier(0.22, 1.4, 0.36, 1),
-              filter 0.6s ease,
-              text-shadow 0.6s ease;
+  opacity: 1;
+  transition: opacity 0.9s ease 2.9s;
 }
 
-/* 静止态 = 收敛（高级感的核心动作：动时带特效，静时近乎素颜）：
-   辉光只剩一层极淡暖晕、色散收到 0.4px 若有若无，
+/* 静止态 = 收敛：翻转就位，强辉光层淡出后只剩本体的淡辉光，
    衬线的收笔细节（Cormorant 的优雅线条）重新锋利可读 */
 .hero-title.visible .hero-char {
   opacity: 1;
   transform: perspective(600px) rotateX(0deg) translateZ(var(--z, 0px));
-  text-shadow: 0 0 24px rgba(255, 180, 110, 0.16);
-  filter:
-    drop-shadow(0.4px 0 0 rgba(255, 80, 80, 0.4))
-    drop-shadow(-0.4px 0 0 rgba(80, 170, 255, 0.4));
+}
+
+.hero-title.visible .hero-char::before {
+  opacity: 0;
 }
 
 /* === hero 档案标签（kicker）：等宽微标签 + 发丝短线 ===

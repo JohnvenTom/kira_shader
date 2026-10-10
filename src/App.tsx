@@ -119,7 +119,10 @@ function splitTextToChars(
       <span
         key={`${text}-${i}`}
         className={`hero-char${accent ? ' is-accent' : ''}`}
+        // 强辉光层（::before）的内容源：与本体同字叠加对齐（见 styles.css 两段式入场）
+        data-ch={ch === ' ' ? '\u00A0' : ch}
         style={{
+          // 阶梯延迟仍是逐字 inline（翻转波浪 + 飞出阈值都靠它错峰）
           transitionDelay: `${baseDelay + i * step}ms`,
           // Z 深度（伪 3D）：入场/静止态由 CSS transform 引用 var(--z)，
           // 飞出态由下方 inline transform 直接使用数值
@@ -130,11 +133,8 @@ function splitTextToChars(
             ? `translate3d(${flyX}px, ${flyY}px, ${flyZ}px) rotate(${rotate}deg)`
             : undefined,
           opacity: exitProgress > 0 ? opacity : undefined,
-          // transform/opacity 走 300ms（飞出跟手）；text-shadow/filter 走
-          // 1.8s（入场特效的缓慢收敛，"动时带特效、静时收敛"的静时半段）
-          transitionProperty: 'transform, opacity, text-shadow, filter',
-          transitionDuration: '300ms, 300ms, 1.8s, 1.8s',
-          transitionTimingFunction: 'ease-out, ease-out, ease, ease',
+          // 飞出跟手：inline 覆盖 CSS 的入场时长（0.7s 翻转 → 0.3s 甩出）
+          transitionDuration: exitProgress > 0 ? '0.3s, 0.3s' : undefined,
           // display:inline-block 让 transform 生效（inline 元素 transform 不起作用）
           display: 'inline-block',
         } as React.CSSProperties}
