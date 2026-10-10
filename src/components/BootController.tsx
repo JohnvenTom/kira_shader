@@ -18,7 +18,8 @@
  */
 import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { bootStore, markBootWarmupDone, resetBoot, setBootWarmupProgress, tickBoot } from '../boot/bootStore';
+import { bootStore, markBootAudioOn, markBootWarmupDone, resetBoot, setBootWarmupProgress, tickBoot } from '../boot/bootStore';
+import { tapeAudio } from './tape/tapeAudioStore';
 
 /** 预热帧数目标 */
 const WARMUP_FRAMES = 24;
@@ -38,6 +39,11 @@ export function BootController() {
   // 缓存资产登记
   useEffect(() => {
     resetBoot();
+    // 竞态修补：resetBoot 清掉 audioOn，但音乐可能已经在响（浏览器放行了
+    // 无手势自动播放——App 挂载时订阅同步来的置位发生在本 reset 之前，
+    // 会被误杀）。reset 后按音频实际状态补一次置位，让 boot 屏直接显示
+    // "AUDIO: ON" 而非误导用户再点一次的提示行
+    if (tapeAudio.state.playing) markBootAudioOn();
   }, []);
 
   useFrame((_state, delta) => {
