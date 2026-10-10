@@ -8,7 +8,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { parseGIF, decompressFrames, type GifFrame } from 'gifuct-js';
 import { CameraDebugger } from './CameraDebugger';
 import { bootStore, registerBootAsset } from '../boot/bootStore';
-import { BOOT_COMMON_GLSL, bootLineMetaUniform, getBootTextures } from '../boot/bootShader';
+import { BOOT_COMMON_GLSL, applyBootAudioState, bootLineMetaUniform, getBootTextures } from '../boot/bootShader';
 
 /**
  * 初始化 RectAreaLight 所需的着色器 uniform
@@ -874,7 +874,7 @@ const SCREEN_FRAG = /* glsl */ `
   uniform sampler2D uBootTest;
   uniform vec2 uBootTextSize;
   uniform float uBootGlyphCount;
-  uniform vec4 uLineMeta[4];
+  uniform vec4 uLineMeta[5];
   uniform float uBootMix;
   uniform float uBootProgress;
   varying vec2 vUv;
@@ -1267,6 +1267,8 @@ function ScreenDisplay({
       // （smoothstep(0.05, 0.55, 1-s)，与 shader.se 显示器内容切换同曲线）
       u.uBootMix.value = THREE.MathUtils.smoothstep(1 - bootStore.spring, 0.05, 0.55);
       u.uBootProgress.value = bootStore.displayProgress;
+      // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"（与 BootPass 同步）
+      applyBootAudioState(u);
     }
   });
 

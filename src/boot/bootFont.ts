@@ -71,13 +71,24 @@ export const GLYPH_ORDER = Object.keys(FONT_5X7);
  *
  * 行 0：字标（scale 2） 行 1：副题
  * 行 2：版本行（进度条下方居中） 行 3：版权行（底部居中）
+ * 行 4：BGM 解锁行（两态：点击前 "PRESS ANYWHERE TO PLAY BGM" /
+ *      点击后 "AUDIO: ON"，纹理按态切换，见 bootShader 的文本纹理双态）
  */
+export const BOOT_AUDIO_LINE_OFF = 'PRESS ANYWHERE TO PLAY BGM';
+export const BOOT_AUDIO_LINE_ON = 'AUDIO: ON';
+
 export const BOOT_TEXT_LINES = [
   'KIRA SHADER',
   'PERSONAL RENDER LAB',
   'WEBSITE / VERSION 1.0',
   '(C) 2026 KIRA SHADER. ALL RIGHTS RESERVED.',
+  BOOT_AUDIO_LINE_OFF,
 ];
+
+/** BGM 行的"已解锁"态：其余行不变，仅第 5 行换文案 */
+export const BOOT_TEXT_LINES_ON = BOOT_TEXT_LINES.map((l, i) =>
+  i === 4 ? BOOT_AUDIO_LINE_ON : l
+);
 
 /**
  * 各文本行的布局元数据：[起始 x, 起始 y, 像素放大倍数, 行号]（720×400 参考网格）
@@ -88,7 +99,11 @@ export const BOOT_LINE_META: [number, number, number, number][] = [
   [118, 64, 1, 1],   // PERSONAL RENDER LAB
   [297, 176, 1, 2],  // WEBSITE / VERSION 1.0（进度条下方居中，21 字符 ×6px=126 宽）
   [234, 368, 1, 3],  // 版权行（底部居中，42 字符 ×6px=252 宽）
+  [282, 208, 1, 4],  // BGM 解锁行（居中，26 字符 ×6px=156 宽；AUDIO: ON 态换 x=333）
 ];
+
+/** BGM 行"已解锁"态的布局（AUDIO: ON 共 9 字符 ×6px=54 宽，居中 x=333） */
+export const BOOT_AUDIO_LINE_ON_X = 333;
 
 /** 字符间距（5px 字形 + 1px 间隔 = 6px 步进） */
 export const GLYPH_CELL_W = 6;

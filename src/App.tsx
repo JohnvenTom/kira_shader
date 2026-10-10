@@ -6,7 +6,8 @@ import { CanvasContextGuard } from './components/CanvasContextGuard';
 import { BootController } from './components/BootController';
 import { NavBar } from './components/NavBar';
 import { PostProcessing, type PostFXParams } from './components/PostProcessing';
-import { bootStore, subscribeBoot } from './boot/bootStore';
+import { bootStore, markBootAudioOn, subscribeBoot } from './boot/bootStore';
+import { tapeAudio } from './components/tape/tapeAudioStore';
 
 /**
  * === 镜头推进惯性系统参数（速度门控 + 自动回退）===
@@ -393,6 +394,26 @@ export default function App() {
       }),
     []
   );
+
+  // BGM 门融合进 boot 屏：boot 期间任意点击 = 手势解锁 → 起播 + 文字行变 "AUDIO: ON"。
+  // 点击不干扰 boot 进度；显现完成后本监听不再插手——未点击用户的首次交互由
+  // tapeAudio 的全局 onFirstGesture 兜底（自然语义：没点就等第一次交互自动响）
+  useEffect(() => {
+    const onPointerDown = () => {
+      if (bootStore.springDone || bootStore.audioOn) return;
+      tapeAudio.play();
+      markBootAudioOn();
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    // 音频若已凭媒体参与度自己响起（第一重自动播放成功），文字行直接显示 ON
+    const unsub = tapeAudio.subscribe((s) => {
+      if (s.playing) markBootAudioOn();
+    });
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      unsub();
+    };
+  }, []);
 
   /**
    * 鼠标视差处理

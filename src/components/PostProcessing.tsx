@@ -6,7 +6,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { MotionBlurPass } from './MotionBlurPass';
-import { BootPassShader } from '../boot/bootShader';
+import { BootPassShader, applyBootAudioState } from '../boot/bootShader';
 import { bootStore } from '../boot/bootStore';
 /**
  * 后处理参数（运行时可调）
@@ -496,6 +496,8 @@ export function PostProcessing({ params, enabled = true, focusRef }: PostProcess
         bootStore.phase === 'reveal' ? Math.max(0, 1 - bootStore.spring) : bootStore.springDone ? 0 : 1;
       bootPass.uniforms.uBootAlpha.value = alpha;
       bootPass.enabled = alpha > 0.001;
+      // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"
+      applyBootAudioState(bootPass.uniforms);
     }
 
     // 景深焦点：相机到"鼠标指向表面命中点"的距离，阻尼逼近平滑过渡。

@@ -55,6 +55,8 @@ const state = {
   springDone: false,
   /** 标题门：spring ≥ 0.9（相机基本落位，文字再入场） */
   titleGate: false,
+  /** BGM 门：boot 期间点击过（或音频已自己响起）→ boot 屏文字行变 "AUDIO: ON" */
+  audioOn: false,
 };
 
 /** 内部积分器状态 */
@@ -175,7 +177,14 @@ export function tickBoot(delta: number) {
   }
 }
 
-/** React 订阅：titleGate / springDone / 阶段变化时触发 */
+/** boot 期间点击解锁 BGM（或检测到音频已自启）时调用：置位并通知 */
+export function markBootAudioOn() {
+  if (state.audioOn) return;
+  state.audioOn = true;
+  notify();
+}
+
+/** React 订阅：titleGate / springDone / audioOn / 阶段变化时触发 */
 export function subscribeBoot(fn: () => void) {
   listeners.add(fn);
   return () => {

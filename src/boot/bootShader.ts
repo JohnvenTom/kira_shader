@@ -13,15 +13,27 @@
  *  2. 电脑显示器材质（ScreenDisplay）：加载期显示器同步显示 boot 内容
  */
 import * as THREE from 'three';
-import { BOOT_LINE_META, BOOT_TEXT_LINES, buildFontTexture, buildTextTexture, GLYPH_ORDER } from './bootFont';
+import {
+  BOOT_AUDIO_LINE_ON_X,
+  BOOT_LINE_META,
+  BOOT_TEXT_LINES,
+  BOOT_TEXT_LINES_ON,
+  buildFontTexture,
+  buildTextTexture,
+  GLYPH_ORDER,
+} from './bootFont';
+import { bootStore } from './bootStore';
 
 /** 共享 uniforms 定义（BootPass 与显示器材质共用同一批纹理实例） */
 function bootUniforms() {
   const font = buildFontTexture();
   const { texture: text, width } = buildTextTexture(BOOT_TEXT_LINES);
+  const on = buildTextTexture(BOOT_TEXT_LINES_ON);
   return {
     uBootFont: { value: font as THREE.Texture },
     uBootTest: { value: text as THREE.Texture },
+    /** BGM 行"已解锁"态的文本纹理（点击后切换） */
+    uBootTestOn: { value: on.texture as THREE.Texture },
     /** 文本索引图尺寸 (W, H)；字形总数单独给（着色器里算字集高度用） */
     uBootTextSize: { value: new THREE.Vector2(width, BOOT_TEXT_LINES.length) },
     uBootGlyphCount: { value: GLYPH_ORDER.length },
@@ -33,6 +45,21 @@ let sharedTextures: ReturnType<typeof bootUniforms> | null = null;
 export function getBootTextures() {
   if (!sharedTextures) sharedTextures = bootUniforms();
   return sharedTextures;
+}
+
+/**
+ * 按当前 BGM 解锁态写 uniforms（PostProcessing / ScreenDisplay 每帧调用）：
+ * 切换文本纹理（PRESS ANYWHERE… ↔ AUDIO: ON）并校正第 5 行的居中 x
+ */
+export function applyBootAudioState(uniforms: Record<string, { value: unknown }>) {
+  const t = getBootTextures();
+  if (bootStore.audioOn) {
+    uniforms.uBootTest.value = t.uBootTestOn.value;
+    (uniforms.uLineMeta.value as THREE.Vector4[])[4].x = BOOT_AUDIO_LINE_ON_X;
+  } else {
+    uniforms.uBootTest.value = t.uBootTest.value;
+    (uniforms.uLineMeta.value as THREE.Vector4[])[4].x = BOOT_LINE_META[4][0];
+  }
 }
 
 /** 文本行布局（x, y, scale, lineIndex）→ shader uniform 数组 */
@@ -49,10 +76,14 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
   const vec2 BOOT_GRID = vec2(720.0, 400.0);
   const vec3 BOOT_BLUE = vec3(0.0, 0.0, 1.0);
 
-  /** contain 适配：屏幕 uv → 720x400 参考网格坐标（越界=背景区） */
+  /** contain 适配：屏幕 uv → 720x400 参考网格坐标（越界=背景区）。
+      v 轴翻转：GL 的 vUv 是 y=0 在底部向上增长，而布局表（BOOT_LINE_META）
+      与字体表（行 0=字形顶部）都按 y 向下排版——翻转后网格 y=0 在屏幕顶部，
+      布局与字形方向与排版约定一致 */
   vec2 bootFitGrid(vec2 uv, vec2 resolution) {
     float s = min(resolution.x / BOOT_GRID.x, resolution.y / BOOT_GRID.y);
-    return (uv * resolution - (resolution - BOOT_GRID * s) * 0.5) / s;
+    vec2 p = vec2(uv.x, 1.0 - uv.y) * resolution;
+    return (p - (resolution - BOOT_GRID * s) * 0.5) / s;
   }
 
   /** 条纹球 logo（shader.se boot_screen.png 同款意象：水平条纹圆 + 中央横线） */
@@ -74,6 +105,8 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
     vec2 cellSize = vec2(6.0, 8.0) * meta.z;
     vec2 cell = floor(d / cellSize);
     if (cell.x >= uBootTextSize.x) return 0.0;
+    // 垂直边界：每行只画一排字符格子（cell.y=0），禁止以 8*scale 像素为周期向下平铺重复
+    if (cell.y >= 1.0) return 0.0;
     vec2 lp = floor(d) - cell * cellSize;            // 单元格内像素
     if (lp.x >= 5.0 * meta.z || lp.y >= 7.0 * meta.z) return 0.0;
     vec2 glyphPx = floor(lp / meta.z);               // 字形内像素 0..4 x 0..6
@@ -111,11 +144,11 @@ export const BOOT_COMMON_GLSL = /* glsl */ `
   }
 
   /** boot 屏完整内容：蓝底 + 白色 logo/文字/进度条 + 网格行扫描线 */
-  vec3 bootContent(vec2 uv, vec2 resolution, float progress) {
+    vec3 bootContent(vec2 uv, vec2 resolution, float progress) {
     vec2 gp = bootFitGrid(uv, resolution);
     float white = 0.0;
     white = max(white, bootLogoPx(gp));
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
       white = max(white, bootTextPx(gp, uLineMeta[i]));
     }
     white = max(white, bootBarPx(gp, progress));
@@ -154,7 +187,7 @@ export const BootPassShader = {
     uniform sampler2D uBootTest;
     uniform vec2 uBootTextSize;
     uniform float uBootGlyphCount;
-    uniform vec4 uLineMeta[4];
+    uniform vec4 uLineMeta[5];
     varying vec2 vUv;
     ${BOOT_COMMON_GLSL}
     void main() {
