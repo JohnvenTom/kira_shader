@@ -16,9 +16,9 @@
  * 注意：不渲染任何对象；useFrame 不设正 priority（不接管渲染），
  *      放在 Canvas 子列表首位保证先于相机/场景的 useFrame 执行。
  */
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { bootStore, markBootWarmupDone, setBootWarmupProgress, tickBoot } from '../boot/bootStore';
+import { bootStore, markBootWarmupDone, resetBoot, setBootWarmupProgress, tickBoot } from '../boot/bootStore';
 
 /** 预热帧数目标 */
 const WARMUP_FRAMES = 24;
@@ -31,6 +31,14 @@ const WARMUP_TIMEOUT_MS = 3000;
 export function BootController() {
   const { gl, scene, camera } = useThree();
   const warmupRef = useRef({ compiled: false, frames: 0, startedAt: 0 });
+
+  // 挂载即重置 boot 状态机：从胶片页等路由返回首页时重放整段 boot 编排
+  // （盖住模型/屏幕重建的空窗，并让标题门重新走一遍）。本组件是 Canvas
+  // 的第一个子元素，effect 先于兄弟场景组件执行，重置不会误清已完成的
+  // 缓存资产登记
+  useEffect(() => {
+    resetBoot();
+  }, []);
 
   useFrame((_state, delta) => {
     // === GPU 预热阶段 ===

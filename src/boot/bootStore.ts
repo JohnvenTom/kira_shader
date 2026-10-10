@@ -184,6 +184,38 @@ export function markBootAudioOn() {
   notify();
 }
 
+/**
+ * 重置 boot 状态机（从胶片页等路由返回首页、App 重新挂载时调用）
+ *
+ * 功能：阶段回到 loading、显示值/弹簧/各门归零，并把已登记的资产全部
+ *      重新武装为未完成（保留权重）——各组件挂载 effect 会重新登记并
+ *      markDone（模型走缓存即时完成，预热快速毕业），重放整段 boot 编排。
+ *      修复连带问题：一次性 store 在返回首页后 titleGate 永不触发、
+ *      标题/导航常隐——重放让门重新走一遍。
+ *
+ * 注意：必须在场景组件（ComputerScene/ScreenDisplay）的挂载 effect 之前
+ *      调用（BootController 是 Canvas 的第一个子元素，其 effect 先于
+ *      兄弟场景组件执行），否则会把已 markDone 的缓存资产清回未完成。
+ */
+export function resetBoot() {
+  state.phase = 'loading';
+  state.assetProgress = 0;
+  state.warmupProgress = 0;
+  state.displayProgress = 0;
+  state.spring = 0;
+  state.springDone = false;
+  state.titleGate = false;
+  state.audioOn = false;
+  springVel.v = 0;
+  countdownElapsed = 0;
+  for (const a of assets.values()) {
+    a.progress = 0;
+    a.done = false;
+  }
+  recomputeAssetProgress();
+  notify();
+}
+
 /** React 订阅：titleGate / springDone / audioOn / 阶段变化时触发 */
 export function subscribeBoot(fn: () => void) {
   listeners.add(fn);
