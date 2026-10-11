@@ -100,10 +100,14 @@ const ReelShader = {
     varying vec2 vUv;
     varying vec3 vWorldPos;
     varying vec3 vWorldNormal;
+    varying vec3 vLocalPos;
     void main() {
       vUv = uv;
       // 原版 flex：uv.x 按抛物线 (y-0.5)² 偏移 —— 胶片"甩动"形变
       vec3 pos = position;
+      // localPosition：未变换的几何坐标（原版淡出用它 —— 缩放前空间里
+      // 远端长度 40~60，淡出强劲；若用世界坐标会被 0.42 缩放压平失效）
+      vLocalPos = pos;
       vec4 wp = modelMatrix * vec4(pos, 1.0);
       vWorldPos = wp.xyz;
       vWorldNormal = normalize(mat3(modelMatrix) * normal);
@@ -125,6 +129,7 @@ const ReelShader = {
     varying vec2 vUv;
     varying vec3 vWorldPos;
     varying vec3 vWorldNormal;
+    varying vec3 vLocalPos;
 
     void main() {
       vec2 e = vUv;
@@ -167,7 +172,7 @@ const ReelShader = {
       else if (g == 1) thumb = texture2D(uThumbnails[1], fit).rgb;
       else if (g == 2) thumb = texture2D(uThumbnails[2], fit).rgb;
       else thumb = texture2D(uThumbnails[3], fit).rgb;
-      vec3 x = thumb * 1.05;
+      vec3 x = thumb * 1.055;
 
       // 远帧去饱和（原版：e.x<.35 全彩，其余 50% 混灰）
       vec3 w = vec3(dot(x, vec3(0.299, 0.587, 0.114)));
@@ -208,8 +213,9 @@ const ReelShader = {
       vec3 J = L * mix(facing, vec3(1.0), uExitProgress * 1.1)
         + mix(spec, vec3(0.0), uExitProgress * 1.1);
 
-      // 距离 alpha 衰减（原版 q）
-      float Y = max(0.0, length(vWorldPos) - 10.0);
+      // 距离 alpha 衰减（原版 q：用 localPosition 长度 —— 未缩放空间里
+      // 远端长度 40~60 → 强淡出消散；曲线起端断边处 ~39 → 断边几乎隐形）
+      float Y = max(0.0, length(vLocalPos) - 10.0);
       float q = exp(max(0.0, Y - 5.0) * -0.11);
       gl_FragColor = vec4(J, q);
     }
@@ -249,8 +255,10 @@ export function FilmReelScene({
     const curve = new THREE.CatmullRomCurve3(pts, false, 'chordal', 1);
     const len = curve.getLength();
     const geo = buildReelGeometry(curve);
-    // 初始偏移：让 section 0 的画格落在相机前近端（原版 initialReelOffset 语义）
-    const init = len - REEL_FRAME_WIDTH * 3.0;
+    // 原版稳态 initialReelOffset = 曲线长度 - 8.1（bundle 实测值）：
+    // 只裁掉曲线起端 8.1 单位，且该处 alpha 已被淡出压到 ~0.07，断边隐形。
+    // （旧值 L-3·帧宽 裁掉 16%，断边怼在画面里）
+    const init = len - 8.1;
     return { geometry: geo, curveLength: len, initialReelOffset: init };
   }, []);
 
@@ -312,7 +320,9 @@ export function FilmReelScene({
   );
 
   // 拖动平滑 + 相机（原版 projects 相机公式）
-  const reelSmoothedRef = useRef(-initialSection * REEL_FRAME_WIDTH);
+  // 原版 reelOffset = +index × frameWidth（正号，bundle: en = Q·N）：
+  // 拖左 → index↑ → 帧向相机左侧滑动（跟手的"抓住胶片拖"语义）
+  const reelSmoothedRef = useRef(initialSection * REEL_FRAME_WIDTH);
   const mouseSmoothedRef = useRef({ x: 0, y: 0 });
   const reelMeshRef = useRef<THREE.Mesh>(null);
   const bgMeshRef = useRef<THREE.Mesh>(null);
@@ -325,16 +335,17 @@ export function FilmReelScene({
     gifUpdateCursor.current++;
     if (tex.image) tex.needsUpdate = true;
 
-    // 拖动 → 胶片滚动（沿片距离 = sectionProgress × frameWidth）
+    // 拖动 → 胶片滚动：原版 reelOffset = +index × frameWidth（正号）。
+    // 拖左（dragOffset 变负）→ progress↑ → offset↑ → 帧向左滑（跟手）
     const sectionProgress = -dragOffsetRef.current / 4; // 0 ~ SECTIONS.length-1 连续
-    const targetReel = -sectionProgress * REEL_FRAME_WIDTH;
+    const targetReel = sectionProgress * REEL_FRAME_WIDTH;
     reelSmoothedRef.current += (targetReel - reelSmoothedRef.current) * (1 - Math.exp(-12 * dt));
     uniforms.uReelOffset.value = reelSmoothedRef.current;
 
-    // section 吸附通知（旧走廊同款 round 逻辑）
+    // section 吸附通知（round 正向 offset）
     const newSection = Math.max(
       0,
-      Math.min(SECTIONS.length - 1, Math.round(-reelSmoothedRef.current / REEL_FRAME_WIDTH))
+      Math.min(SECTIONS.length - 1, Math.round(reelSmoothedRef.current / REEL_FRAME_WIDTH))
     );
     if (newSection !== sectionIndex) setSectionIndex(newSection);
 
