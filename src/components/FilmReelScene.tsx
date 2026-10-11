@@ -213,10 +213,12 @@ const ReelShader = {
       vec3 J = L * mix(facing, vec3(1.0), uExitProgress * 1.1)
         + mix(spec, vec3(0.0), uExitProgress * 1.1);
 
-      // 距离 alpha 衰减（原版 q：用 localPosition 长度 —— 未缩放空间里
-      // 远端长度 40~60 → 强淡出消散；曲线起端断边处 ~39 → 断边几乎隐形）
-      float Y = max(0.0, length(vLocalPos) - 10.0);
-      float q = exp(max(0.0, Y - 5.0) * -0.11);
+      // 距离 alpha 衰减：主视野内（localLength ≤28）保持完全实心，
+      // 只有扫向高处的远端（35+）快速化开消散。
+      // （原版公式 exp(-0.11·(len-15)) 的陡峭段是为相机推近(z≈1.9)视野
+      //   设计的——推近后幽灵段不在画面；我们稳态相机 z=5，全露出来
+      //   会显得中段"镂空/断掉"，故右移起点校准观感）
+      float q = exp(-0.14 * max(0.0, length(vLocalPos) - 28.0));
       gl_FragColor = vec4(J, q);
     }
   `,
