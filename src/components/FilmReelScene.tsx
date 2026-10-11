@@ -4,24 +4,31 @@ import * as THREE from 'three';
 import { SECTIONS } from './FilmScene';
 
 /**
- * FilmReelScene — shader.se #selected-work 胶片卷的 1:1 复刻
+ * FilmReelScene — shader.se #selected-work 胶片卷的完整复刻
  *
- * 来源：shader.se 线上 bundle 反编译（ProjectsScene / mT 组件 / ms 曲线）
+ * 来源：shader.se 线上 bundle 反编译（ProjectsScene / mT 缎带 / mh 拖拽层 /
+ * 外层 renderHandle / projects store），全部数值逐行核对过：
  *
- * 构成（全部按原版数值移植）：
- *  1. 几何：一条 chordal CatmullRomCurve3（7 控制点，×0.2、z 再 ×0.8）
- *     挤出的缎带 —— 160 段、高 7.5（±3.75），uv.x = 沿片 0~1
- *  2. 片身完全程序化（fragment shader）：
- *     - 沿片距离 A = (1-uv.x)·curveLength − initialReelOffset − reelOffset + …
- *     - 画格索引 d = floor(A/frameWidth)，帧内坐标 h，贴图循环 g = d mod count
- *     - borderX 0.03 / borderY 0.07 内缩出黑框
- *     - 齿孔：上下 5% 边带内 fract(uv.y·4)/fract(A·2) 打的 discard 真透明孔
- *     - 远离相机的画格 50% 去饱和（原版 e.x<.35 分支）
- *     - 着色：正对相机亮度 0.1+0.9·|N·V|、(14,7,0) 方向 35° 镜面高光、
- *       上下边缘 0.5% 高光条、距离 alpha 衰减 exp(-0.11·(dist-15))
- *  3. 交互：相机固定 (0,0,5)+鼠标视差 ±0.2（原版同款），
- *     拖动改为滚胶片（reelOffset），section 吸附逻辑与旧走廊一致
- *  4. 背景：原版渐变背板（rgb(33,25,35)→(51,54,115)→(69,148,197)）
+ * 结构（层级与变换全部按原版）：
+ *   group(scale 0.4, y=p)                    ← p = 1.6·remap(t,.05,.5)+.2 随推进抬升
+ *     └ mesh(y=eg, scale=响应式m)            ← eg = -1.4-0.3·aspect（胶片在下方）
+ *         m = clamp(remap(w,500,2560,.7,.9))+.1·aspect ≈ 0.95~1.08
+ *
+ * 相机（原版 renderHandle 逐行）：
+ *   pos(0.2mx, 0.2my, 5-5t)，lookAt(0, 0.03, 0)
+ *
+ * 背景：尺寸 1.2×/1.4× 视锥高(@距离195)，位置(0, 60p, -200)，
+ *   scale(n,n,1) n=1+0.5t；渐变上深下浅（实拍核对）
+ *
+ * 淡出（原版公式，勿改——摆放正确时中段自然实心）：
+ *   alpha = exp(-0.11 · max(0, localLength - 15))
+ *
+ * 滚动（橡皮筋轮播，原版 mh 拖拽层逐行）：
+ *   reelOffset = pointer·frameWidth + 鼠标视差
+ *   拖动 = 窥视 ±0.4 帧（drag 像素 clamp ±0.2w，/(0.05w) 折算）
+ *   释放 |drag|>0.1·w → 指针 ±1（弹簧 damping14/stiffness90 滑过去）
+ *   横向滚轮：累计 0.1·w 翻一帧（700ms 锁）
+ *   dragOffsetRef 语义 = 连续 section 指针（idle 为整数索引）
  */
 
 /** 原版曲线控制点（bundle: ms = new CatmullRomCurve3([...]) ×0.2 ×(1,1,0.8)） */
@@ -35,27 +42,33 @@ const REEL_CURVE_POINTS: [number, number, number][] = [
   [-60, 200, -200],
 ].map(([x, y, z]) => [x * 0.2, y * 0.2, z * 0.2 * 0.8] as [number, number, number]);
 
-/** 缎带分段数（原版 160） */
 const REEL_SEGMENTS = 160;
-/** 缎带半高（原版 ±3.75，总高 7.5） */
 const REEL_HALF_HEIGHT = 3.75;
-/** 画格宽度（原版 N = 4/3·7.36 + 0.06 ≈ 9.873，4:3 画幅 + 0.06 间隙） */
+/** 画格宽度（原版 N = 4/3·7.36 + 0.06） */
 export const REEL_FRAME_WIDTH = (4 / 3) * 7.36 + 0.06;
-/** 帧贴图（项目 GIF 循环，与 SECTIONS 解耦 —— 原版即 mod textureCount 循环） */
 const FRAME_TEXTURES = [
   '/asset/textures/projects/project-1.gif',
   '/asset/textures/projects/project-2.gif',
   '/asset/textures/projects/project-3.gif',
   '/asset/textures/projects/project-4.gif',
 ];
+/** 拖动窥视折算（原版：reelOffset 偏移 = dragPx / (0.05·width)） */
+const DRAG_UNIT = 0.05;
+/** 拖动像素钳制（原版 ±0.2·width → ±4 曲线单位 → ±0.4 帧窥视） */
+const DRAG_CLAMP_RATIO = 0.2;
+/** 释放翻帧阈值（原版 |drag| > 0.1·width） */
+const DRAG_SNAP_RATIO = 0.1;
+/** 横向滚轮翻帧累计阈值（原版 0.1·width，700ms 锁） */
+const WHEEL_STEP_RATIO = 0.1;
+
+/** 原版 nk/nL/nM 数学助手 */
+const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+const remap = (v: number, a: number, b: number, c: number, d: number) =>
+  c + ((v - a) * (d - c)) / (b - a);
+const lerp = (a: number, b: number, t: number) => (1 - t) * a + t * b;
 
 /**
  * 构建缎带几何（原版 mu 函数逐行移植）
- *
- * 功能：沿曲线取 160+1 个截面，每截面挤出上下两个顶点（±3.75），
- *      side = cross(tangent, up)，normal = cross(side, tangent)；
- *      法线 z 分量统一取负（原版 A.z>0 ? -A.z : A.z 的压平 hack，
- *      让缎带两面都朝 +z 相机方向受光）
  */
 function buildReelGeometry(curve: THREE.CatmullRomCurve3): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
@@ -96,19 +109,16 @@ function buildReelGeometry(curve: THREE.CatmullRomCurve3): THREE.BufferGeometry 
  */
 const ReelShader = {
   vertexShader: /* glsl */ `
-    uniform float uFlexAnimation;
     varying vec2 vUv;
     varying vec3 vWorldPos;
     varying vec3 vWorldNormal;
     varying vec3 vLocalPos;
     void main() {
       vUv = uv;
-      // 原版 flex：uv.x 按抛物线 (y-0.5)² 偏移 —— 胶片"甩动"形变
-      vec3 pos = position;
       // localPosition：未变换的几何坐标（原版淡出用它 —— 缩放前空间里
-      // 远端长度 40~60，淡出强劲；若用世界坐标会被 0.42 缩放压平失效）
-      vLocalPos = pos;
-      vec4 wp = modelMatrix * vec4(pos, 1.0);
+      // 远端长度 40~60 → 强淡出消散；世界坐标会被 0.4 缩放压平失效）
+      vLocalPos = position;
+      vec4 wp = modelMatrix * vec4(position, 1.0);
       vWorldPos = wp.xyz;
       vWorldNormal = normalize(mat3(modelMatrix) * normal);
       gl_Position = projectionMatrix * viewMatrix * wp;
@@ -123,9 +133,9 @@ const ReelShader = {
     uniform float uBorderX;
     uniform float uBorderY;
     uniform float uFrameWidth;
-    uniform vec4 uFrameAspect0;  // 每帧贴图宽高比（x/y/z/w = 4 张贴图，逐张实测）
+    uniform vec4 uFrameAspect0;
     uniform sampler2D uThumbnails[4];
-    uniform float uExitProgress;
+    uniform float uFlexAnimation;
     varying vec2 vUv;
     varying vec3 vWorldPos;
     varying vec3 vWorldNormal;
@@ -133,8 +143,11 @@ const ReelShader = {
 
     void main() {
       vec2 e = vUv;
-      float flex = 0.0; // flexAnimation 固定 0（原版入场甩动，暂不启用）
-      vec2 u = vec2(e.x - flex * pow(e.y - 0.5, 2.0) * 1e-4, e.y);
+      // 原版 flex：uv.x 按抛物线 (y-0.5)² 偏移（滚动速度驱动，见 JS 端）
+      vec2 u = vec2(
+        e.x - uFlexAnimation * pow(e.y - 0.5, 2.0) * 1e-4,
+        e.y
+      );
 
       // 沿片世界距离（原版 A）
       float A = (1.0 - u.x) * uCurveLength
@@ -153,19 +166,21 @@ const ReelShader = {
         1.0 - (h - uBorderX) / (1.0 - uBorderX * 2.0),
         (u.y - uBorderY) / (1.0 - uBorderY * 2.0)
       );
-      // 贴图 contain 适配（原版 mux 图 fitMode=preserve 的黑边语义）
+      // 贴图 contain 适配（原版 mux 图 fitMode=preserve 黑边语义）
       vec2 fit = f;
-      float frameAspect = 4.0 / 3.0;
-      float texAspect = g == 0 ? uFrameAspect0.x : g == 1 ? uFrameAspect0.y
-        : g == 2 ? uFrameAspect0.z : uFrameAspect0.w;
-      if (texAspect > frameAspect) {
-        float s = frameAspect / texAspect;
-        fit.y = (f.y - 0.5) / s + 0.5;
-        if (fit.y < 0.0 || fit.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-      } else {
-        float s = texAspect / frameAspect;
-        fit.x = (f.x - 0.5) / s + 0.5;
-        if (fit.x < 0.0 || fit.x > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+      {
+        float frameAspect = 4.0 / 3.0;
+        float texAspect = g == 0 ? uFrameAspect0.x : g == 1 ? uFrameAspect0.y
+          : g == 2 ? uFrameAspect0.z : uFrameAspect0.w;
+        if (texAspect > frameAspect) {
+          float s = frameAspect / texAspect;
+          fit.y = (f.y - 0.5) / s + 0.5;
+          if (fit.y < 0.0 || fit.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+        } else {
+          float s = texAspect / frameAspect;
+          fit.x = (f.x - 0.5) / s + 0.5;
+          if (fit.x < 0.0 || fit.x > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+        }
       }
       vec3 thumb = vec3(0.0);
       if (g == 0) thumb = texture2D(uThumbnails[0], fit).rgb;
@@ -210,31 +225,29 @@ const ReelShader = {
       vec3 H = reflect(-G, n);
       float j = pow(max(dot(H, k), 0.0), 35.0);
       vec3 spec = 0.6 * j * vec3(1.0);
-      vec3 J = L * mix(facing, vec3(1.0), uExitProgress * 1.1)
-        + mix(spec, vec3(0.0), uExitProgress * 1.1);
+      vec3 J = L * facing + spec;
 
-      // 距离 alpha 衰减：主视野内（localLength ≤28）保持完全实心，
-      // 只有扫向高处的远端（35+）快速化开消散。
-      // （原版公式 exp(-0.11·(len-15)) 的陡峭段是为相机推近(z≈1.9)视野
-      //   设计的——推近后幽灵段不在画面；我们稳态相机 z=5，全露出来
-      //   会显得中段"镂空/断掉"，故右移起点校准观感）
-      float q = exp(-0.14 * max(0.0, length(vLocalPos) - 28.0));
+      // 距离 alpha 衰减（原版 q，localPosition 长度）
+      float Y = max(0.0, length(vLocalPos) - 10.0);
+      float q = exp(max(0.0, Y - 5.0) * -0.11);
       gl_FragColor = vec4(J, q);
     }
   `,
 };
 
 interface FilmReelSceneProps {
-  /** 滚轮推进进度 0~1（驱动相机推近/详情页进入，沿用旧语义） */
+  /** 滚轮推进进度 0~1（驱动相机推近/详情页进入） */
   scrollProgress: number;
   /** 鼠标 NDC（-1~1，屏幕向下为正） */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
-  /** 拖动偏移（0 ~ -(SECTIONS.length-1)·4，沿用旧走廊语义） */
+  /** 连续 section 指针：idle 为整数索引；拖动时 = 索引 + 窥视（原版语义） */
   dragOffsetRef: React.MutableRefObject<number>;
   /** section 切换回调 */
   onSectionChange?: (index: number) => void;
   /** 初始 section */
   initialSection?: number;
+  /** 是否允许拖动/滚轮切帧（详情页打开时应禁用，防止详情内拖动误切 section） */
+  dragEnabled?: boolean;
 }
 
 /**
@@ -246,36 +259,43 @@ export function FilmReelScene({
   dragOffsetRef,
   onSectionChange,
   initialSection = 0,
+  dragEnabled = true,
 }: FilmReelSceneProps) {
   const { camera, size } = useThree();
   const progressRef = useRef(scrollProgress);
   progressRef.current = scrollProgress;
+  const dragEnabledRef = useRef(dragEnabled);
+  dragEnabledRef.current = dragEnabled;
+  const aspect = size.width / Math.max(1, size.height);
 
-  // 曲线 + 几何（一次性）
+  // 曲线 + 几何 + 原版常量
   const { geometry, curveLength, initialReelOffset } = useMemo(() => {
     const pts = REEL_CURVE_POINTS.map(([x, y, z]) => new THREE.Vector3(x, y, z));
     const curve = new THREE.CatmullRomCurve3(pts, false, 'chordal', 1);
     const len = curve.getLength();
     const geo = buildReelGeometry(curve);
-    // 原版稳态 initialReelOffset = 曲线长度 - 8.1（bundle 实测值）：
-    // 只裁掉曲线起端 8.1 单位，且该处 alpha 已被淡出压到 ~0.07，断边隐形。
-    // （旧值 L-3·帧宽 裁掉 16%，断边怼在画面里）
+    // 原版稳态 initialReelOffset = 曲线长度 - 8.1
     const init = len - 8.1;
     return { geometry: geo, curveLength: len, initialReelOffset: init };
   }, []);
 
-  // GIF 帧贴图（<img> 动图 + 每帧轮换 needsUpdate 重传当前帧）
+  // 原版 eg：mesh 在群组本地的 y 偏移（胶片整体在下方）
+  const eg = useMemo(() => {
+    return aspect <= 1 ? -1.6 : -1.6 - 0.3 * aspect + 0.2;
+  }, [aspect]);
+  // 原版响应式 mesh 缩放：clamp(remap(w,500,2560,.7,.9))+.1·aspect
+  const meshScale = useMemo(() => {
+    return clamp(remap(size.width, 500, 2560, 0.7, 0.9), 0.7, 0.9) + 0.1 * aspect;
+  }, [size.width, aspect]);
+
+  // GIF 帧贴图
   const aspectRef = useRef(new THREE.Vector4(4 / 3, 4 / 3, 4 / 3, 4 / 3));
   const thumbnails = useMemo(() => {
     const loader = new THREE.TextureLoader();
     return FRAME_TEXTURES.map((url, i) => {
       const tex = loader.load(url, (t) => {
-        // 实测宽高比（4 张 GIF 比例各不相同，contain 适配用）
         if (t.image?.width && t.image?.height) {
-          aspectRef.current.setComponent(
-            i,
-            t.image.width / t.image.height
-          );
+          aspectRef.current.setComponent(i, t.image.width / t.image.height);
         }
       });
       tex.colorSpace = THREE.SRGBColorSpace;
@@ -287,13 +307,12 @@ export function FilmReelScene({
       return tex;
     });
   }, []);
-  // 轮换重传：每帧传 1 张 → 4 张各 ~15fps，控制上传带宽
   const gifUpdateCursor = useRef(0);
   useEffect(() => {
     return () => thumbnails.forEach((t) => t.dispose());
   }, [thumbnails]);
 
-  // section 状态（通知 DOM 覆盖层）
+  // section 状态
   const [sectionIndex, setSectionIndex] = useState(initialSection);
   const lastNotifiedRef = useRef(initialSection);
   useEffect(() => {
@@ -303,11 +322,10 @@ export function FilmReelScene({
     }
   }, [sectionIndex, onSectionChange]);
 
-  // 材质 uniforms
   const uniforms = useMemo(
     () => ({
       uInitialReelOffset: { value: initialReelOffset },
-      uReelOffset: { value: -initialSection * REEL_FRAME_WIDTH },
+      uReelOffset: { value: initialSection * REEL_FRAME_WIDTH },
       uTextureCount: { value: FRAME_TEXTURES.length },
       uCurveLength: { value: curveLength },
       uViewPosition: { value: new THREE.Vector3(0, 0, 5) },
@@ -316,18 +334,135 @@ export function FilmReelScene({
       uFrameWidth: { value: REEL_FRAME_WIDTH },
       uFrameAspect0: { value: aspectRef.current },
       uThumbnails: { value: thumbnails },
-      uExitProgress: { value: 0 },
+      uFlexAnimation: { value: 0 },
     }),
     [initialReelOffset, curveLength, initialSection, thumbnails]
   );
 
-  // 拖动平滑 + 相机（原版 projects 相机公式）
-  // 原版 reelOffset = +index × frameWidth（正号，bundle: en = Q·N）：
-  // 拖左 → index↑ → 帧向相机左侧滑动（跟手的"抓住胶片拖"语义）
-  const reelSmoothedRef = useRef(initialSection * REEL_FRAME_WIDTH);
-  const mouseSmoothedRef = useRef({ x: 0, y: 0 });
+  // 背景：原版尺寸 + 上深下浅渐变（实拍核对）
+  const bgSize = useMemo(() => {
+    const ec = 2 * Math.tan((65 * Math.PI) / 180 / 2) * 195;
+    return { width: 1.2 * ec * aspect, height: 1.4 * ec };
+  }, [aspect]);
+  const gradientTexture = useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = 4;
+    c.height = 256;
+    const ctx = c.getContext('2d')!;
+    // 上深下浅：顶部 rgb(33,25,35) → 0.6 rgb(51,54,115) → 底部 rgb(69,148,197)
+    const grad = ctx.createLinearGradient(0, 0, c.width * 0.1, c.height);
+    grad.addColorStop(0.2, '#211923');
+    grad.addColorStop(0.6, '#333673');
+    grad.addColorStop(1.0, '#4594c5');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, c.width, c.height);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }, []);
+
   const reelMeshRef = useRef<THREE.Mesh>(null);
   const bgMeshRef = useRef<THREE.Mesh>(null);
+  // reelOffset 弹簧状态（原版 en: damping 14 / stiffness 90 → 临界阻尼近似）
+  const reelSpringRef = useRef(initialSection * REEL_FRAME_WIDTH);
+  const reelVelRef = useRef(0);
+  // flex 积分器（原版 ea：lerp 平滑速度，clamp ±300）
+  const flexRef = useRef(0);
+  // 鼠标视差平滑（原版 eA: stiffness 150 / damping 20）
+  const mouseXSmoothRef = useRef(0.5);
+  const mouseSmoothedRef = useRef({ x: 0, y: 0 });
+
+  // 拖动/滚轮（原版 mh 拖拽层逐行）
+  useEffect(() => {
+    let dragging = false;
+    let pending = false;
+    let startX = 0;
+    let startY = 0;
+    let pointerStart = 0;
+    let wheelAcc = 0;
+    let wheelLockUntil = 0;
+    let wheelResetTimer: number | null = null;
+
+    const down = (e: PointerEvent) => {
+      if (!dragEnabledRef.current) return;
+      if (e.button !== 0) return;
+      const yRatio = e.clientY / window.innerHeight;
+      if (yRatio < 0.15 || yRatio > 0.85) return;
+      pending = true;
+      dragging = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      pointerStart = dragOffsetRef.current;
+    };
+    const move = (e: PointerEvent) => {
+      if (!pending) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dx) + Math.abs(dy) <= 10) return;
+        if (Math.abs(dx) <= Math.abs(dy)) {
+          pending = false; // 垂直意图，放弃
+          return;
+        }
+        dragging = true;
+        document.body.style.cursor = 'grabbing';
+      }
+      // 橡皮筋：像素 → 曲线单位，clamp ±0.2w
+      const lim = DRAG_CLAMP_RATIO * window.innerWidth;
+      const d = clamp(dx, -lim, lim);
+      dragOffsetRef.current = pointerStart - d / (DRAG_UNIT * window.innerWidth);
+    };
+    const up = () => {
+      if (!pending) return;
+      pending = false;
+      document.body.style.cursor = '';
+      if (!dragging) return;
+      dragging = false;
+      // 释放：|drag| > 0.1w → 指针翻一帧（原版 index += −sign(dragPx)；
+      // drift = −dxpx，故 target = pointerStart + sign(drift)）
+      const cur = dragOffsetRef.current;
+      const drift = (cur - pointerStart) * (DRAG_UNIT * window.innerWidth);
+      let target = Math.round(pointerStart);
+      if (Math.abs(drift) > DRAG_SNAP_RATIO * window.innerWidth) {
+        target = clamp(Math.round(pointerStart) + Math.sign(drift), 0, SECTIONS.length - 1);
+      }
+      dragOffsetRef.current = target;
+    };
+    const wheel = (e: WheelEvent) => {
+      if (!dragEnabledRef.current) return;
+      if (dragging || pending) return;
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return; // 只吃横向滚轮
+      const now = performance.now();
+      if (now < wheelLockUntil) return;
+      if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
+      wheelResetTimer = window.setTimeout(() => {
+        wheelAcc = 0;
+      }, 150);
+      wheelAcc -= e.deltaX;
+      const step = WHEEL_STEP_RATIO * window.innerWidth;
+      if (Math.abs(wheelAcc) > step) {
+        // 原版 index += −sign(acc)：右滚(deltaX>0→acc<0)→下一帧
+        const cur = clamp(Math.round(dragOffsetRef.current), 0, SECTIONS.length - 1);
+        const next = clamp(cur - Math.sign(wheelAcc), 0, SECTIONS.length - 1);
+        dragOffsetRef.current = next;
+        wheelAcc = 0;
+        wheelLockUntil = now + 700;
+      }
+    };
+    window.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('wheel', wheel, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('wheel', wheel);
+      document.body.style.cursor = '';
+      if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useFrame((_, delta) => {
     const dt = Math.min(0.05, Math.max(delta, 0.001));
@@ -337,29 +472,40 @@ export function FilmReelScene({
     gifUpdateCursor.current++;
     if (tex.image) tex.needsUpdate = true;
 
-    // 拖动 → 胶片滚动：原版 reelOffset = +index × frameWidth（正号）。
-    // 拖左（dragOffset 变负）→ progress↑ → offset↑ → 帧向左滑（跟手）
-    const sectionProgress = -dragOffsetRef.current / 4; // 0 ~ SECTIONS.length-1 连续
-    const targetReel = sectionProgress * REEL_FRAME_WIDTH;
-    reelSmoothedRef.current += (targetReel - reelSmoothedRef.current) * (1 - Math.exp(-12 * dt));
-    uniforms.uReelOffset.value = reelSmoothedRef.current;
+    // === reelOffset 弹簧（原版 useSpring damping14/stiffness90 半隐式欧拉）===
+    const targetReel = dragOffsetRef.current * REEL_FRAME_WIDTH;
+    const K = 90;
+    const C = 14;
+    reelVelRef.current += (K * (targetReel - reelSpringRef.current) - C * reelVelRef.current) * dt;
+    reelSpringRef.current += reelVelRef.current * dt;
+    if (Math.abs(reelSpringRef.current - targetReel) < 0.01 && Math.abs(reelVelRef.current) < 0.5) {
+      reelSpringRef.current = targetReel;
+      reelVelRef.current = 0;
+    }
 
-    // section 吸附通知（round 正向 offset）
-    const newSection = Math.max(
-      0,
-      Math.min(SECTIONS.length - 1, Math.round(reelSmoothedRef.current / REEL_FRAME_WIDTH))
-    );
+    // 鼠标视差平滑（原版 eA，加进 reelOffset ±0.02）
+    const m01 = (mouseRef.current.x + 1) / 2;
+    mouseXSmoothRef.current += (m01 - mouseXSmoothRef.current) * (1 - Math.exp(-12 * dt));
+    const sway = (mouseXSmoothRef.current - 0.5) * 0.04;
+    uniforms.uReelOffset.value = reelSpringRef.current + sway;
+
+    // flex：速度驱动积分（原版 u = vel·4，lerp 平滑，clamp ±300）
+    const flexTarget = -reelVelRef.current * 4;
+    flexRef.current = clamp(lerp(flexRef.current, flexTarget, 1 - Math.exp(-10 * dt)), -300, 300);
+    uniforms.uFlexAnimation.value = flexRef.current;
+
+    // section 吸附通知
+    const newSection = clamp(Math.round(dragOffsetRef.current), 0, SECTIONS.length - 1);
     if (newSection !== sectionIndex) setSectionIndex(newSection);
 
-    // 相机：原版 Y.position.set(.2mx, -r+.2my, m)，m = 5-5t，lookAt(0, i, 0)
-    const t = Math.min(1, Math.max(0, progressRef.current));
+    // === 相机（原版：pos(0.2mx, 0.2my, 5-5t)，lookAt(0, 0.03, 0)）===
+    const t = clamp(progressRef.current, 0, 1);
     const ms = mouseRef.current;
     const sm = mouseSmoothedRef.current;
     sm.x += (ms.x - sm.x) * 0.08;
     sm.y += (ms.y - sm.y) * 0.08;
     camera.position.set(0.2 * sm.x, 0.2 * -sm.y, 5 - 5 * t);
-    // 视线上抬：把胶片压到画面中下带（原版构图：上方留渐变背景 + 标题空间）
-    camera.lookAt(0, 0.5, 0);
+    camera.lookAt(0, 0.03, 0);
     uniforms.uViewPosition.value.copy(camera.position);
     const cam = camera as THREE.PerspectiveCamera;
     if (cam.fov !== 65) {
@@ -367,55 +513,39 @@ export function FilmReelScene({
       cam.updateProjectionMatrix();
     }
 
-    // 胶片抬升 p（原版 p = 1.6·remap(scroll, .05→.5)+.2 ≈ 0.28~1.0，随推进抬升）
+    // === 摆放：p 抬升 + eg 下沉 + 响应式缩放（原版层级等效）===
     const p = 1.6 * (0.05 + 0.45 * t) + 0.2;
-    if (reelMeshRef.current) reelMeshRef.current.position.y = p;
-    if (bgMeshRef.current) bgMeshRef.current.position.y = 60 * p;
+    if (reelMeshRef.current) {
+      reelMeshRef.current.position.y = p + 0.4 * eg;
+      const s = 0.4 * meshScale;
+      reelMeshRef.current.scale.set(s, s, s);
+    }
+    // 背景：位置(0, 60p, -200)，scale(n,n,1)，n = 1+0.5t
+    if (bgMeshRef.current) {
+      bgMeshRef.current.position.y = 60 * p;
+      bgMeshRef.current.position.z = -200;
+      const n = 1 + 0.5 * t;
+      bgMeshRef.current.scale.set(n, n, 1);
+    }
   });
-
-  // 背景渐变板（原版 rgb(33,25,35)→(51,54,115)→(69,148,197)，z=-200）
-  const gradientTexture = useMemo(() => {
-    const c = document.createElement('canvas');
-    c.width = 4;
-    c.height = 256;
-    const ctx = c.getContext('2d')!;
-    const grad = ctx.createLinearGradient(0, 0, c.width * 0.2, c.height);
-    grad.addColorStop(0.2, '#4594c5');
-    grad.addColorStop(0.6, '#333673');
-    grad.addColorStop(1.0, '#211923');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, c.width, c.height);
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
-  }, []);
-
-  // 背板尺寸：盖住 fov65 在 z=-205 处的视锥（原版 1.2×/1.4× 视锥高）
-  const bgSize = useMemo(() => {
-    const h = 2 * Math.tan((65 * Math.PI) / 180 / 2) * 205;
-    return { width: h * (size.width / Math.max(1, size.height)) * 1.4, height: h * 1.6 };
-  }, [size]);
 
   return (
     <>
-      {/* 渐变背景板（原版：普通不透明 meshBasicMaterial，无 renderOrder/深度覆盖） */}
+      {/* 渐变背景板（原版：1.2×/1.4× 视锥高 @195，上深下浅） */}
       <mesh ref={bgMeshRef} position={[0, 17, -200]}>
         <planeGeometry args={[bgSize.width, bgSize.height]} />
         <meshBasicMaterial map={gradientTexture} fog={false} />
       </mesh>
 
-      {/* 胶片卷缎带（原版：group scale 0.4 × mesh scale 1.05 = 0.42；
-          y = p = 1.6·remap(scroll, .05,.5)+.2 ≈ 0.28~1.0 随推进抬升。
-          漏乘 group 0.4 会让胶片放大 2.5 倍糊满屏幕） */}
-      <mesh ref={reelMeshRef} position={[0, 0.28, 0]} scale={[0.42, 0.42, 0.42]} geometry={geometry}>
+      {/* 胶片卷缎带（原版层级等效：group 0.4 + mesh y=eg + 响应式缩放） */}
+      <mesh ref={reelMeshRef} position={[0, 0, 0]} geometry={geometry}>
         <shaderMaterial
           vertexShader={ReelShader.vertexShader}
           fragmentShader={ReelShader.fragmentShader}
           uniforms={uniforms}
           transparent
           side={THREE.DoubleSide}
-          // 原版材质未关深度写入（three 默认 true）：缎带自身在屏幕上
-          // 重叠时靠深度缓冲做前后遮挡；关掉会按三角形顺序乱画（前后穿帮）
+          // 原版材质未关深度写入（three 默认 true）：缎带自身遮挡靠深度缓冲
           depthWrite
         />
       </mesh>
