@@ -441,9 +441,11 @@ body.camera-debug-mode .scroll-container {
 
 /* 内容覆盖层：水平左对齐，给左侧文字块更多呼吸空间 */
 .film-content-overlay {
-  justify-content: center;
-  align-items: flex-start;
-  padding: 48px 80px;
+  /* 顶部居中：对齐 shader.se 的 Selected Work 标题位 */
+  justify-content: flex-start;
+  align-items: center;
+  padding: 56px 80px 48px;
+  text-align: center;
 }
 
 /* 文字块容器：整体淡入淡出 + 上移过渡
@@ -469,6 +471,42 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* Section 编号：01 / 04 风格，等宽字体，accent 色调淡 */
+.film-title {
+  font-family: var(--font-serif, 'STIX Two Text', Georgia, serif);
+  font-size: clamp(44px, 7vw, 96px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.02;
+  color: #fdf9f0;
+  margin: 0 0 10px;
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.45);
+}
+
+.film-title.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.film-subtitle {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(252, 249, 243, 0.65);
+  margin: 0 0 26px;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.5s ease 0.06s, transform 0.5s ease 0.06s;
+}
+
+.film-subtitle.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .film-section-index {
   font-family: var(--font-mono);
   font-size: 14px;

@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-import { FilmScene, SECTIONS, PROJECTS, ContactScene, OfficeScene } from './components/FilmScene';
+import { SECTIONS, PROJECTS, ContactScene, OfficeScene } from './components/FilmScene';
+import { FilmReelScene } from './components/FilmReelScene';
 import {
   FilmPostProcessing,
   DEFAULT_FILM_PARAMS,
@@ -824,7 +825,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           // 详情页全屏展示期间冻结主画布（淡入完成后切 demand），关闭立即恢复
           frameloop={filmPaused ? 'demand' : 'always'}
         >
-          <FilmScene
+          {/* 胶片卷场景（shader.se #selected-work 曲线缎带 1:1 复刻）：
+              拖动滚胶片、相机固定+鼠标视差，section 吸附语义与旧走廊一致 */}
+          <FilmReelScene
             scrollProgress={scrollProgress}
             mouseRef={mouseRef}
             dragOffsetRef={dragOffsetRef}
@@ -846,11 +849,19 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           段号/描述随 section 切换淡入淡出（textVisible 控制）；
           大标题 + 副标题已移入 3D 场景（FilmScene 的 SectionTitles），
           作为场景物体吃 bloom/颗粒/色散/运动模糊 */}
-      <div className="content-overlay film-content-overlay">
-        <div
-          className={`hero-block film-hero-block ${textVisible ? 'visible' : ''}`}
-          ref={heroBlockRef}
-        >
+        <div className="content-overlay film-content-overlay">
+          <div
+            className={`hero-block film-hero-block ${textVisible ? 'visible' : ''}`}
+            ref={heroBlockRef}
+          >
+          {/* 大标题/副标题：旧版在 3D（SectionTitles），胶片卷场景改为 DOM 层
+              （shader.se 的标题也是 HTML 覆盖层） */}
+          <h1 className={`film-title ${textVisible ? 'visible' : ''}`}>
+            {currentSection.title}
+          </h1>
+          <p className={`film-subtitle ${textVisible ? 'visible' : ''}`}>
+            {currentSection.subtitle}
+          </p>
           <div className="film-section-index">
             <span className="film-index-current">0{sectionIndex + 1}</span>
             <span className="film-index-separator">/</span>
@@ -3034,19 +3045,33 @@ function BlackholeDetailPage({
   // 默认 orbit：进入黑洞页面即为鼠标控制视角，更符合交互直觉
   const blackholeModeRef = useRef<'auto' | 'orbit'>('orbit');
   const [blackholeMode, setBlackholeMode] = useState<'auto' | 'orbit'>('orbit');
-  // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主，
-  // bloom 已关闭（bloomIntensity 0 / threshold 0.99）：画面只保留吸积盘本体亮度，
-  // 不叠加辉光，配合暗背景呈现干净锐利的高画质观感。
-  // sepiaIntensity 置 0：去掉棕褐调色，吸积盘颜色更鲜艳。
-  // noiseIntensity 置 0：去掉胶片颗粒，画面更干净清晰（高画质）。
+  // 黑洞场景专用后处理参数：黑洞画面以暗背景 + 吸积盘亮环为主。
+  // DEFAULT_FILM_PARAMS 已换成 shader.se projects section 原值（胶片页 1:1），
+  // 这里把黑洞页继承的所有字段钉在旧调好的数值上，保持其观感不变。
   const blackholeFilmParams = useMemo<FilmFXParams>(
     () => ({
       ...DEFAULT_FILM_PARAMS,
       bloomIntensity: 0.3,
       bloomThreshold: 0.5,
-      bloomRadius: 0.99,
+      bloomRadius: 0.85,
+      bloomSmoothing: 0.3,
+      pow: 1.0,
       sepiaIntensity: 0,
+      brightness: 1.0,
+      contrast: 1.1,
+      saturation: 1.0,
+      chromaticAbberationStrength: 0.5,
+      lensDistortion: 0.15,
+      lensDistortionBorder: 0.0,
+      motionBlur: 0.0,
+      vignetteIntensity: 0.45,
+      vignetteRadius: 0.5,
+      vignetteSmoothness: 0.3,
       noiseIntensity: 0,
+      // 黑洞页不要体积雾：黑底全屏(depth=1 背景)会被雾按最大距离铺满，
+      // 观感就是"蒙一层灰雾"。需要时调回 0~1。
+      fogDensity: 0.22,
+      fogOpacity: 0,
     }),
     []
   );

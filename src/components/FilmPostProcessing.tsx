@@ -1,34 +1,29 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 
 /**
- * 胶片后处理参数（参考 shader.se 扒出的源码）
+ * 胶片后处理 —— shader.se 1:1 复刻版
  *
- * 字段说明：
- *  - bloomIntensity            Bloom 辉光强度（0~2）
- *  - bloomThreshold            Bloom 亮度阈值（0~1）
- *  - bloomRadius               Bloom 模糊半径（0~2）
- *  - bloomSmoothing            Bloom 平滑度（0~1）
- *  - pow                       伽马校正指数（0~5），>1 提亮、<1 压暗
- *  - sepiaIntensity            棕褐色调强度（0~1），老胶片色
- *  - brightness                亮度（0~2）
- *  - contrast                  对比度（0~2）
- *  - chromaticAbberationStrength RGB 色差强度（0~5），垂直方向偏移
- *  - lensDistortion            镜头畸变（0~1），桶形畸变
- *  - lensDistortionBorder      镜头边缘畸变（0~1）
- *  - motionBlur                动态模糊强度（0~1）
- *  - vignetteIntensity         暗角强度（0~1）
- *  - vignetteRadius            暗角半径（0~1）
- *  - vignetteSmoothness        暗角平滑度（0~1）
- *  - noiseIntensity            胶片颗粒强度（0~2）
- *  - noiseVelocity             颗粒动画速度（0~5）
+ * 来源：shader.se 线上 bundle 反编译（RenderPipeline b / MipMapBlurNode A$ /
+ * ChromaticAberrationNode2 AZ / filmGrain / ApplySaturation / 闪烁公式）
+ *
+ * 管线（与原版同序）：
+ *   场景 → sceneRT
+ *   → Bloom(MipMapBlur 7 级 mip 链，亮度阈值预滤 + emulateInputMip1，
+ *          ×强度 clamp 1，与原图 screen 混合 + 暖橙 10% 罩染) → bloomRT
+ *   → 动态模糊(帧率无关 ping-pong mix) → motionRT
+ *   → FilmShader: pow → sepia → 亮度 → 对比度 → 饱和度 → 垂直色差
+ *      → 高斯颗粒 → 暗角
+ *   → 体积雾(本站自有，原站无；默认参数关闭)
+ *
+ * 架构说明：bloom 与 motion blur 在 composer 外用独立 RT 链执行
+ * （bloom 需要自有 mip 链；motion 的 tPrevious 若挂在 composer 的
+ *  ping-pong 缓冲上会构成 WebGL 反馈环 —— 读写的同一个 RT，draw 被拒绝）。
  */
+
 export interface FilmFXParams {
   bloomIntensity: number;
   bloomThreshold: number;
@@ -38,6 +33,8 @@ export interface FilmFXParams {
   sepiaIntensity: number;
   brightness: number;
   contrast: number;
+  /** 饱和度（REC709 亮度轴 mix，原版 compose 层参数） */
+  saturation: number;
   chromaticAbberationStrength: number;
   lensDistortion: number;
   lensDistortionBorder: number;
@@ -54,97 +51,305 @@ export interface FilmFXParams {
 }
 
 /**
- * 默认胶片参数（参考 shader.se 的 loadingScreen 配置反推）
- *
- * 功能：提供一组观感接近 shader.se 的默认值
- * 注意事项：
- *  - bloomThreshold 0.85：只让屏幕中心最亮区参与辉光，避免屏幕大面积过亮 →
- *    鼠标视差时 bloom 区域随屏幕投影面积波动而剧烈闪烁
- *  - bloomIntensity 0.8：辉光强度适中，配合 threshold 0.85 只在屏幕高光区扩散
- *  - noiseIntensity 0.2：颗粒压低，避免每帧 noise 叠加在画面波动上加重闪烁感
+ * 默认参数 = shader.se pagesConfig 的 projects section 原值
+ * （胶片卷所在 section 的线上观感来源）
  */
 export const DEFAULT_FILM_PARAMS: FilmFXParams = {
-  bloomIntensity: 0.5,
-  bloomThreshold: 0.9,
-  bloomRadius: 0.3,
-  bloomSmoothing: 0.6,
-  pow: 1.0,
-  sepiaIntensity: 0.25,
-  brightness: 1.0,
-  contrast: 1.1,
-  chromaticAbberationStrength: 0.5,
-  lensDistortion: 0.15,
-  lensDistortionBorder: 0.0,
-  motionBlur: 0.0,
-  vignetteIntensity: 0.45,
-  vignetteRadius: 0.5,
-  vignetteSmoothness: 0.3,
+  bloomIntensity: 0.77,
+  bloomThreshold: 0.62,
+  bloomRadius: 0.8,
+  bloomSmoothing: 0.2,
+  pow: 1.36,
+  sepiaIntensity: 0.28,
+  brightness: 1.08,
+  contrast: 0.98,
+  saturation: 0.92,
+  chromaticAbberationStrength: 1.0,
+  lensDistortion: 0.16,
+  lensDistortionBorder: 1.0,
+  motionBlur: 0.4,
+  vignetteIntensity: 0.0,
+  vignetteRadius: 0.0,
+  vignetteSmoothness: 0.32,
+  // 颗粒强度：shader.se projects 原值 0.87 是按其亮场景调的；
+  // 原公式颗粒 ∝ (1-亮度)，在本站的深色胶片页暗部会被提亮 40%+
+  // 糊成雪花。取旧版调好的 0.2（观感：细腻胶片颗粒、内容可读）。
   noiseIntensity: 0.2,
   noiseVelocity: 1.0,
-  // 雾浓度按主体距离校准：胶片平面距初始相机约 7 个单位，
-  // 密度过高会把深色片基/齿孔整个盖没（0.55 时胶片上约 69% 雾、
-  // 边缘消失）；0.22 + 0.52 时白团扫过胶片面约 25~30% 混合，
-  // 主体始终透出，背景区浓团稍重
+  // 体积雾是本站自有功能（shader.se 无）；胶片页默认关闭，
+  // 需要时把 fogOpacity 调回 0~1
   fogDensity: 0.22,
-  fogOpacity: 0.52,
+  fogOpacity: 0.0,
 };
 
 /* =========================================================================
- * VolumetricFogShader - 体积雾 pass（深度重建 + 噪声光线步进）
- *
- * 功能：模拟胶片走廊里漂浮的雾气，随镜头运动产生真实体积感：
- *  1. 从 depthTexture 重建像素视线（屏幕 UV → NDC → 逆投影 → 视线段）
- *  2. 沿视线步进 12 步（固定上限，运行时 uSteps 可降级到 8），
- *     采样世界坐标 hash 噪声（2 octave fbm）作为雾密度
- *  3. 密度沿视线累积 → 指数透过率 → 与暖褐雾色混合
- *  4. 方向光散射近似（phase）：朝光源方向的雾更亮 → 再被后续
- *     BloomPass 染上光晕，形成"光柱穿过雾气"的胶片质感
- *
- * 注意事项：
- *  - 噪声采样在世界坐标系：雾"长在原地"，镜头平移/拉远时产生正确视差
- *  - 天空/背景（depth=1）也参与雾：视线长度封顶 uMaxDist，避免背景糊死
- *  - 插在链尾直绘屏幕（Film 调色之后）：链中 pass 的绘制目标是带深度附件的
- *    RT，采样深度纹理会构成 WebGL 反馈环（draw 被拒绝 → 全屏黑），链尾
- *    直绘屏幕则没有深度附件，结构上安全（钢琴页 grade 同款架构）
- *  - 步长越长密度按比例缩减，总雾量近似与步数无关（降级不跳变）
- *  - prefers-reduced-motion 时漂移速度置 0（雾静止）
+ * MipMapBloomPass — shader.se 的 MipMapBlurNode A$ 逐行移植
  * ========================================================================= */
-// 雾漂移速度（噪声空间单位/s）：0.8 ≈ 世界空间 2.3 单位/s，
-// 白团约 2.5 秒横穿整个视野 —— 明确的流动感
+const BLOOM_LEVELS = 7;
+
+const BloomQuadVertex = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const BloomDown0Shader = /* glsl */ `
+  uniform sampler2D tSrc;
+  uniform vec2 uSrcResolution;
+  uniform float uThreshold;
+  uniform float uSmoothing;
+  varying vec2 vUv;
+  vec3 prefilter(vec3 c) {
+    float l = dot(c, vec3(0.2125, 0.7154, 0.0721));
+    float s = smoothstep(uThreshold, uThreshold + uSmoothing, l);
+    return c * s;
+  }
+  vec3 rowMix(vec3 r0, vec3 r1, vec3 r2, float e, float rx) {
+    return mix(mix(r0, r1, e), mix(r1, r2, e), rx);
+  }
+  vec3 g9(vec3 h0, vec3 h1, vec3 h2, vec3 h3, vec3 h4, vec3 h5,
+          vec3 h6, vec3 h7, vec3 h8, float fx, float fy, vec2 fr) {
+    vec3 i0 = rowMix(h0, h1, h2, fx, fr.x);
+    vec3 i1 = rowMix(h3, h4, h5, fx, fr.x);
+    vec3 i2 = rowMix(h6, h7, h8, fx, fr.x);
+    return mix(mix(i0, i1, fy), mix(i1, i2, fy), fr.y);
+  }
+  void main() {
+    // emulateInputMip1：3×3 角点双线性模拟无 mip 纹理的 mip1 采样（原版 s()）
+    vec2 texel = 1.0 / uSrcResolution;
+    vec2 t = floor(uSrcResolution * 0.5);
+    vec2 rmax = t - 1.0;
+    vec2 halfTexel = texel * 0.5;
+    vec2 s = (vUv - halfTexel) * t - 0.5;
+    vec2 o = (vUv + halfTexel) * t - 0.5;
+    vec2 ls = floor(s);
+    vec2 lo = floor(o);
+    vec2 A2 = s - ls;
+    vec2 C2 = o - lo;
+    vec2 D2 = lo - ls;
+    vec3 h00 = prefilter(texture2D(tSrc, (clamp(ls + vec2(0.0, 0.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h01 = prefilter(texture2D(tSrc, (clamp(ls + vec2(1.0, 0.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h02 = prefilter(texture2D(tSrc, (clamp(ls + vec2(2.0, 0.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h10 = prefilter(texture2D(tSrc, (clamp(ls + vec2(0.0, 1.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h11 = prefilter(texture2D(tSrc, (clamp(ls + vec2(1.0, 1.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h12 = prefilter(texture2D(tSrc, (clamp(ls + vec2(2.0, 1.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h20 = prefilter(texture2D(tSrc, (clamp(ls + vec2(0.0, 2.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h21 = prefilter(texture2D(tSrc, (clamp(ls + vec2(1.0, 2.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 h22 = prefilter(texture2D(tSrc, (clamp(ls + vec2(2.0, 2.0), vec2(0.0), rmax) + 0.5) / t).rgb);
+    vec3 tl = g9(h00, h01, h02, h10, h11, h12, h20, h21, h22, 0.0, D2.y, vec2(A2.x, C2.y));
+    vec3 tr = g9(h00, h01, h02, h10, h11, h12, h20, h21, h22, D2.x, D2.y, vec2(C2.x, C2.y));
+    vec3 bl = g9(h00, h01, h02, h10, h11, h12, h20, h21, h22, 0.0, 0.0, vec2(A2.x, A2.y));
+    vec3 br = g9(h00, h01, h02, h10, h11, h12, h20, h21, h22, D2.x, 0.0, vec2(C2.x, A2.y));
+    gl_FragColor = vec4((tl + tr + bl + br) * 0.25, 1.0);
+  }
+`;
+
+const BloomDownShader = /* glsl */ `
+  uniform sampler2D tSrc;
+  uniform vec2 uTexelSize;
+  varying vec2 vUv;
+  void main() {
+    vec2 o = uTexelSize * 0.5;
+    vec3 c = texture2D(tSrc, vUv + o * vec2(-1.0, 1.0)).rgb
+           + texture2D(tSrc, vUv + o * vec2(1.0, 1.0)).rgb
+           + texture2D(tSrc, vUv + o * vec2(-1.0, -1.0)).rgb
+           + texture2D(tSrc, vUv + o * vec2(1.0, -1.0)).rgb;
+    gl_FragColor = vec4(c * 0.25, 1.0);
+  }
+`;
+
+const BloomUpShader = /* glsl */ `
+  uniform sampler2D tInput;
+  uniform sampler2D tSupport;
+  uniform vec2 uTexelSize;
+  uniform float uRadius;
+  varying vec2 vUv;
+  void main() {
+    vec2 o = uTexelSize * 0.5;
+    vec3 c = texture2D(tInput, vUv + o * vec2(-1.0, 1.0)).rgb
+           + texture2D(tInput, vUv + o * vec2(1.0, 1.0)).rgb
+           + texture2D(tInput, vUv + o * vec2(-1.0, -1.0)).rgb
+           + texture2D(tInput, vUv + o * vec2(1.0, -1.0)).rgb;
+    gl_FragColor = vec4(mix(texture2D(tSupport, vUv).rgb, c * 0.25, uRadius), 1.0);
+  }
+`;
+
+const BloomCompositeShader = /* glsl */ `
+  uniform sampler2D tBase;
+  uniform sampler2D tBloom;
+  uniform float uIntensity;
+  varying vec2 vUv;
+  void main() {
+    vec4 base = texture2D(tBase, vUv);
+    vec3 bloom = texture2D(tBloom, vUv).rgb * uIntensity;
+    vec3 p = min(bloom, vec3(1.0));
+    // screen 混合 + 暖橙罩染（原版 m = blendScreen(p,h) + p·vec3(1,.8,0)·.1）
+    vec3 screenBlend = 1.0 - (1.0 - p) * (1.0 - base.rgb);
+    gl_FragColor = vec4(screenBlend + p * vec3(1.0, 0.8, 0.0) * 0.1, base.a);
+  }
+`;
+
+class MipMapBloomPass {
+  private downRTs: THREE.WebGLRenderTarget[] = [];
+  private upRTs: THREE.WebGLRenderTarget[] = [];
+  private down0Mat: THREE.ShaderMaterial;
+  private downMat: THREE.ShaderMaterial;
+  private upMat: THREE.ShaderMaterial;
+  private compositeMat: THREE.ShaderMaterial;
+  private quad: FullScreenQuad;
+  private width = 1;
+  private height = 1;
+
+  constructor() {
+    const mkRT = () => {
+      const rt = new THREE.WebGLRenderTarget(1, 1, {
+        depthBuffer: false,
+        stencilBuffer: false,
+        type: THREE.HalfFloatType,
+      });
+      rt.texture.generateMipmaps = false;
+      rt.texture.minFilter = THREE.LinearFilter;
+      rt.texture.magFilter = THREE.LinearFilter;
+      rt.texture.wrapS = THREE.ClampToEdgeWrapping;
+      rt.texture.wrapT = THREE.ClampToEdgeWrapping;
+      return rt;
+    };
+    for (let i = 0; i < BLOOM_LEVELS; i++) this.downRTs.push(mkRT());
+    this.upRTs.push(mkRT());
+    for (let i = 1; i < BLOOM_LEVELS - 1; i++) this.upRTs.push(mkRT());
+
+    this.down0Mat = new THREE.ShaderMaterial({
+      uniforms: {
+        tSrc: { value: null },
+        uSrcResolution: { value: new THREE.Vector2(1, 1) },
+        uThreshold: { value: 0.6 },
+        uSmoothing: { value: 0.2 },
+      },
+      vertexShader: BloomQuadVertex,
+      fragmentShader: BloomDown0Shader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.downMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tSrc: { value: null },
+        uTexelSize: { value: new THREE.Vector2(1, 1) },
+      },
+      vertexShader: BloomQuadVertex,
+      fragmentShader: BloomDownShader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.upMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tInput: { value: null },
+        tSupport: { value: null },
+        uTexelSize: { value: new THREE.Vector2(1, 1) },
+        uRadius: { value: 0.85 },
+      },
+      vertexShader: BloomQuadVertex,
+      fragmentShader: BloomUpShader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.compositeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tBase: { value: null },
+        tBloom: { value: null },
+        uIntensity: { value: 1 },
+      },
+      vertexShader: BloomQuadVertex,
+      fragmentShader: BloomCompositeShader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.quad = new FullScreenQuad(this.down0Mat);
+  }
+
+  setSize(width: number, height: number) {
+    this.width = Math.max(1, Math.floor(width));
+    this.height = Math.max(1, Math.floor(height));
+    let w = this.width;
+    let h = this.height;
+    for (let i = 0; i < BLOOM_LEVELS; i++) {
+      w = Math.round(w * 0.5);
+      h = Math.round(h * 0.5);
+      this.downRTs[i].setSize(Math.max(1, w), Math.max(1, h));
+      if (i < this.upRTs.length) this.upRTs[i].setSize(Math.max(1, w), Math.max(1, h));
+    }
+  }
+
+  setParams(threshold: number, smoothing: number, radius: number, intensity: number) {
+    this.down0Mat.uniforms.uThreshold.value = threshold;
+    this.down0Mat.uniforms.uSmoothing.value = smoothing;
+    this.upMat.uniforms.uRadius.value = radius;
+    this.compositeMat.uniforms.uIntensity.value = intensity;
+  }
+
+  dispose() {
+    this.downRTs.forEach((rt) => rt.dispose());
+    this.upRTs.forEach((rt) => rt.dispose());
+    this.down0Mat.dispose();
+    this.downMat.dispose();
+    this.upMat.dispose();
+    this.compositeMat.dispose();
+    this.quad.dispose();
+  }
+
+  render(
+    gl: THREE.WebGLRenderer,
+    base: THREE.Texture,
+    target: THREE.WebGLRenderTarget | null
+  ) {
+    this.down0Mat.uniforms.tSrc.value = base;
+    (this.down0Mat.uniforms.uSrcResolution.value as THREE.Vector2).set(this.width, this.height);
+    gl.setRenderTarget(this.downRTs[0]);
+    this.quad.material = this.down0Mat;
+    this.quad.render(gl);
+
+    for (let i = 1; i < BLOOM_LEVELS; i++) {
+      const src = this.downRTs[i - 1];
+      this.downMat.uniforms.tSrc.value = src.texture;
+      (this.downMat.uniforms.uTexelSize.value as THREE.Vector2).set(1 / src.width, 1 / src.height);
+      gl.setRenderTarget(this.downRTs[i]);
+      this.quad.material = this.downMat;
+      this.quad.render(gl);
+    }
+
+    let u = this.downRTs[BLOOM_LEVELS - 1];
+    for (let i = this.upRTs.length - 1; i >= 0; i--) {
+      const rt = this.upRTs[i];
+      this.upMat.uniforms.tInput.value = u.texture;
+      (this.upMat.uniforms.uTexelSize.value as THREE.Vector2).set(1 / u.width, 1 / u.height);
+      this.upMat.uniforms.tSupport.value = this.downRTs[i].texture;
+      gl.setRenderTarget(rt);
+      this.quad.material = this.upMat;
+      this.quad.render(gl);
+      u = rt;
+    }
+
+    this.compositeMat.uniforms.tBase.value = base;
+    this.compositeMat.uniforms.tBloom.value = this.upRTs[0].texture;
+    gl.setRenderTarget(target);
+    this.quad.material = this.compositeMat;
+    this.quad.render(gl);
+    gl.setRenderTarget(null);
+  }
+}
+
+/* =========================================================================
+ * 体积雾（本站自有，保持不变）
+ * ========================================================================= */
 const FOG_DRIFT_SPEED = 0.8;
 const REDUCED_MOTION =
   typeof window !== 'undefined' &&
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
-/* =========================================================================
- * FluidAdvShader - 鼠标流场模拟（半拉格朗日自平流 + 高斯注入）
- *
- * 功能：维护一张持久 2D 速度纹理（ping-pong），每帧被推进 1~N 个子步：
- *  1. 半拉格朗日回溯采样：v(p) ← v(p - v(p)·dt) —— 速度场被自身平流，
- *     这是"搅一下会卷出漩涡并随流漂走"的流体感来源
- *  2. 指数耗散：v ← v·exp(-uDiss·dt)，无输入约 2~3 秒平复
- *  3. 鼠标注入：以光标为中心的圆形高斯核（x 按宽高比校正）叠加上
- *     本子步的鼠标位移 uMouseDelta（uv）。注入按"弧长"计量 —— JS 端沿
- *     轨迹按 0.5σ 间距补插值出子步，每子步注入等量位移，单位轨迹长度
- *     沉积的能量与划动速度无关 → 任意速度下雾迹连续且浓度一致
- *     （旧版每帧只在末点注入一团 + 速度 clamp 饱和，快速划动时雾团
- *     彼此分离，即"快滑断点"的两个根源）
- * 输出的速度场被体积雾 pass 采样，改写雾的流动方向
- *
- * 注意事项：
- *  - RT 固定 256×256（HalfFloat + Linear），与画布尺寸解耦，开销恒定
- *  - 速度存 uv 空间（x 右 y 上），场值全局 clamp ±3.5 防数值爆炸；
- *    注入本身不做速度饱和（能量按弧长守恒，快慢划动同等强度）
- *  - prefers-reduced-motion 时仍可用（交互驱动，非自主运动）
- * ========================================================================= */
 const VEL_SIM_SIZE = 256;
-// 高斯核 σ（uv）：shader 字面量由它插值注入，JS 端子步间距 = 0.5σ
 const VEL_SIGMA = 0.032;
-// 子步注入增益：与旧版驻留沉积（≈24·1.2·2σ ≈ 1.8 场值/单位弧长）等能量
-// 对齐 —— 单位轨迹长度沉积 √(2π)·σ·gain ≈ 1.8，慢滑观感与修复前一致
 const VEL_SPLAT_GAIN = 23.0;
-// 每帧子步上限：极快甩动（单帧 >1 屏）时拉大子步间距而非丢轨迹，
-// 有界 draw 数（256² 小 RT，多步开销可忽略）
 const VEL_MAX_SUBSTEPS = 24;
 
 const FluidAdvShader = {
@@ -172,14 +377,10 @@ const FluidAdvShader = {
     uniform float uAspect;
     varying vec2 vUv;
     void main() {
-      // 1. 半拉格朗日回溯：当前速度决定回溯坐标，取"来处"的速度
       vec2 vel = texture2D(tPrev, vUv).xy;
       vec2 coord = clamp(vUv - vel * uDt, vec2(0.0), vec2(1.0));
       vec2 adv = texture2D(tPrev, coord).xy;
-      // 2. 指数耗散（无输入约 2~3 秒平复）
       adv *= exp(-uDiss * uDt);
-      // 3. 鼠标注入：圆形高斯核（x 按宽高比压扁校正）× 本子步位移 ——
-      //    能量按弧长计量（见文件头注释），无速度饱和
       vec2 d = vUv - uMouse;
       d.x *= uAspect;
       float g = exp(-dot(d, d) / (2.0 * ${VEL_SIGMA.toFixed(3)} * ${VEL_SIGMA.toFixed(3)}));
@@ -197,23 +398,14 @@ const VolumetricFogShader = {
     uProjInv: { value: new THREE.Matrix4() },
     uViewInv: { value: new THREE.Matrix4() },
     uTime: { value: 0 },
-    // 乳白偏暖：白色压到 0.55 量级 + 调制上限收窄，浓团核心不再饱和成
-    // 纯白 —— 读成"柔和白汽"而不是一块发亮的白涂料
     uFogColor: { value: new THREE.Color(0.55, 0.52, 0.47) },
     uDensity: { value: 0.22 },
-    // 噪声频率 0.35：特征约 2.9 世界单位 —— 团块仍"大块"，但横向拖动切换
-    // section（相机平移 4 单位）时能扫过 1.4 个特征宽度，雾的游移清晰可感
-    // （0.2 时拖一整帧只挪 0.8 个特征宽度，观感即"雾不跟着动"）
     uNoiseScale: { value: 0.35 },
     uDrift: { value: REDUCED_MOTION ? 0 : FOG_DRIFT_SPEED },
     uMaxDist: { value: 26.0 },
     uMaxOpacity: { value: 0.45 },
     uLightDir: { value: new THREE.Vector3(-0.45, 0.7, 0.35).normalize() },
     uSteps: { value: 12 },
-    // === 鼠标流场交互 ===
-    // tVel：持久速度场（半拉格朗日自平流的 2D 纹理，鼠标划动注入速度）
-    // uVP：视图投影矩阵（把雾采样点投到屏幕上去采样速度场）
-    // uVelStrength：流场对噪声采样坐标的推动强度
     tVel: { value: null as THREE.Texture | null },
     uVP: { value: new THREE.Matrix4() },
     uVelStrength: { value: 2.2 },
@@ -244,7 +436,6 @@ const VolumetricFogShader = {
     uniform float uVelStrength;
     varying vec2 vUv;
 
-    // 3D hash 噪声（整点格 + 三线性插值），无纹理依赖
     float hash13(vec3 p) {
       p = fract(p * 0.1031);
       p += dot(p, p.yzx + 33.33);
@@ -268,8 +459,6 @@ const VolumetricFogShader = {
         f.z
       );
     }
-    // 低频为主的 2 octave fbm：大团雾要"整块、边缘柔和"，
-    // 高频占比过大会碎成絮状（那是上一版碎雾的观感来源）
     float fbm(vec3 p) {
       return vnoise(p) * 0.8 + vnoise(p * 2.3) * 0.2;
     }
@@ -278,48 +467,34 @@ const VolumetricFogShader = {
       vec4 base = texture2D(tDiffuse, vUv);
       float depth = texture2D(tDepth, vUv).x;
 
-      // 屏幕 UV → NDC → 逆投影：视线段两端（视空间，相机在原点看 -Z）
       vec4 cn = uProjInv * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
       vec3 vNear = cn.xyz / cn.w;
       vec4 cf = uProjInv * vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
       vec3 vFar = cf.xyz / cf.w;
       vec3 dirView = normalize(vFar - vNear);
 
-      // 世界坐标方向/起点：噪声锚定在世界里，镜头移动才有正确视差
       vec3 camWorld = (uViewInv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
       vec3 dirWorld = normalize((uViewInv * vec4(dirView, 0.0)).xyz);
 
-      // 天空/背景（depth=1）视线长度封顶，避免远背景被雾完全糊死
       float dist = (depth >= 0.9999) ? uMaxDist : length(vFar);
 
       float stepLen = dist / uSteps;
-      // 步长越长密度按比例缩减：总雾量近似与步数无关（步数降级不跳变）
       float densityScale = max(0.05, stepLen) * uDensity;
-      // 前向散射近似：朝光源方向看的雾更亮
       float phase = 0.55 + 0.45 * max(0.0, dot(dirWorld, -uLightDir));
 
       float acc = 0.0;
-      float wsum = 0.0; // 权重和（近距窗口），用于求平均密度给雾"上色"
+      float wsum = 0.0;
       for (int i = 0; i < 12; i++) {
         if (float(i) >= uSteps) break;
         float t = (float(i) + 0.5) * stepLen;
         vec3 wp = camWorld + dirWorld * t;
-        // === 鼠标流场：改变雾的流向 ===
-        // 把雾采样点投影到屏幕，读取持久速度场（半拉格朗日自平流 + 鼠标注入），
-        // 用场速度偏移噪声采样坐标 —— 雾的流动方向被鼠标划动真实改写：
-        // 甩一下，附近的雾顺着甩动方向流、卷出漩涡，几秒后耗散平复。
-        // 屏幕速度（uv：x 右 y 上）映射到世界 XY（相机近似朝 -z 看）方向一致。
         vec4 clipPos = uVP * vec4(wp, 1.0);
         vec2 suv = clipPos.xy / clipPos.w * 0.5 + 0.5;
         vec2 flow = texture2D(tVel, clamp(suv, vec2(0.0), vec2(1.0))).xy;
         vec3 np = wp * uNoiseScale
           + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6)
           + vec3(flow * uVelStrength, 0.0);
-        // 近距窗口：镜头跟前留 0.6~2.2 的清晰区，中距最浓
         float w = smoothstep(0.6, 2.2, t);
-        // 高阈值整形 + 宽过渡带：阈值以下归零保住"大片留白 + 一大块白团"，
-        // 但过渡带拉宽到 0.44~0.98 —— 密度从零缓慢爬升，边缘呈消散的裙边
-        // 而不是硬切边界（真实雾的边缘是渐稀，不会有明显轮廓线）
         float n = smoothstep(0.44, 0.98, fbm(np));
         acc += n * w;
         wsum += w;
@@ -327,9 +502,6 @@ const VolumetricFogShader = {
       float fog = 1.0 - exp(-acc * densityScale * 3.0);
       fog = clamp(fog, 0.0, 1.0) * uMaxOpacity;
 
-      // 雾亮度跟随局部密度：浓处亮、稀处暗。调制上限收窄到 0.3 + 1.05，
-      // 配合压暗的雾色，核心最多到 ~1.0（仅正对光源的浓核微饱和），
-      // 不再出现整片刺眼的纯白
       float nAvg = wsum > 0.001 ? acc / wsum : 0.0;
       vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.3 + 1.05 * nAvg);
       gl_FragColor = vec4(mix(base.rgb, fogLit, fog), base.a);
@@ -338,62 +510,32 @@ const VolumetricFogShader = {
 };
 
 /**
- * 完整胶片后处理 Shader（GLSL，翻译自 shader.se TSL 源码）
+ * FilmShader —— shader.se 调色链 1:1（顺序与数学全部按原版）
  *
- * 实现（按渲染顺序）：
- *  1. 桶形畸变 + 边缘缩放（参考 DH + DV 函数）
- *     - DH: scale = 1 + r² × (k + kVec × sqrt(r))
- *     - DV: 含 border 边缘系数，基础系数 0.3655
- *  2. 垂直方向 RGB 色差（参考 ChromaticAberrationNode2）
- *     - 仅在 Y 轴偏移，强度 = 0.001 × r × 2 × strength
- *     - 边缘渐隐防溢出
- *  3. 调色：pow 伽马 + sepia 棕褐 + brightness + contrast
- *  4. 动态胶片颗粒（参考 filmGrainFn）
- *     - hash 噪声：fract(sin(dot(uv, vec2(12.9898, 78.233))) × 43758.5453 + time × velocity)
- *     - 仅在暗部增亮（颗粒"闪光"特性）
- *  5. 径向暗角（smoothstep 平滑过渡）
- *
- * 参数（uniforms）：
- *  - tDiffuse              输入纹理
- *  - uLensDistortion       镜头畸变强度
- *  - uLensDistortionBorder 边缘畸变系数
- *  - uChromaticAberration  色差强度
- *  - uAspect               宽高比
- *  - uPow                  伽马指数
- *  - uSepiaIntensity       棕褐强度
- *  - uBrightness           亮度
- *  - uContrast             对比度
- *  - uNoiseIntensity       颗粒强度
- *  - uNoiseVelocity        颗粒速度
- *  - uTime                 时间（秒）
- *  - uVignetteIntensity    暗角强度
- *  - uVignetteRadius       暗角半径
- *  - uVignetteSmoothness   暗角平滑度
- *
- * 返回值：vec4 后处理后的像素颜色
- *
- * 注意事项：
- *  - 所有效果在一个 fragment shader 内完成，性能优于多 pass 串联
- *  - 桶形畸变 + 色差共用同一套畸变 UV，视觉自然
- *  - 颗粒用 hash 噪声而非纹理采样，省一次 texture lookup
+ * 顺序：桶形畸变(Aj: k=1+d·r³ + 缩放/偏移) → 采样
+ *      → pow → sepia → 亮度 → 对比度 → 饱和度
+ *      → 垂直色差(AZ: 0.001·dist·2·strength，对已调色图采样，
+ *         偏移采样同样过整条调色链 —— 原版 CA 在调色后的 RTT 上)
+ *      → 高斯颗粒(σ=0.49, 仅暗部提亮) → 暗角
  */
 const FilmShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
-    uLensDistortion: { value: 0.15 },
-    uLensDistortionBorder: { value: 0.0 },
-    uChromaticAberration: { value: 0.8 },
+    uLensDistortion: { value: 0.16 },
+    uLensDistortionBorder: { value: 1.0 },
+    uChromaticAberration: { value: 1.0 },
     uAspect: { value: 1.0 },
-    uPow: { value: 1.0 },
-    uSepiaIntensity: { value: 0.25 },
-    uBrightness: { value: 1.0 },
-    uContrast: { value: 1.1 },
-    uNoiseIntensity: { value: 0.5 },
+    uPow: { value: 1.36 },
+    uSepiaIntensity: { value: 0.28 },
+    uBrightness: { value: 1.08 },
+    uContrast: { value: 0.98 },
+    uSaturation: { value: 0.92 },
+    uNoiseIntensity: { value: 0.87 },
     uNoiseVelocity: { value: 1.0 },
     uTime: { value: 0.0 },
-    uVignetteIntensity: { value: 0.45 },
-    uVignetteRadius: { value: 0.5 },
-    uVignetteSmoothness: { value: 0.3 },
+    uVignetteIntensity: { value: 0.0 },
+    uVignetteRadius: { value: 0.0 },
+    uVignetteSmoothness: { value: 0.32 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -412,6 +554,7 @@ const FilmShader = {
     uniform float uSepiaIntensity;
     uniform float uBrightness;
     uniform float uContrast;
+    uniform float uSaturation;
     uniform float uNoiseIntensity;
     uniform float uNoiseVelocity;
     uniform float uTime;
@@ -420,176 +563,99 @@ const FilmShader = {
     uniform float uVignetteSmoothness;
     varying vec2 vUv;
 
-    /**
-     * 桶形畸变 + 边缘缩放（参考 shader.se 的 DH + DV 函数）
-     *
-     * 公式：
-     *  - n = mix(0.3655, 0.0, border)   // border 越大主畸变越弱
-     *  - scale = 1 - distortion × n     // 整体缩放避免溢出
-     *  - offset = distortion × n × 0.5  // UV 平移
-     *  - r² = (uv-0.5)²                  // 到中心距离平方
-     *  - k = 1 + r² × distortion         // 径向畸变系数
-     *  - distorted = scale × (i × k + 0.5) + offset
-     *
-     * 参数：
-     *  - uv         原始 UV [0,1]
-     *  - distortion 畸变强度
-     *  - border     边缘系数
-     *
-     * 返回值：畸变后的 UV
-     */
+    vec2 radialDistort(vec2 e, float distortion) {
+      vec2 i = e - 0.5;
+      float n = i.x * i.x + i.y * i.y;
+      float a = 1.0 + n * (distortion * pow(n, 0.5));
+      return vec2(i.x * a, i.y * a) + 0.5;
+    }
+
     vec2 barrelDistort(vec2 uv, float distortion, float border) {
       float n = mix(0.3655, 0.0, border);
       float scale = 1.0 - distortion * n;
-      float offset = distortion * n * 0.5;
-
-      vec2 i = uv - 0.5;
-      float r2 = dot(i, i);
-      float k = 1.0 + r2 * distortion;
-
-      return scale * (vec2(i.x * k, i.y * k) + 0.5) + offset;
+      vec2 offset = vec2(distortion * n * 0.5);
+      return scale * radialDistort(uv, distortion) + offset;
     }
 
-    /**
-     * 圆角矩形 SDF（参考 shader.se 的 Dz 函数）
-     *
-     * 功能：计算点到圆角矩形边界的带符号距离
-     *  - < 0 在内部；> 0 在外部
-     *
-     * 参数：
-     *  - p       点位置（归一化到 -0.5~0.5）
-     *  - aspect  宽高比，校正 X 方向
-     *  - corner  圆角半径
-     */
-    float roundedBoxSDF(vec2 p, float aspect, float corner) {
-      vec2 q = abs(p * vec2(aspect, 1.0)) - vec2(0.5 * aspect - corner, 0.5 - corner);
-      return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner;
+    float gauss(float x, float mean, float sigma) {
+      float d = x - mean;
+      return exp(-d * d / (2.0 * sigma * sigma)) / (sigma * 2.50662827463);
+    }
+
+    /** 调色链（pow→sepia→亮度→对比→饱和），CA 的偏移采样共用 */
+    vec3 grade(vec3 c) {
+      c = pow(max(c, vec3(0.0)), vec3(uPow));
+      float sr = dot(c, vec3(0.393, 0.769, 0.189));
+      float sg = dot(c, vec3(0.349, 0.686, 0.168));
+      float sb = dot(c, vec3(0.272, 0.534, 0.131));
+      c = mix(c, vec3(sr, sg, sb), uSepiaIntensity);
+      c = clamp(c * uBrightness, 0.0, 1.0);
+      c = clamp((c - 0.5) * uContrast + 0.5, 0.0, 1.0);
+      float lum = dot(c, vec3(0.299, 0.587, 0.114));
+      return mix(vec3(lum), c, uSaturation);
     }
 
     void main() {
       vec2 uv = vUv;
 
-      // === 1. 桶形畸变 ===
       vec2 distortedUV = barrelDistort(uv, uLensDistortion, uLensDistortionBorder);
-
-      // UV 越界 → 透明（避免采样到画面外杂讯）
-      // 注意：必须输出 alpha=0，否则透明背景会变成不透明黑色，遮挡下层 Canvas
       if (distortedUV.x < 0.0 || distortedUV.x > 1.0 ||
           distortedUV.y < 0.0 || distortedUV.y > 1.0) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
       }
 
-      // === 2. 垂直方向 RGB 色差 ===
-      // dist = 到中心距离（aspect 校正）
-      // offset = 0.001 × dist × 2 × strength（参考 Dq class 的 n 计算）
-      vec2 aspectCorrect = vec2(uAspect, 1.0) / max(uAspect, 1.0);
-      float dist = length((uv - 0.5) * aspectCorrect * 2.0);
-      float caOffset = 0.001 * dist * 2.0 * uChromaticAberration;
-
-      // 边缘渐隐（参考 Dq class 的 ex × ey）
-      float edge = 0.005;
-      float ex = smoothstep(0.0, edge, uv.x) * smoothstep(0.0, edge, 1.0 - uv.x);
-      float ey = smoothstep(0.0, edge, uv.y) * smoothstep(0.0, edge, 1.0 - uv.y);
-      float edgeMask = ex * ey;
-
-      float r = texture2D(tDiffuse, distortedUV + vec2(0.0, -caOffset)).r;
-      float g = texture2D(tDiffuse, distortedUV).g;
-      float b = texture2D(tDiffuse, distortedUV + vec2(0.0, caOffset)).b;
-      // 保留输入纹理的 alpha，让透明背景保持透明（用于叠加在纸张 Canvas 上层）
-      float inputAlpha = texture2D(tDiffuse, distortedUV).a;
-      vec4 shiftedColor = vec4(r, g, b, inputAlpha);
-      vec4 originalColor = texture2D(tDiffuse, distortedUV);
-      vec4 color = mix(originalColor, shiftedColor, edgeMask);
-
-      // 透明背景保护：如果输入 alpha 接近 0，说明该像素是透明背景
-      // （shader 输出的透明区域），直接输出透明，跳过所有后续效果
-      // （bloom/motionblur 已把 alpha 污染为 1），保证下层 Canvas 可见
-      if (inputAlpha < 0.01) {
+      vec4 base = texture2D(tDiffuse, distortedUV);
+      if (base.a < 0.01) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
       }
 
-      // === 3. 调色 ===
-      // 3a. pow 伽马
-      color.rgb = pow(color.rgb, vec3(uPow));
+      vec3 color = grade(base.rgb);
 
-      // 3b. sepia 棕褐（标准电影 sepia 矩阵）
-      float sr = dot(color.rgb, vec3(0.393, 0.769, 0.189));
-      float sg = dot(color.rgb, vec3(0.349, 0.686, 0.168));
-      float sb = dot(color.rgb, vec3(0.272, 0.534, 0.131));
-      vec3 sepiaColor = vec3(sr, sg, sb);
-      color.rgb = mix(color.rgb, sepiaColor, uSepiaIntensity);
+      // 垂直色差：偏移采样同样过调色链（原版在调色后的纹理上采样）
+      vec2 asp = vec2(uAspect, 1.0) / max(uAspect, 1.0);
+      float dist = length((uv - 0.5) * asp * 2.0);
+      float caOffset = 0.001 * dist * 2.0 * uChromaticAberration;
+      vec3 gradedDown = grade(texture2D(tDiffuse, distortedUV + vec2(0.0, -caOffset)).rgb);
+      vec3 gradedUp = grade(texture2D(tDiffuse, distortedUV + vec2(0.0, caOffset)).rgb);
+      vec3 shifted = vec3(gradedDown.r, color.g, gradedUp.b);
+      float p = 0.005;
+      float mx = min(smoothstep(0.0, p, uv.x), smoothstep(0.0, p, 1.0 - uv.x));
+      float my = min(smoothstep(0.0, p, uv.y), smoothstep(0.0, p, 1.0 - uv.y));
+      color = mix(color, shifted, mx * my);
 
-      // 3c. brightness
-      color.rgb = color.rgb * uBrightness;
-
-      // 3d. contrast（中心 0.5 调整）
-      color.rgb = (color.rgb - 0.5) * uContrast + 0.5;
-      color.rgb = clamp(color.rgb, 0.0, 1.0);
-
-      // === 4. 动态胶片颗粒 ===
-      // hash 噪声：fract(sin(dot(uv, vec2(12.9898, 78.233))) × 43758.5453 + time × velocity)
-      // 参考 shader.se filmGrainFn，仅在暗部增亮（颗粒"闪光"特性）
+      // 高斯颗粒（原版 filmGrain）
       float seed = uTime * uNoiseVelocity;
       float noiseHash = fract(
         sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453 + seed
       );
-      // 归一化到 [0, 0.7² × 0.7] ≈ [0, 0.34]
-      float grain = abs(noiseHash - 0.0) * (0.7 * 0.7);
-      // 仅在暗部增亮：grain × (1 - color.rgb)
-      vec3 grainColor = grain * (1.0 - color.rgb);
-      color.rgb = color.rgb + grainColor * uNoiseIntensity;
+      float grain = gauss(noiseHash, 0.0, 0.7 * 0.7);
+      color = color + vec3(grain) * (1.0 - color) * uNoiseIntensity;
 
-      // === 5. 径向暗角 ===
-      // 参考 shader.se：dist = vignetteRadius - length(uv - 0.5)
-      //               mask = smoothstep(-smoothness, smoothness, dist)
-      //               color = mix(color, color × mask, intensity)
+      // 暗角（原版 compose 层同式）
       float vDist = uVignetteRadius - length(uv - 0.5);
       float vMask = smoothstep(-uVignetteSmoothness, uVignetteSmoothness, vDist);
-      vec3 vignetted = clamp(color.rgb * vMask, 0.0, 1.0);
-      color.rgb = mix(color.rgb, vignetted, uVignetteIntensity);
+      color = mix(color, clamp(color * vMask, 0.0, 1.0), uVignetteIntensity);
 
-      gl_FragColor = color;
+      gl_FragColor = vec4(color, base.a);
     }
   `,
 };
 
-/**
- * Motion Blur Shader（参考 shader.se 的 DZ class，简化版）
- *
- * 实现：当前帧与上一帧按 strength 混合
- *  - strength=0: 完全显示当前帧
- *  - strength=1: 完全显示上一帧（最大拖影）
- *
- * 参数：
- *  - tDiffuse      当前帧
- *  - tPrevious     上一帧
- *  - uStrength     混合强度 [0, 1]
- *
- * 注意事项：
- *  - 用 ping-pong RT 实现：每帧渲染时读取上一帧 RT，写入另一张 RT
- *  - 帧率独立：strength 已在外部按 deltaTime 调整
- */
+/** Motion blur：帧率无关的 ping-pong mix（原版 A3） */
 const MotionBlurShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     tPrevious: { value: null as THREE.Texture | null },
     uStrength: { value: 0.0 },
   },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
+  vertexShader: BloomQuadVertex,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
     uniform sampler2D tPrevious;
     uniform float uStrength;
     varying vec2 vUv;
-
     void main() {
       vec4 current = texture2D(tDiffuse, vUv);
       vec4 previous = texture2D(tPrevious, vUv);
@@ -598,95 +664,49 @@ const MotionBlurShader = {
   `,
 };
 
-/**
- * 鼠标轨迹点（KiraFilmDemo 的 pointermove 监听逐事件推入，含合并事件）
- */
 export interface MousePathPoint {
-  /** NDC x（-1~1，同 mouseRef） */
   x: number;
-  /** NDC y（-1~1，屏幕向下为正） */
   y: number;
-  /** 事件时间戳（ms，event.timeStamp，备用/调试） */
   t: number;
 }
 
 interface FilmPostProcessingProps {
-  /** 后处理参数（外部传入，实时更新） */
   params: FilmFXParams;
-  /** 是否启用后处理 */
   enabled?: boolean;
-  /**
-   * 鼠标归一化坐标 ref（-1~1，屏幕向下为正；KiraFilmDemo 的 mouseRef）。
-   * 传入后体积雾与鼠标做流场交互：划动速度注入一张持久速度纹理（每帧
-   * 半拉格朗日自平流 + 耗散），雾按屏幕位置采样该场 —— 流向被真实改写、
-   * 卷出漩涡并随流漂走，无输入约 2~3 秒平复
-   */
   mouseRef?: React.MutableRefObject<{ x: number; y: number }>;
-  /**
-   * 鼠标轨迹队列 ref（pointermove 逐事件推入，含 getCoalescedEvents
-   * 合并的高频中间点）。每帧被流场模拟整体消费：沿折线按 0.5σ 间距
-   * 补插值出子步、逐子步注入 —— 快速划动不再丢轨迹（断点修复）。
-   * 不传时退化为 mouseRef 末点单次注入（黑洞页等无鼠标场景的旧行为）
-   */
   mousePathRef?: React.MutableRefObject<MousePathPoint[]>;
-  /**
-   * 透明模式：用于叠加在另一个 Canvas 上层的场景
-   * - 跳过 UnrealBloomPass 和 MotionBlurPass（它们会污染 alpha 通道）
-   * - 只保留镜头畸变 + 色散 + 暗角 + 颗粒
-   * - 透明背景保持透明，露出下层 Canvas
-   */
   transparent?: boolean;
 }
 
 /**
- * 完整胶片后处理组件
- *
- * 功能：
- *  - 在 R3F Canvas 内创建 EffectComposer
- *  - 顺序：RenderPass → UnrealBloomPass → MotionBlurPass → FilmShaderPass
- *  - useFrame 中按 shader.se 算法动态调整 bloom 强度（4 sin 波叠加）
- *  - useFrame 中按 deltaTime 帧率独立调整 motion blur 强度
- *
- * 参数：
- *  - params:  FilmFXParams，运行时可调的后处理参数
- *  - enabled: boolean，是否启用（默认 true）
- *
- * 返回值：null（纯逻辑组件）
- *
- * 异常：EffectComposer 创建失败时回退到 R3F 默认渲染
- *
- * 注意事项：
- *  - 必须放在 Canvas 内部
- *  - useFrame renderPriority=1 接管 R3F 默认渲染
- *  - Bloom 动态闪烁：1.5 × base + 0.03 × base × (4 sin 波) + bloomBoost
- *  - MotionBlur 帧率独立：以 120fps 为基准，dt 大于基准时减弱，小于时增强
+ * 完整胶片后处理组件（shader.se 1:1 管线）
  */
 export function FilmPostProcessing({ params, enabled = true, transparent = false, mouseRef, mousePathRef }: FilmPostProcessingProps) {
   const { gl, scene, camera, size } = useThree();
-  const composerRef = useRef<EffectComposer | null>(null);
-  const filmPassRef = useRef<ShaderPass | null>(null);
-  const motionPassRef = useRef<ShaderPass | null>(null);
-  const bloomRef = useRef<UnrealBloomPass | null>(null);
-  // 体积雾 pass + 共享深度纹理（RenderPass 写入，雾 pass 读取）
-  const fogPassRef = useRef<ShaderPass | null>(null);
+  // 全手动 quad 链（不走 EffectComposer/ShaderPass —— ShaderPass.render
+  // 每帧会用 composer 的 readBuffer 覆盖外部传入的 tDiffuse，而本管线的
+  // 场景在 composer 外部 RT 渲染，readBuffer 永远是空的 → 全屏黑）
+  const filmQuadRef = useRef<FullScreenQuad | null>(null);
+  const fogQuadRef = useRef<FullScreenQuad | null>(null);
   const depthTexRef = useRef<THREE.DepthTexture | null>(null);
 
-  // ping-pong RT 用于 MotionBlur：保存上一帧
-  const prevRTRef = useRef<THREE.WebGLRenderTarget | null>(null);
-  const currRTRef = useRef<THREE.WebGLRenderTarget | null>(null);
+  // 独立 RT 链
+  const bloomRef = useRef<MipMapBloomPass | null>(null);
+  const sceneRTRef = useRef<THREE.WebGLRenderTarget | null>(null);   // 场景（带深度）
+  const bloomRTRef = useRef<THREE.WebGLRenderTarget | null>(null);   // bloom 合成
+  const motionARTRef = useRef<THREE.WebGLRenderTarget | null>(null); // motion ping
+  const motionBRTRef = useRef<THREE.WebGLRenderTarget | null>(null); // motion pong
+  const filmRTRef = useRef<THREE.WebGLRenderTarget | null>(null);    // Film 调色输出
+  const motionQuadRef = useRef<FullScreenQuad | null>(null);
+  const renderPassRef = useRef<RenderPass | null>(null);
 
-  // 上一帧时间戳，用于计算 deltaTime
-  const prevTimeRef = useRef(0);
-  // 鼠标流场状态：上帧消费到的轨迹末点（帧间桥接，保证跨帧轨迹连续）；
-  // ping-pong 速度 RT + 全屏 quad
   const pathLastRef = useRef<MousePathPoint | null>(null);
   const velReadRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velWriteRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velQuadRef = useRef<FullScreenQuad | null>(null);
-  // 复用的临时矩阵（uVP = 投影 × 视图）
   const tmpVPRef = useRef(new THREE.Matrix4());
 
-  // 创建/释放流场模拟资源（256² 双缓冲，与画布尺寸解耦）
+  // 流场模拟资源（体积雾交互，不变）
   useEffect(() => {
     const mk = () => {
       const rt = new THREE.WebGLRenderTarget(VEL_SIM_SIZE, VEL_SIM_SIZE, {
@@ -721,145 +741,99 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     };
   }, []);
 
-  // 创建 EffectComposer + 各 Pass
   useMemo(() => {
-    // eslint-disable-next-line no-console
-    console.log('[FilmPostProcessing] useMemo executing, transparent=', transparent, 'hasGl=', !!gl, 'hasScene=', !!scene, 'hasCamera=', !!camera);
     try {
-    // ping-pong RT（HalfFloatType 保证 HDR 精度）
-    const rtOptions = {
-      depthBuffer: false,
-      type: THREE.HalfFloatType,
-    };
-    prevRTRef.current = new THREE.WebGLRenderTarget(
-      gl.domElement.width || 1,
-      gl.domElement.height || 1,
-      rtOptions
-    );
-    currRTRef.current = new THREE.WebGLRenderTarget(
-      gl.domElement.width || 1,
-      gl.domElement.height || 1,
-      rtOptions
-    );
+      const w = gl.domElement.width || 1;
+      const h = gl.domElement.height || 1;
+      const rtOpts = { depthBuffer: false, type: THREE.HalfFloatType } as const;
 
-    // 带 depthTexture 的 HDR RT：体积雾需要读场景深度做视线步进
-    // （EffectComposer 内部 clone 出 ping-pong 双缓冲，共享同一个 depthTexture，
-    //   RenderPass 每帧渲染时深度写入该纹理）
-    const depthTexture = new THREE.DepthTexture(
-      gl.domElement.width || 1,
-      gl.domElement.height || 1
-    );
-    depthTexture.type = THREE.UnsignedIntType;
-    const composerRT = new THREE.WebGLRenderTarget(
-      gl.domElement.width || 1,
-      gl.domElement.height || 1,
-      { depthBuffer: true, depthTexture, type: THREE.HalfFloatType }
-    );
-    depthTexRef.current = depthTexture;
+      // 场景 RT（带深度，雾 pass 读取）
+      const depthTexture = new THREE.DepthTexture(w, h);
+      depthTexture.type = THREE.UnsignedIntType;
+      const sceneRT = new THREE.WebGLRenderTarget(w, h, {
+        depthBuffer: true,
+        depthTexture,
+        type: THREE.HalfFloatType,
+      });
+      sceneRTRef.current = sceneRT;
+      depthTexRef.current = depthTexture;
 
-    const c = new EffectComposer(gl, composerRT);
-    // 注意：renderTarget2（clone）保留其克隆深度纹理即可，不要与 rt1 显式共享
-    // 同一张纹理对象（否则雾 pass 采样它、又画进挂着它的 rt2，构成 WebGL
-    // 反馈环，Chrome 拒绝整个 draw → 后处理链断掉 → 全屏黑）。
-    // clone 出的深度与 rt1 的共享同一 .source（同一块 GPU 纹理），因此无论
-    // RenderPass 因 ping-pong 写进 rt1 还是 rt2，场景深度总落在同一块纹理里，
-    // 雾 pass 读 rt1 的 depthTexture 永远是本帧深度。
-    c.addPass(new RenderPass(scene, camera));
+      bloomRTRef.current = new THREE.WebGLRenderTarget(w, h, rtOpts);
+      motionARTRef.current = new THREE.WebGLRenderTarget(w, h, rtOpts);
+      motionBRTRef.current = new THREE.WebGLRenderTarget(w, h, rtOpts);
+      filmRTRef.current = new THREE.WebGLRenderTarget(w, h, rtOpts);
 
-    // Bloom 和 MotionBlur 会污染 alpha 通道（假设不透明场景），
-    // 透明模式（叠加 Canvas）下跳过它们，只保留镜头畸变 + 色散 + 暗角 + 颗粒
-    if (!transparent) {
-      // Bloom（参考 shader.se 的胶片过曝感）
-      const bloom = new UnrealBloomPass(
-        new THREE.Vector2(gl.domElement.width || 1, gl.domElement.height || 1),
-        params.bloomIntensity,
-        params.bloomRadius,
-        params.bloomThreshold
+      bloomRef.current = new MipMapBloomPass();
+      bloomRef.current.setSize(w, h);
+
+      motionQuadRef.current = new FullScreenQuad(
+        new THREE.ShaderMaterial({
+          uniforms: THREE.UniformsUtils.clone(MotionBlurShader.uniforms),
+          vertexShader: MotionBlurShader.vertexShader,
+          fragmentShader: MotionBlurShader.fragmentShader,
+          depthTest: false,
+          depthWrite: false,
+        })
       );
-      c.addPass(bloom);
-      bloomRef.current = bloom;
 
-      // MotionBlur（ping-pong）
-      const motionPass = new ShaderPass(MotionBlurShader);
-      motionPass.material.depthTest = false;
-      motionPass.material.depthWrite = false;
-      motionPass.uniforms.tPrevious.value = prevRTRef.current.texture;
-      motionPass.uniforms.uStrength.value = params.motionBlur;
-      c.addPass(motionPass);
-      motionPassRef.current = motionPass;
-    }
+      renderPassRef.current = new RenderPass(scene, camera);
 
-    // Film shader：畸变 + 色差 + 调色 + 颗粒 + 暗角（画进 RT；链尾雾才是直绘屏幕的 pass）
-    const filmPass = new ShaderPass(FilmShader);
-    filmPass.material.depthTest = false;
-    filmPass.material.depthWrite = false;
-    c.addPass(filmPass);
-    filmPassRef.current = filmPass;
+      // Film 调色 quad（畸变→pow→sepia→亮度→对比→饱和→色差→颗粒→暗角）
+      filmQuadRef.current = new FullScreenQuad(
+        new THREE.ShaderMaterial({
+          uniforms: THREE.UniformsUtils.clone(FilmShader.uniforms),
+          vertexShader: FilmShader.vertexShader,
+          fragmentShader: FilmShader.fragmentShader,
+          depthTest: false,
+          depthWrite: false,
+        })
+      );
 
-    // 体积雾：链尾直绘屏幕（钢琴页 PianoPostProcessing 的 grade 同款架构）。
-    // 雾 pass 需要采样场景深度纹理，而链中 pass 的绘制目标是带深度附件的 RT ——
-    // 采样与附件同体即触发 WebGL 反馈环（Chrome 直接拒绝该 draw，后处理链
-    // 从此断掉 → 全屏黑）。放在链尾直绘屏幕后，绘制目标是默认 framebuffer，
-    // 没有深度附件，结构上不可能构成反馈环。
-    // 雾在 Film 调色之后：雾气会被暗角/颗粒一并处理，视觉一致。
-    if (!transparent) {
-      const fogPass = new ShaderPass(VolumetricFogShader);
-      fogPass.material.depthTest = false;
-      fogPass.material.depthWrite = false;
-      // 深度纹理用 rt1 那张：renderTarget2 的克隆深度与其共享 .source
-      // （同一块 GPU 纹理），RenderPass 无论因 ping-pong 写进 rt1 还是 rt2，
-      // 场景深度总落在同一块纹理上，这里读到的永远是本帧深度
-      fogPass.uniforms.tDepth.value = c.renderTarget1.depthTexture;
-      c.addPass(fogPass);
-      fogPassRef.current = fogPass;
-    }
-
-    composerRef.current = c;
-    // eslint-disable-next-line no-console
-    console.log('[FilmPostProcessing] EffectComposer created successfully, transparent=', transparent);
+      // 体积雾 quad（链尾直绘屏幕：采样场景深度构成反馈环的唯一安全位置）
+      if (!transparent) {
+        fogQuadRef.current = new FullScreenQuad(
+          new THREE.ShaderMaterial({
+            uniforms: THREE.UniformsUtils.clone(VolumetricFogShader.uniforms),
+            vertexShader: VolumetricFogShader.vertexShader,
+            fragmentShader: VolumetricFogShader.fragmentShader,
+            depthTest: false,
+            depthWrite: false,
+          })
+        );
+        (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms.tDepth.value = depthTexture;
+      }
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[FilmPostProcessing] useMemo ERROR:', err);
+      console.error('[FilmPostProcessing] init ERROR:', err);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gl, scene, camera, transparent]);
 
-  // 同步 size 变化
+  // 同步 size（设备像素）
   useEffect(() => {
-    // depthTexture 显式跟随（逻辑尺寸 × 像素比），dispose 强制按新尺寸重新分配
+    const pr = gl.getPixelRatio();
+    const effW = Math.max(1, Math.floor(size.width * pr));
+    const effH = Math.max(1, Math.floor(size.height * pr));
     if (depthTexRef.current) {
-      const pr = gl.getPixelRatio();
-      depthTexRef.current.image.width = Math.max(1, Math.floor(size.width * pr));
-      depthTexRef.current.image.height = Math.max(1, Math.floor(size.height * pr));
+      depthTexRef.current.image.width = effW;
+      depthTexRef.current.image.height = effH;
       depthTexRef.current.dispose();
     }
-    // rt2 克隆出的深度纹理同步尺寸：构造时取的是 canvas 初始尺寸（常 300×150），
-    // 不手动改 image 会导致 RenderPass 写 rt2 时颜色/深度附件尺寸不匹配
-    const rt2Depth = composerRef.current?.renderTarget2?.depthTexture;
-    if (rt2Depth && rt2Depth !== depthTexRef.current) {
-      const pr = gl.getPixelRatio();
-      rt2Depth.image.width = Math.max(1, Math.floor(size.width * pr));
-      rt2Depth.image.height = Math.max(1, Math.floor(size.height * pr));
-      rt2Depth.dispose();
-    }
-    if (composerRef.current) {
-      composerRef.current.setSize(size.width, size.height);
-      composerRef.current.setPixelRatio(gl.getPixelRatio());
-    }
-    if (prevRTRef.current) {
-      prevRTRef.current.setSize(size.width, size.height);
-    }
-    if (currRTRef.current) {
-      currRTRef.current.setSize(size.width, size.height);
-    }
-    if (filmPassRef.current) {
-      (filmPassRef.current.uniforms.uAspect.value as number) = size.width / size.height;
+    sceneRTRef.current?.setSize(effW, effH);
+    bloomRTRef.current?.setSize(effW, effH);
+    motionARTRef.current?.setSize(effW, effH);
+    motionBRTRef.current?.setSize(effW, effH);
+    filmRTRef.current?.setSize(effW, effH);
+    bloomRef.current?.setSize(effW, effH);
+    if (filmQuadRef.current) {
+      ((filmQuadRef.current.material as THREE.ShaderMaterial).uniforms.uAspect.value as number) =
+        size.width / size.height;
     }
   }, [size, gl]);
 
-  // 同步 params 到 uniforms
+  // 同步 params
   useEffect(() => {
-    if (!filmPassRef.current) return;
-    const u = filmPassRef.current.uniforms;
+    if (!filmQuadRef.current) return;
+    const u = (filmQuadRef.current.material as THREE.ShaderMaterial).uniforms;
     u.uLensDistortion.value = params.lensDistortion;
     u.uLensDistortionBorder.value = params.lensDistortionBorder;
     u.uChromaticAberration.value = params.chromaticAbberationStrength;
@@ -867,92 +841,114 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     u.uSepiaIntensity.value = params.sepiaIntensity;
     u.uBrightness.value = params.brightness;
     u.uContrast.value = params.contrast;
+    u.uSaturation.value = params.saturation;
     u.uNoiseIntensity.value = params.noiseIntensity;
     u.uNoiseVelocity.value = params.noiseVelocity;
     u.uVignetteIntensity.value = params.vignetteIntensity;
     u.uVignetteRadius.value = params.vignetteRadius;
     u.uVignetteSmoothness.value = params.vignetteSmoothness;
 
-    if (bloomRef.current) {
-      bloomRef.current.strength = params.bloomIntensity;
-      bloomRef.current.radius = params.bloomRadius;
-      bloomRef.current.threshold = params.bloomThreshold;
-    }
-
-    if (fogPassRef.current) {
-      fogPassRef.current.uniforms.uDensity.value = params.fogDensity;
-      fogPassRef.current.uniforms.uMaxOpacity.value = params.fogOpacity;
+    if (fogQuadRef.current) {
+      const fu = (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms;
+      fu.uDensity.value = params.fogDensity;
+      fu.uMaxOpacity.value = params.fogOpacity;
     }
   }, [params]);
 
-  // 卸载时释放资源
+  // 卸载释放
   useEffect(() => {
     return () => {
-      composerRef.current?.dispose();
-      prevRTRef.current?.dispose();
-      currRTRef.current?.dispose();
-      composerRef.current = null;
-      filmPassRef.current = null;
-      motionPassRef.current = null;
+      sceneRTRef.current?.dispose();
+      bloomRTRef.current?.dispose();
+      motionARTRef.current?.dispose();
+      motionBRTRef.current?.dispose();
+      filmRTRef.current?.dispose();
+      bloomRef.current?.dispose();
+      motionQuadRef.current?.dispose();
+      filmQuadRef.current?.dispose();
+      fogQuadRef.current?.dispose();
+      renderPassRef.current?.dispose?.();
       bloomRef.current = null;
-      fogPassRef.current = null;
       depthTexRef.current = null;
+      sceneRTRef.current = null;
+      bloomRTRef.current = null;
+      motionARTRef.current = null;
+      motionBRTRef.current = null;
+      filmRTRef.current = null;
+      motionQuadRef.current = null;
+      filmQuadRef.current = null;
+      fogQuadRef.current = null;
+      renderPassRef.current = null;
     };
   }, []);
 
-  // 每帧渲染
   useFrame((state, delta) => {
-    if (!enabled || !composerRef.current) {
-      // eslint-disable-next-line no-console
-      console.log('[FilmPostProcessing] SKIP render: enabled=', enabled, 'hasComposer=', !!composerRef.current);
+    if (!enabled || !renderPassRef.current || !sceneRTRef.current || !filmQuadRef.current) {
       return;
     }
-
+    const sceneRT = sceneRTRef.current;
+    const bloomRT = bloomRTRef.current!;
+    const motionA = motionARTRef.current!;
+    const motionB = motionBRTRef.current!;
     const time = state.clock.elapsedTime;
 
-    // === Bloom 动态闪烁（参考 shader.se 的 4 sin 波叠加算法）===
-    // flicker = (sin(5.3×t×0.5) + sin(11.7×t×0.5) + sin(2.1×t×0.5) + sin(23.9×t×0.5)) × 0.012 × base
-    // 实际强度 = 1.4 × base + flicker
-    // 4 个非谐波频率叠加，避免周期性可见，模拟胶片放映机灯光的有机闪烁
-    // 幅度从 0.03 降到 0.012，避免滚动时画面变化叠加闪烁造成"一动就闪"感
-    if (bloomRef.current) {
-      const base = params.bloomIntensity;
-      const flicker =
-        (Math.sin(5.3 * time * 0.5) +
-          Math.sin(11.7 * time * 0.5 + 2.4 * Math.sin(time)) +
-          Math.sin(2.1 * time * 0.5) +
-          Math.sin(23.9 * time * 0.5 + 1.3 * Math.cos(7.1 * time * 0.5))) *
-        0.012 * base;
-      bloomRef.current.strength = 1.4 * base + flicker;
+    // 1. 场景 → sceneRT
+    renderPassRef.current.render(gl, sceneRT, sceneRT, delta, false);
+
+    // 2. bloom mip 链 + screen 合成
+    //    闪烁（原版原式）：3 sin 波 × 0.03，强度 = 1.5·base + flicker
+    const base = params.bloomIntensity;
+    const flicker =
+      (Math.sin(5.3 * time * 0.5) +
+        Math.sin(11.7 * time * 0.5 + 2.4 * Math.sin(2.1 * time * 0.5) * 0.5) +
+        Math.sin(23.9 * time * 0.5 + 1.3 * Math.cos(7.1 * time * 0.5) * 0.5)) *
+      0.03 * base;
+    if (bloomRef.current && !transparent) {
+      bloomRef.current.setParams(
+        params.bloomThreshold,
+        params.bloomSmoothing,
+        params.bloomRadius,
+        Math.max(0, 1.5 * base + flicker)
+      );
+      bloomRef.current.render(gl, sceneRT.texture, bloomRT);
     }
 
-    // === MotionBlur 帧率独立（参考 shader.se 的 DZ class 算法）===
-    // 以 120fps (1/120 ≈ 0.00833s) 为基准
-    // dt > 基准：帧率低 → blur 减弱（避免拖影过重）
-    // dt < 基准：帧率高 → blur 增强
-    if (motionPassRef.current && params.motionBlur > 0) {
-      const targetDt = 1 / 120;
-      let adjusted: number;
-      if (delta > targetDt) {
-        adjusted = params.motionBlur * (targetDt / delta);
-      } else {
-        adjusted = Math.pow(params.motionBlur, delta / targetDt);
+    // 3. motion blur（ping-pong，帧率无关 strength）
+    //    inputPass 的源纹理：透明模式直用 bloom 输出（屏幕）或场景
+    let srcTex: THREE.Texture;
+    if (transparent || !motionQuadRef.current) {
+      srcTex = sceneRT.texture;
+    } else {
+      const mq = motionQuadRef.current.material as THREE.ShaderMaterial;
+      let strength = 0;
+      if (params.motionBlur > 0) {
+        const targetDt = 1 / 120;
+        let adjusted: number;
+        if (delta > targetDt) {
+          adjusted = params.motionBlur * (targetDt / delta);
+        } else {
+          adjusted = Math.pow(params.motionBlur, delta / targetDt);
+        }
+        strength = Math.min(1, 1.3 * adjusted);
       }
-      motionPassRef.current.uniforms.uStrength.value = 1.3 * adjusted;
-    } else if (motionPassRef.current) {
-      motionPassRef.current.uniforms.uStrength.value = 0;
+      mq.uniforms.uStrength.value = strength;
+      mq.uniforms.tDiffuse.value = bloomRT.texture;
+      mq.uniforms.tPrevious.value = motionA.texture;
+      gl.setRenderTarget(motionB);
+      motionQuadRef.current.render(gl);
+      // ping-pong：motionB 是本帧结果，下一帧作为 previous
+      const t = motionARTRef.current!;
+      motionARTRef.current = motionBRTRef.current!;
+      motionBRTRef.current = t;
+      srcTex = motionARTRef.current.texture;
     }
 
-    // 更新 Film shader 时间
-    if (filmPassRef.current) {
-      filmPassRef.current.uniforms.uTime.value = time;
-    }
+    // 4. Film 调色 quad：srcTex → filmRT（有雾时）或直绘屏幕
+    const filmMat = filmQuadRef.current.material as THREE.ShaderMaterial;
+    filmMat.uniforms.tDiffuse.value = srcTex;
+    filmMat.uniforms.uTime.value = time;
 
-    // === 鼠标流场模拟：先推速度场，雾 pass 再采样它 ===
-    // 本帧消费整个轨迹队列：上一帧末点桥接在前 → 沿折线按 0.5σ 间距
-    // 补插值出等距子步 → 每子步推进一步模拟并注入该子步的位移。
-    // 快速划动时轨迹被密集子步覆盖（连续），注入能量按弧长守恒（不随
-    // 速度饱和/衰减）；无输入时整帧推进一步（仅平流 + 耗散）
+    // 5. 鼠标流场（体积雾交互，不变）
     if (velQuadRef.current && velReadRef.current && velWriteRef.current) {
       const dt = Math.min(Math.max(delta, 0.001), 0.05);
       const vu = (velQuadRef.current.material as THREE.ShaderMaterial).uniforms;
@@ -968,7 +964,6 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
         pathLastRef.current = pts[pts.length - 1];
       }
 
-      // 推进一个子步：高斯中心 (mux,muy) + 本子步位移 (dx,dy)（uv，y 上）
       const stepSim = (mux: number, muy: number, dx: number, dy: number, subDt: number) => {
         vu.uMouse.value.set(mux, muy);
         vu.uMouseDelta.value.set(dx, dy);
@@ -976,14 +971,12 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
         vu.tPrev.value = velReadRef.current!.texture;
         gl.setRenderTarget(velWriteRef.current!);
         velQuadRef.current!.render(gl);
-        // ping-pong 交换
         const t = velReadRef.current!;
         velReadRef.current = velWriteRef.current!;
         velWriteRef.current = t;
       };
 
       if (pts.length >= 2) {
-        // 弧长在 aspect 校正空间度量（x·aspect，与高斯核同尺度），NDC 宽 2 → uv 宽 1
         const segLen: number[] = [];
         let arc = 0;
         for (let i = 1; i < pts.length; i++) {
@@ -992,9 +985,7 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
           segLen.push(l);
           arc += l;
         }
-        // 0.5σ 间距细分子步；超过上限时拉大间距（轨迹仍全覆盖，不丢段）
         const n = Math.min(VEL_MAX_SUBSTEPS, Math.max(1, Math.ceil(arc / (VEL_SIGMA * 0.5))));
-        // 等弧长采样：起点 + n-1 个中间点 + 终点
         const sx: number[] = [pts[0].x];
         const sy: number[] = [pts[0].y];
         let seg = 0;
@@ -1014,7 +1005,6 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
         }
         sx.push(pts[pts.length - 1].x);
         sy.push(pts[pts.length - 1].y);
-        // 逐子步注入：NDC → uv（y 取反：屏幕向下 → uv 向上）
         const subDt = dt / n;
         for (let k = 1; k < sx.length; k++) {
           stepSim(
@@ -1026,51 +1016,32 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
           );
         }
       } else {
-        // 无输入：整帧推进一步（注入为零，仅平流 + 耗散）
         const m = mouseRef ? mouseRef.current : null;
         stepSim(m ? (m.x + 1) / 2 : 0.5, m ? (1 - m.y) / 2 : 0.5, 0, 0, dt);
       }
     }
 
-    // 体积雾：时间 + 相机矩阵（视线重建；雾锚定世界坐标随镜头产生视差）
-    // tDepth 在创建时一次性绑定 rt1 的深度纹理即可（见创建处注释：
-    // rt1/rt2 的克隆深度共享同一块 GPU 纹理，读哪张都是本帧场景深度）
-    if (fogPassRef.current) {
-      const u = fogPassRef.current.uniforms;
-      u.uTime.value = time;
-      (u.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
-      (u.uViewInv.value as THREE.Matrix4).copy(camera.matrixWorld);
-      // 流场纹理 + 视图投影矩阵（把雾采样点投到屏幕去采样速度场）
+    // 5. 渲染收尾：Film → filmRT → 雾 → 屏幕（或 Film 直绘屏幕）
+    if (!transparent && fogQuadRef.current && filmRTRef.current) {
+      gl.setRenderTarget(filmRTRef.current);
+      filmQuadRef.current.render(gl);
+      const fu = (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms;
+      fu.uTime.value = time;
+      (fu.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+      (fu.uViewInv.value as THREE.Matrix4).copy(camera.matrixWorld);
       if (velReadRef.current) {
-        u.tVel.value = velReadRef.current.texture;
+        fu.tVel.value = velReadRef.current.texture;
       }
       camera.updateMatrixWorld();
       (tmpVPRef.current as THREE.Matrix4)
         .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-      (u.uVP.value as THREE.Matrix4).copy(tmpVPRef.current);
-    }
-
-    // 渲染
-    composerRef.current.render();
-
-    // === DEBUG: 在 composer.render() 后立即 readPixels 检查渲染结果 ===
-    // 只在 transparent 模式下检查（粉碎机 Canvas）
-    if (transparent) {
-      const dbgFrame = (state as any).clock.elapsedTime;
-      if (Math.floor(dbgFrame * 2) % 2 === 0) {
-        const px = new Uint8Array(4);
-        gl.readPixels(Math.floor(gl.domElement.width / 2), Math.floor(gl.domElement.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-        // eslint-disable-next-line no-console
-        console.log('[FilmPostProcessing] post-render center pixel:', px[0], px[1], px[2], px[3]);
-      }
-    }
-
-    // ping-pong：把当前渲染结果拷贝到 prevRT，下一帧用作 tPrevious
-    // 注意：composer.render() 后 gl 的当前 RT 已是屏幕，需要 blit 到 prevRT
-    if (prevRTRef.current && motionPassRef.current) {
-      const prevTexture = motionPassRef.current.uniforms.tPrevious.value;
-      // 交换：下一帧读取的就是这一帧刚渲染的
-      motionPassRef.current.uniforms.tPrevious.value = motionPassRef.current.readBuffer?.texture || prevTexture;
+      (fu.uVP.value as THREE.Matrix4).copy(tmpVPRef.current);
+      fu.tDiffuse.value = filmRTRef.current.texture;
+      gl.setRenderTarget(null);
+      fogQuadRef.current.render(gl);
+    } else {
+      gl.setRenderTarget(null);
+      filmQuadRef.current.render(gl);
     }
   }, 1);
 
