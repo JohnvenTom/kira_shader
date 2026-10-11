@@ -468,6 +468,12 @@ body.camera-debug-mode .scroll-container {
 }
 
 /* Section 编号：01 / 04 风格，等宽字体，accent 色调淡 */
+.reveal-clip {
+  /* 裁切窗口：内部文字从下方滑入时被上下边缘裁掉（原站标题揭示方式） */
+  overflow: hidden;
+  display: block;
+}
+
 .film-title {
   font-family: var(--font-serif, 'STIX Two Text', Georgia, serif);
   font-size: clamp(44px, 7vw, 96px);

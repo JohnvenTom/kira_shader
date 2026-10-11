@@ -385,7 +385,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 这里只承载初始 section 的定位
   const dragOffsetRef = useRef(startSection);
 
-  // 文字组首次入场（与切换同款弹簧：back.out 从下方弹入 + 次序 stagger）
+  // 文字组首次入场（与切换同款：裁切框内从下方滑入 + 顺次揭示）
   useEffect(() => {
     const els = ([
       filmIndexRef.current,
@@ -397,8 +397,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     const t = window.setTimeout(() => {
       gsap.fromTo(
         els,
-        { y: 64, autoAlpha: 0 },
-        { y: 0, autoAlpha: 1, duration: 0.75, ease: 'back.out(1.6)', stagger: 0.06, delay: 0.35 }
+        { yPercent: 110 },
+        { yPercent: 0, duration: 0.85, ease: 'expo.out', stagger: 0.06, delay: 0.35 }
       );
     }, 100);
     return () => window.clearTimeout(t);
@@ -623,17 +623,14 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   }, [injectScroll]);
 
   /**
-   * section 切换回调 —— 文字弹簧动画（对齐 shader.se UI kit 运动语言）
+   * section 切换回调 —— 文字「裁切框内滑入」（原站实录反编译）
    *
-   * 功能：文字组（段号 → 标题 → 副标题 → 描述）按次序：
-   *       1. 快速滑出（上移淡出 0.16s）
-   *       2. 换文字
-   *       3. 弹簧弹入（back.out 过冲回弹 = "跳动"，从下方 64px 弹入）
-   *
-   * 注意事项：
-   *  - back.out(1.6) ≈ 原站 UI 弹簧（damping 20-25 / stiffness 100-200）的
-   *    DOM 等效观感：一次可见的过冲回弹
-   *  - gsap 直接写 inline transform，元素自身的 CSS transition 已移除避免打架
+   * 原站行为：标题等文字在各自动裁切窗口（overflow hidden）内
+   * 从下方直线滑入（y 110% → 0），无回弹、无模糊，滚动驱动。
+   * 本项目用 gsap time-based 等效：
+   *  - 滑出：内层上移出裁切框（y → -110%）+ 快速淡出
+   *  - 滑入：y 110% → 0，expo.out（先快后缓，对齐滚动跟随感）
+   *  - 段号→标题→副标题→描述 按 60ms 顺次揭示
    */
   const handleSectionChange = useCallback((index: number) => {
     const els = ([
@@ -647,12 +644,12 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       return;
     }
     const tl = gsap.timeline();
-    tl.to(els, { y: -18, autoAlpha: 0, duration: 0.16, ease: 'power2.in', stagger: 0.015 });
+    tl.to(els, { yPercent: -110, autoAlpha: 0, duration: 0.22, ease: 'power2.in', stagger: 0.02 });
     tl.add(() => setSectionIndex(index));
     tl.fromTo(
       els,
-      { y: 64, autoAlpha: 0 },
-      { y: 0, autoAlpha: 1, duration: 0.75, ease: 'back.out(1.6)', stagger: 0.05 }
+      { yPercent: 110, autoAlpha: 1 },
+      { yPercent: 0, duration: 0.85, ease: 'expo.out', stagger: 0.06 }
     );
   }, []);
 
@@ -790,27 +787,28 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       </div>
 
       {/* 第 3 层：内容覆盖层 z-45
-          段号/标题/副标题/描述随 section 切换做弹簧动画（gsap back.out，
-          对齐 shader.se UI kit 的弹簧运动语言 damping20/stiffness~180） */}
+          段号/标题/副标题/描述随 section 切换做「裁切框内滑入」——
+          原站实录：标题在 clip 窗口内从下方直线滑入（无回弹，滚动驱动），
+          每个元素包一层 overflow:hidden 的 .reveal-clip，gsap 驱动内层位移 */}
         <div className="content-overlay film-content-overlay">
           <div
             className="hero-block film-hero-block"
             ref={heroBlockRef}
           >
-          <h1 className="film-title" ref={filmTitleRef}>
+          <div className="reveal-clip"><h1 className="film-title" ref={filmTitleRef}>
             {currentSection.title}
-          </h1>
-          <p className="film-subtitle" ref={filmSubtitleRef}>
+          </h1></div>
+          <div className="reveal-clip"><p className="film-subtitle" ref={filmSubtitleRef}>
             {currentSection.subtitle}
-          </p>
-          <div className="film-section-index" ref={filmIndexRef}>
+          </p></div>
+          <div className="reveal-clip"><div className="film-section-index" ref={filmIndexRef}>
             <span className="film-index-current">0{sectionIndex + 1}</span>
             <span className="film-index-separator">/</span>
             <span className="film-index-total">0{SECTIONS.length}</span>
-          </div>
-          <p className="film-description" ref={filmDescRef}>
+          </div></div>
+          <div className="reveal-clip"><p className="film-description" ref={filmDescRef}>
             {currentSection.description}
-          </p>
+          </p></div>
         </div>
 
         {/* 底部进度指示器：4 个小点，当前 section 高亮
