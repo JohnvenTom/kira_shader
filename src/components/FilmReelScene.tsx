@@ -227,9 +227,11 @@ const ReelShader = {
       vec3 spec = 0.6 * j * vec3(1.0);
       vec3 J = L * facing + spec;
 
-      // 距离 alpha 衰减（原版 q，localPosition 长度）
-      float Y = max(0.0, length(vLocalPos) - 10.0);
-      float q = exp(max(0.0, Y - 5.0) * -0.11);
+      // 距离淡出已取消：全段不透明（画面优先完整清晰）。
+      // 原版公式留档，想恢复时改回：
+      //   float Y = max(0.0, length(vLocalPos) - 10.0);
+      //   q = exp(max(0.0, Y - 5.0) * -0.11);
+      float q = 1.0;
       gl_FragColor = vec4(J, q);
     }
   `,
