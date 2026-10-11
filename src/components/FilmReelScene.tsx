@@ -531,10 +531,12 @@ export function FilmReelScene({
 
   return (
     <>
-      {/* 渐变背景板（原版：1.2×/1.4× 视锥高 @195，上深下浅） */}
+      {/* 渐变背景板（原版：1.2×/1.4× 视锥高 @195，上深下浅；
+          toneMapped 必须关——R3F 默认 ACES 会压暗压灰渐变，
+          半透明帧/齿孔失去亮底衬就全看不清了） */}
       <mesh ref={bgMeshRef} position={[0, 17, -200]}>
         <planeGeometry args={[bgSize.width, bgSize.height]} />
-        <meshBasicMaterial map={gradientTexture} fog={false} />
+        <meshBasicMaterial map={gradientTexture} fog={false} toneMapped={false} />
       </mesh>
 
       {/* 胶片卷缎带（原版层级等效：group 0.4 + mesh y=eg + 响应式缩放） */}

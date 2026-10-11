@@ -72,9 +72,10 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   vignetteRadius: 0.0,
   vignetteSmoothness: 0.32,
   // 颗粒强度：shader.se projects 原值 0.87 是按其亮场景调的；
-  // 原公式颗粒 ∝ (1-亮度)，在本站的深色胶片页暗部会被提亮 40%+
-  // 糊成雪花。取旧版调好的 0.2（观感：细腻胶片颗粒、内容可读）。
-  noiseIntensity: 0.2,
+  // 原公式颗粒 ∝ (1-亮度)，本站深色胶片页暗部占比大。
+  // 0.2 观感过弱（暗场景里颗粒对比不足），0.87 会糊成雪花；
+  // 0.35 ≈ 原站实拍的"中等颗粒"档。
+  noiseIntensity: 0.35,
   noiseVelocity: 1.0,
   // 体积雾是本站自有功能（shader.se 无）；胶片页默认关闭，
   // 需要时把 fogOpacity 调回 0~1
@@ -504,7 +505,11 @@ const VolumetricFogShader = {
 
       float nAvg = wsum > 0.001 ? acc / wsum : 0.0;
       vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.3 + 1.05 * nAvg);
-      gl_FragColor = vec4(mix(base.rgb, fogLit, fog), base.a);
+      vec3 outColor = mix(base.rgb, fogLit, fog);
+      // 链尾线性→sRGB（雾 pass 为最终屏幕输出时）
+      outColor = mix(outColor * 12.92, pow(outColor, vec3(1.0 / 2.4)) * 1.055 - 0.055,
+                     step(vec3(0.0031308), outColor));
+      gl_FragColor = vec4(outColor, base.a);
     }
   `,
 };
@@ -536,6 +541,7 @@ const FilmShader = {
     uVignetteIntensity: { value: 0.0 },
     uVignetteRadius: { value: 0.0 },
     uVignetteSmoothness: { value: 0.32 },
+    uOutputSRGB: { value: 0.0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -561,6 +567,7 @@ const FilmShader = {
     uniform float uVignetteIntensity;
     uniform float uVignetteRadius;
     uniform float uVignetteSmoothness;
+    uniform float uOutputSRGB;
     varying vec2 vUv;
 
     vec2 radialDistort(vec2 e, float distortion) {
@@ -638,6 +645,12 @@ const FilmShader = {
       float vMask = smoothstep(-uVignetteSmoothness, uVignetteSmoothness, vDist);
       color = mix(color, clamp(color * vMask, 0.0, 1.0), uVignetteIntensity);
 
+      // 链尾线性→sRGB：raw shader 直绘屏幕时必须手动转（原版由
+      // TSL 材质输出自动做；漏掉会把线性当 sRGB 显示，整体暗一大截）
+      if (uOutputSRGB > 0.5) {
+        color = mix(color * 12.92, pow(color, vec3(1.0 / 2.4)) * 1.055 - 0.055,
+                    step(vec3(0.0031308), color));
+      }
       gl_FragColor = vec4(color, base.a);
     }
   `,
@@ -1022,7 +1035,10 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
     }
 
     // 5. 渲染收尾：Film → filmRT → 雾 → 屏幕（或 Film 直绘屏幕）
+    //    sRGB 转换只在链尾做：有雾时雾 pass 转（film 输出线性到 RT），
+    //    无雾/透明时 film 直绘屏幕自行转
     if (!transparent && fogQuadRef.current && filmRTRef.current) {
+      filmMat.uniforms.uOutputSRGB.value = 0;
       gl.setRenderTarget(filmRTRef.current);
       filmQuadRef.current.render(gl);
       const fu = (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms;
@@ -1040,6 +1056,7 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       gl.setRenderTarget(null);
       fogQuadRef.current.render(gl);
     } else {
+      filmMat.uniforms.uOutputSRGB.value = 1;
       gl.setRenderTarget(null);
       filmQuadRef.current.render(gl);
     }
