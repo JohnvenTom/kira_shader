@@ -71,11 +71,9 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   vignetteIntensity: 0.0,
   vignetteRadius: 0.0,
   vignetteSmoothness: 0.32,
-  // 颗粒强度：shader.se projects 原值 0.87 是按其亮场景调的；
-  // 原公式颗粒 ∝ (1-亮度)，本站深色胶片页暗部占比大。
-  // 0.2 观感过弱（暗场景里颗粒对比不足），0.87 会糊成雪花；
-  // 0.35 ≈ 原站实拍的"中等颗粒"档。
-  noiseIntensity: 0.35,
+  // 颗粒强度：几乎看不见的自然档——暗部平均提亮仅 ~5%，保留胶片
+  // 质感的存在感但不干扰内容。想要 shader.se 原版风格调到 0.87。
+  noiseIntensity: 0.1,
   noiseVelocity: 1.0,
   // 体积雾是本站自有功能（shader.se 无）；胶片页默认关闭，
   // 需要时把 fogOpacity 调回 0~1
