@@ -161,49 +161,52 @@ const ReelShader = {
       float h = (A - d * uFrameWidth) / uFrameWidth;
       int g = int(d - floor(d / uTextureCount) * uTextureCount);
 
-      // 帧内 UV（原版 f：x 镜像 + border 内缩）
-      vec2 f = vec2(
-        1.0 - (h - uBorderX) / (1.0 - uBorderX * 2.0),
-        (u.y - uBorderY) / (1.0 - uBorderY * 2.0)
-      );
-      // 贴图 contain 适配（原版 mux 图 fitMode=preserve 黑边语义）
-      vec2 fit = f;
-      {
-        float frameAspect = 4.0 / 3.0;
-        float texAspect = g == 0 ? uFrameAspect0.x : g == 1 ? uFrameAspect0.y
-          : g == 2 ? uFrameAspect0.z : uFrameAspect0.w;
-        if (texAspect > frameAspect) {
-          float s = frameAspect / texAspect;
-          fit.y = (f.y - 0.5) / s + 0.5;
-          if (fit.y < 0.0 || fit.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-        } else {
-          float s = texAspect / frameAspect;
-          fit.x = (f.x - 0.5) / s + 0.5;
-          if (fit.x < 0.0 || fit.x > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-        }
-      }
-      vec3 thumb = vec3(0.0);
-      if (g == 0) thumb = texture2D(uThumbnails[0], fit).rgb;
-      else if (g == 1) thumb = texture2D(uThumbnails[1], fit).rgb;
-      else if (g == 2) thumb = texture2D(uThumbnails[2], fit).rgb;
-      else thumb = texture2D(uThumbnails[3], fit).rgb;
-      vec3 x = thumb * 1.055;
-
-      // 远帧去饱和（原版：e.x<.35 全彩，其余 50% 混灰）
-      vec3 w = vec3(dot(x, vec3(0.299, 0.587, 0.114)));
-      vec3 Q = e.x < 0.35 ? x : mix(x, w, 0.5);
-
-      // 画格黑框 + 齿孔
+      // === 边框/齿孔判定在前（原版顺序）===
+      // 边框像素不需要采样缩略图；先判边框再做 contain 适配，
+      // 否则黑边区的提前 return 会短路齿孔逻辑（旧 bug：
+      // 恰好只有某帧 GIF 的宽高比让 return 不触发，其余帧齿孔全被吃掉）
       bool border = h < uBorderX || h > 1.0 - uBorderX
         || e.y < uBorderY || e.y > 1.0 - uBorderY;
-      vec3 L = Q;
+
+      vec3 L;
       if (border) {
+        // 齿孔（原版：上下外缘带，fract(y·4)/fract(A·2) 打 discard）
         float r = fract(e.y * 4.0);
         float ii = fract(A * 2.0);
         bool hole = (e.y < 0.05 || e.y > 0.95)
           && r > 0.07 && r < 0.93 && ii > 0.25 && ii < 0.75;
         if (hole) discard;
         L = vec3(0.0);
+      } else {
+        // === 画面区：帧内 UV + contain 适配 + 缩略图 ===
+        vec2 f = vec2(
+          1.0 - (h - uBorderX) / (1.0 - uBorderX * 2.0),
+          (u.y - uBorderY) / (1.0 - uBorderY * 2.0)
+        );
+        vec2 fit = f;
+        float frameAspect = 4.0 / 3.0;
+        float texAspect = g == 0 ? uFrameAspect0.x : g == 1 ? uFrameAspect0.y
+          : g == 2 ? uFrameAspect0.z : uFrameAspect0.w;
+        if (texAspect > frameAspect) {
+          float s = frameAspect / texAspect;
+          fit.y = (f.y - 0.5) / s + 0.5;
+        } else {
+          float s = texAspect / frameAspect;
+          fit.x = (f.x - 0.5) / s + 0.5;
+        }
+        // 黑边(letterbox)在画面区内部：直接黑色，不 return
+        bool letterbox = fit.y < 0.0 || fit.y > 1.0 || fit.x < 0.0 || fit.x > 1.0;
+        vec3 thumb = vec3(0.0);
+        if (!letterbox) {
+          if (g == 0) thumb = texture2D(uThumbnails[0], fit).rgb;
+          else if (g == 1) thumb = texture2D(uThumbnails[1], fit).rgb;
+          else if (g == 2) thumb = texture2D(uThumbnails[2], fit).rgb;
+          else thumb = texture2D(uThumbnails[3], fit).rgb;
+        }
+        vec3 x = thumb * 1.055;
+        // 远帧去饱和（原版：e.x<.35 全彩，其余 50% 混灰）
+        vec3 w = vec3(dot(x, vec3(0.299, 0.587, 0.114)));
+        L = e.x < 0.35 ? x : mix(x, w, 0.5);
       }
 
       // 上下边缘高光条（原版 M=0.005）
