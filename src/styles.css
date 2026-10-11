@@ -457,10 +457,7 @@ body.camera-debug-mode .scroll-container {
   --ry: 0deg;
   transform-style: preserve-3d;
   transform: translate3d(var(--px), var(--py), 0) rotateX(var(--rx)) rotateY(var(--ry));
-  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-  opacity: 0;
-  will-change: transform, opacity;
+  will-change: transform;
   /* 加宽到 900px：之前 720px 时 "CREATIVE STUDIO" 14 字符 × ~50px ≈ 700px
      刚好挤到边界，最后一个 "O" 溜到第二行 */
   max-width: 900px;
@@ -479,15 +476,8 @@ body.camera-debug-mode .scroll-container {
   line-height: 1.02;
   color: #fdf9f0;
   margin: 0 0 10px;
-  opacity: 0;
-  transform: translateY(14px);
-  transition: opacity 0.5s ease, transform 0.5s ease;
   text-shadow: 0 2px 24px rgba(0, 0, 0, 0.45);
-}
-
-.film-title.visible {
-  opacity: 1;
-  transform: translateY(0);
+  /* 入场/切换动画由 gsap 接管（back.out 弹簧），不再用 CSS transition */
 }
 
 .film-subtitle {
@@ -497,14 +487,6 @@ body.camera-debug-mode .scroll-container {
   text-transform: uppercase;
   color: rgba(252, 249, 243, 0.65);
   margin: 0 0 26px;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.5s ease 0.06s, transform 0.5s ease 0.06s;
-}
-
-.film-subtitle.visible {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 .film-section-index {
@@ -569,14 +551,6 @@ body.camera-debug-mode .scroll-container {
   color: rgba(252, 249, 243, 0.55);
   margin-top: 20px;
   max-width: 480px;
-  opacity: 0;
-  transform: translateY(12px);
-  transition: opacity 0.6s ease 0.3s, transform 0.6s ease 0.3s;
-}
-
-.film-description.visible {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 /* 底部进度指示器：4 个小点水平排列

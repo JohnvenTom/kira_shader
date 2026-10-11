@@ -165,8 +165,6 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 否则用 sessionStorage 的恢复数据（从 trace 页白闪返回），最后兜底 0
   const startSection = hashSection ?? initialRestore?.section ?? 0;
   const [sectionIndex, setSectionIndex] = useState(startSection);
-  // 文字 UI 是否可见（section 切换时短暂隐藏再淡入）
-  const [textVisible, setTextVisible] = useState(true);
   // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
   // mount 时 entering=true（白屏），下一帧加 fade-out class 触发淡出过渡
   const [enteringFadeOut, setEnteringFadeOut] = useState(false);
@@ -372,6 +370,11 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
 
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
+  // 文字组 refs（section 切换的 gsap 弹簧动画目标：段号→标题→副标题→描述）
+  const filmIndexRef = useRef<HTMLDivElement>(null);
+  const filmTitleRef = useRef<HTMLHeadingElement>(null);
+  const filmSubtitleRef = useRef<HTMLParagraphElement>(null);
+  const filmDescRef = useRef<HTMLParagraphElement>(null);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
   // 鼠标轨迹队列（pointermove 逐事件推入，含合并事件，带时间戳）：
@@ -381,6 +384,26 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 拖拽的写入在 FilmReelScene 内（橡皮筋模型，原版 mh 拖拽层），
   // 这里只承载初始 section 的定位
   const dragOffsetRef = useRef(startSection);
+
+  // 文字组首次入场（与切换同款弹簧：back.out 从下方弹入 + 次序 stagger）
+  useEffect(() => {
+    const els = ([
+      filmIndexRef.current,
+      filmTitleRef.current,
+      filmSubtitleRef.current,
+      filmDescRef.current,
+    ] as (HTMLElement | null)[]).filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) return;
+    const t = window.setTimeout(() => {
+      gsap.fromTo(
+        els,
+        { y: 64, autoAlpha: 0 },
+        { y: 0, autoAlpha: 1, duration: 0.75, ease: 'back.out(1.6)', stagger: 0.06, delay: 0.35 }
+      );
+    }, 100);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 后处理参数（参考 shader.se 的胶片质感）
   // bloomIntensity 1.2 + 4 sin 波动态闪烁，sepia 0.25 略偏暖，
@@ -600,30 +623,37 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   }, [injectScroll]);
 
   /**
-   * section 切换回调
+   * section 切换回调 —— 文字弹簧动画（对齐 shader.se UI kit 运动语言）
    *
-   * 功能：当 FilmScene 内部触发 section 切换（闪光掩盖下）时，
-   *      外层文字 UI 同步更新：
-   *      1. 先隐藏当前文字（触发淡出过渡）
-   *      2. 延迟 200ms 后切换到新 section 的文字
-   *      3. 再延迟 50ms 后显示新文字（触发淡入过渡）
-   *
-   * 参数：
-   *  - index {number} 新的 section 索引（0~3）
-   *
-   * 返回值：无
+   * 功能：文字组（段号 → 标题 → 副标题 → 描述）按次序：
+   *       1. 快速滑出（上移淡出 0.16s）
+   *       2. 换文字
+   *       3. 弹簧弹入（back.out 过冲回弹 = "跳动"，从下方 64px 弹入）
    *
    * 注意事项：
-   *  - 200ms 延迟与 FilmScene 的闪光峰值时机对齐，确保文字切换被闪光掩盖
-   *  - 用 ref 避免重复触发（FilmScene 内部已有 lastNotifiedSectionRef 去重，
-   *    这里二次保护）
+   *  - back.out(1.6) ≈ 原站 UI 弹簧（damping 20-25 / stiffness 100-200）的
+   *    DOM 等效观感：一次可见的过冲回弹
+   *  - gsap 直接写 inline transform，元素自身的 CSS transition 已移除避免打架
    */
   const handleSectionChange = useCallback((index: number) => {
-    setTextVisible(false);
-    setTimeout(() => {
+    const els = ([
+      filmIndexRef.current,
+      filmTitleRef.current,
+      filmSubtitleRef.current,
+      filmDescRef.current,
+    ] as (HTMLElement | null)[]).filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) {
       setSectionIndex(index);
-      setTimeout(() => setTextVisible(true), 50);
-    }, 200);
+      return;
+    }
+    const tl = gsap.timeline();
+    tl.to(els, { y: -18, autoAlpha: 0, duration: 0.16, ease: 'power2.in', stagger: 0.015 });
+    tl.add(() => setSectionIndex(index));
+    tl.fromTo(
+      els,
+      { y: 64, autoAlpha: 0 },
+      { y: 0, autoAlpha: 1, duration: 0.75, ease: 'back.out(1.6)', stagger: 0.05 }
+    );
   }, []);
 
   /**
@@ -760,28 +790,25 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       </div>
 
       {/* 第 3 层：内容覆盖层 z-45
-          段号/描述随 section 切换淡入淡出（textVisible 控制）；
-          大标题 + 副标题已移入 3D 场景（FilmScene 的 SectionTitles），
-          作为场景物体吃 bloom/颗粒/色散/运动模糊 */}
+          段号/标题/副标题/描述随 section 切换做弹簧动画（gsap back.out，
+          对齐 shader.se UI kit 的弹簧运动语言 damping20/stiffness~180） */}
         <div className="content-overlay film-content-overlay">
           <div
-            className={`hero-block film-hero-block ${textVisible ? 'visible' : ''}`}
+            className="hero-block film-hero-block"
             ref={heroBlockRef}
           >
-          {/* 大标题/副标题：旧版在 3D（SectionTitles），胶片卷场景改为 DOM 层
-              （shader.se 的标题也是 HTML 覆盖层） */}
-          <h1 className={`film-title ${textVisible ? 'visible' : ''}`}>
+          <h1 className="film-title" ref={filmTitleRef}>
             {currentSection.title}
           </h1>
-          <p className={`film-subtitle ${textVisible ? 'visible' : ''}`}>
+          <p className="film-subtitle" ref={filmSubtitleRef}>
             {currentSection.subtitle}
           </p>
-          <div className="film-section-index">
+          <div className="film-section-index" ref={filmIndexRef}>
             <span className="film-index-current">0{sectionIndex + 1}</span>
             <span className="film-index-separator">/</span>
             <span className="film-index-total">0{SECTIONS.length}</span>
           </div>
-          <p className={`film-description ${textVisible ? 'visible' : ''}`}>
+          <p className="film-description" ref={filmDescRef}>
             {currentSection.description}
           </p>
         </div>
