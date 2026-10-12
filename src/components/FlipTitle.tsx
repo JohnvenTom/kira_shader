@@ -2,24 +2,27 @@ import { useEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 
 /**
- * FlipTitle —— shader.se #selected-work 项目标题的「旋转棱柱翻牌」复刻
+ * FlipTitle —— shader.se #selected-work 项目标题「旋转棱柱翻牌」的 DOM 复刻
  *
  * 反编译结论(bundle m7/mj/mz):
- *  - 标题贴在长条盒侧面,沿长度分 24 楼,每楼独立弹簧角度 = −π/2·index
- *  - 切换时 mj() 给各段发梯度弹簧:stiffness 120→30 线性递减、
- *    damping 7→13 递增(阻尼比 ≈0.32,欠阻尼,可见多次晃动)
- *    → 前面的段又快又弹,后面的慢半拍,整条波浪式扭转
- *  - 几何附带 sin(time) 呼吸波(±0.06)
+ *  - 标题贴在长条盒侧面,沿长度 24 段各持独立弹簧角度(= −π/2·index)
+ *  - 切换时 mj() 发梯度弹簧:stiffness 120→30 递减、damping 7→13 递增
+ *    (阻尼比≈0.32 欠阻尼)→ 前段快而晃、后段慢半拍,波浪式扭转
+ *  - 附带 sin(time) 呼吸波(±0.06)
  *
- * DOM 等效:标题按字符分列,每列双面(正=旧字,背=新字)绕 Y 轴翻转
- * 180°(过 90° 时换面),列间用梯度时长 + elastic 缓动(≈欠阻尼弹簧)
- * 复现波浪扭转;驻留时叠加 ±0.8° 的微呼吸波。
- *
- * 竞态防护(StrictMode 双挂载 / 快速连续切换):
- *  - 翻牌前 killTweensOf 清掉一切进行中的 tween
- *  - 进行中再次换文:以最新文本为准重启翻牌
- *  - onComplete 只在最后一列,另加兜底超时强制落位
+ * DOM 结构(对齐原版"整条分段",而非逐字符):
+ *  h1 (grid 叠层, perspective)
+ *   ├ ghost ×2(新旧文字,同格叠放 → 撑出 max 宽高,隐形)
+ *   └ stage(同格覆盖)
+ *      └ slice ×8(overflow hidden 的竖向条带,各占 1/8 宽)
+ *         └ rot(preserve-3d,绕 Y 翻转的旋转体)
+ *            ├ face 正(整条旧文字,宽=容器,左移 -i/8)
+ *            └ face 背(rotateY 180°,整条新文字)
+ *  每个条带显示完整文字的对应水平切片 → 任意时刻排版都是正确的;
+ *  settle 只换隐形 ghost,不再有"等一会才恢复正常样式"的问题。
  */
+
+const SLICES = 8;
 
 interface FlipTitleProps {
   text: string;
@@ -36,15 +39,26 @@ function colTiming(t: number) {
   };
 }
 
-const MAX_COL_DURATION = 1.05; // colTiming 最长时长(兜底超时用)
+const MAX_DURATION = 1.05;
 
 export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
   const [displayed, setDisplayed] = useState(text);
   const [incoming, setIncoming] = useState<string | null>(null);
-  const colsRef = useRef<HTMLSpanElement[]>([]);
+  const rotsRef = useRef<HTMLDivElement[]>([]);
   const prevTextRef = useRef(text);
   const settlingRef = useRef<string | null>(null);
   const fallbackTimerRef = useRef<number | null>(null);
+
+  const startWobble = () => {
+    const rots = rotsRef.current.filter(Boolean);
+    rots.forEach((rot, i) => {
+      gsap.fromTo(
+        rot,
+        { rotationY: 0 },
+        { rotationY: 0.8, duration: 1.6, yoyo: true, repeat: -1, ease: 'sine.inOut', delay: i * 0.07 }
+      );
+    });
+  };
 
   // 翻牌落位：换正面文字 + 旋转归零 + 重启呼吸波
   const settle = (finalText: string) => {
@@ -53,19 +67,11 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
     prevTextRef.current = finalText;
     setDisplayed(finalText);
     setIncoming(null);
-    const cols = colsRef.current.filter(Boolean);
     requestAnimationFrame(() => {
-      // 先杀干净残留 tween 再归零（否则弹性尾巴会把列重新转走）
-      gsap.killTweensOf(cols);
-      gsap.set(cols, { rotationY: 0 });
-      // 呼吸波(±0.8°,列相位错开;fromTo 强制从 0 起,避免从 180 起跳)
-      cols.forEach((col, i) => {
-        gsap.fromTo(
-          col,
-          { rotationY: 0 },
-          { rotationY: 0.8, duration: 1.6, yoyo: true, repeat: -1, ease: 'sine.inOut', delay: i * 0.07 }
-        );
-      });
+      const rots = rotsRef.current.filter(Boolean);
+      gsap.killTweensOf(rots);
+      gsap.set(rots, { rotationY: 0 });
+      startWobble();
     });
   };
 
@@ -74,23 +80,20 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
     if (text === prevTextRef.current || text === settlingRef.current) return;
     settlingRef.current = text;
     setIncoming(text);
-    // 等 back face 渲染出新字后再翻转
     const t = window.setTimeout(() => {
       if (fallbackTimerRef.current !== null) window.clearTimeout(fallbackTimerRef.current);
-      const cols = colsRef.current.filter(Boolean);
-      // 清掉一切进行中的翻转/呼吸 tween(防双挂载/快速连续切换的竞态)
-      gsap.killTweensOf(cols);
-      const n = Math.max(1, cols.length - 1);
-      cols.forEach((col, i) => {
+      const rots = rotsRef.current.filter(Boolean);
+      gsap.killTweensOf(rots);
+      const n = Math.max(1, rots.length - 1);
+      rots.forEach((rot, i) => {
         const { duration, ease } = colTiming(i / n);
         gsap.fromTo(
-          col,
+          rot,
           { rotationY: 0 },
           { rotationY: 180 * direction, duration, ease, overwrite: true }
         );
       });
-      // 兜底:最长时长 +0.6s 后强制落位(onComplete 丢失也不卡死)
-      fallbackTimerRef.current = window.setTimeout(() => settle(text), MAX_COL_DURATION * 1000 + 600);
+      fallbackTimerRef.current = window.setTimeout(() => settle(text), MAX_DURATION * 1000 + 600);
     }, 30);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,15 +102,10 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
   // 首次挂载的呼吸波
   useEffect(() => {
     if (settlingRef.current !== null) return;
-    const cols = colsRef.current.filter(Boolean);
-    const tweens = cols.map((col, i) =>
-      gsap.fromTo(
-        col,
-        { rotationY: 0 },
-        { rotationY: 0.8, duration: 1.6, yoyo: true, repeat: -1, ease: 'sine.inOut', delay: i * 0.07 }
-      )
-    );
-    return () => tweens.forEach((w) => w.kill());
+    startWobble();
+    return () => {
+      gsap.killTweensOf(rotsRef.current.filter(Boolean));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -115,32 +113,43 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
   useEffect(() => {
     return () => {
       if (fallbackTimerRef.current !== null) window.clearTimeout(fallbackTimerRef.current);
-      gsap.killTweensOf(colsRef.current.filter(Boolean));
+      gsap.killTweensOf(rotsRef.current.filter(Boolean));
     };
   }, []);
 
-  const chars = Array.from(displayed);
-  const inChars = incoming ? Array.from(incoming) : null;
+  const front = displayed;
+  const back = incoming ?? displayed;
 
   return (
-    <h1 className={`${className ?? ''} flip-title`} style={{ perspective: '1100px' }}>
-      {chars.map((ch, i) => {
-        const back = inChars ? (inChars[i] ?? '') : '';
-        return (
-          <span
-            key={i}
-            className="flip-col"
-            ref={(el) => {
-              if (el) colsRef.current[i] = el;
-            }}
-          >
-            <span className="flip-face flip-front">{ch === ' ' ? '\u00A0' : ch}</span>
-            <span className="flip-face flip-back" aria-hidden="true">
-              {back === ' ' ? '\u00A0' : back}
-            </span>
-          </span>
-        );
-      })}
+    <h1 className={`${className ?? ''} flip-title`}>
+      {/* 隐形 ghost:同格叠放撑出 max(旧,新) 的宽高,保证翻牌中排版正确 */}
+      <span className="flip-ghost" aria-hidden="true">{front}</span>
+      <span className="flip-ghost" aria-hidden="true">{back}</span>
+      <div className="flip-stage" aria-live="polite">
+        {Array.from({ length: SLICES }).map((_, i) => (
+          <div className="flip-slice" key={i}>
+            <div
+              className="flip-rot"
+              ref={(el) => {
+                if (el) rotsRef.current[i] = el;
+              }}
+            >
+              <div
+                className="flip-face"
+                style={{ left: `${-i * 100}%`, width: `${SLICES * 100}%` }}
+              >
+                {front}
+              </div>
+              <div
+                className="flip-face flip-face-back"
+                style={{ left: `${-i * 100}%`, width: `${SLICES * 100}%` }}
+              >
+                {back}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </h1>
   );
 }

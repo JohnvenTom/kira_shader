@@ -475,28 +475,51 @@ body.camera-debug-mode .scroll-container {
 }
 
 .flip-title {
-  /* 旋转棱柱翻牌列（shader.se m7 复刻） */
-  display: inline-block;
+  /* 旋转棱柱翻牌（shader.se m7 复刻）:grid 叠层,ghost 撑宽,stage 切片 */
+  display: grid;
+  perspective: 1100px;
+  margin: 0 0 10px;
 }
 
-.flip-col {
+.flip-ghost {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.flip-stage {
+  grid-area: 1 / 1;
   position: relative;
-  display: inline-block;
+  display: flex;
+  width: 100%;
+}
+
+.flip-slice {
+  /* 2D 竖向条带:各占 1/8 宽,overflow 裁出该段文字切片 */
+  flex: 1 1 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.flip-rot {
+  /* 旋转体:preserve-3d 不能与 overflow 同元素(会被压平),故独立一层 */
+  position: relative;
+  height: 100%;
   transform-style: preserve-3d;
   will-change: transform;
 }
 
 .flip-face {
+  position: absolute;
+  top: 0;
+  height: 100%;
   backface-visibility: hidden;
-  display: inline-block;
 }
 
-.flip-back {
-  position: absolute;
-  inset: 0;
+.flip-face-back {
   transform: rotateY(180deg);
-  white-space: pre;
 }
+
 
 .film-title {
   font-family: var(--font-serif, 'STIX Two Text', Georgia, serif);
