@@ -384,6 +384,7 @@ export function FilmReelScene({
     let startX = 0;
     let startY = 0;
     let pointerStart = 0;
+    let lastD = 0; // 本次拖动的钳制像素位移（释放判定用）
     let wheelAcc = 0;
     let wheelLockUntil = 0;
     let wheelResetTimer: number | null = null;
@@ -398,6 +399,7 @@ export function FilmReelScene({
       startX = e.clientX;
       startY = e.clientY;
       pointerStart = dragOffsetRef.current;
+      lastD = 0;
     };
     const move = (e: PointerEvent) => {
       if (!pending) return;
@@ -412,10 +414,15 @@ export function FilmReelScene({
         dragging = true;
         document.body.style.cursor = 'grabbing';
       }
-      // 橡皮筋：像素 → 曲线单位，clamp ±0.2w
+      // 橡皮筋：像素 → 曲线单位（clamp ±0.2w），再除帧宽折算成 section 指针
+      // 窥视。注意必须除 REEL_FRAME_WIDTH：原版 drag 项是曲线单位
+      // （±4 曲线单位 ≈ ±0.4 帧），漏除会把窥视放大 9.87 倍扫过 4 个
+      // section，拖一下连闪多帧
       const lim = DRAG_CLAMP_RATIO * window.innerWidth;
       const d = clamp(dx, -lim, lim);
-      dragOffsetRef.current = pointerStart - d / (DRAG_UNIT * window.innerWidth);
+      lastD = d;
+      dragOffsetRef.current =
+        pointerStart - d / (DRAG_UNIT * window.innerWidth * REEL_FRAME_WIDTH);
     };
     const up = () => {
       if (!pending) return;
@@ -423,13 +430,10 @@ export function FilmReelScene({
       document.body.style.cursor = '';
       if (!dragging) return;
       dragging = false;
-      // 释放：|drag| > 0.1w → 指针翻一帧（原版 index += −sign(dragPx)；
-      // drift = −dxpx，故 target = pointerStart + sign(drift)）
-      const cur = dragOffsetRef.current;
-      const drift = (cur - pointerStart) * (DRAG_UNIT * window.innerWidth);
+      // 释放：|dragPx| > 0.1w → 指针翻一帧（原版 index += −sign(dragPx)）
       let target = Math.round(pointerStart);
-      if (Math.abs(drift) > DRAG_SNAP_RATIO * window.innerWidth) {
-        target = clamp(Math.round(pointerStart) + Math.sign(drift), 0, SECTIONS.length - 1);
+      if (Math.abs(lastD) > DRAG_SNAP_RATIO * window.innerWidth) {
+        target = clamp(Math.round(pointerStart) - Math.sign(lastD), 0, SECTIONS.length - 1);
       }
       dragOffsetRef.current = target;
     };

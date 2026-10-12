@@ -474,6 +474,30 @@ body.camera-debug-mode .scroll-container {
   display: block;
 }
 
+.flip-title {
+  /* 旋转棱柱翻牌列（shader.se m7 复刻） */
+  display: inline-block;
+}
+
+.flip-col {
+  position: relative;
+  display: inline-block;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.flip-face {
+  backface-visibility: hidden;
+  display: inline-block;
+}
+
+.flip-back {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+  white-space: pre;
+}
+
 .film-title {
   font-family: var(--font-serif, 'STIX Two Text', Georgia, serif);
   font-size: clamp(44px, 7vw, 96px);

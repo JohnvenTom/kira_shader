@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { SECTIONS, PROJECTS, ContactScene, OfficeScene } from './components/FilmScene';
 import { FilmReelScene } from './components/FilmReelScene';
+import { FlipTitle } from './components/FlipTitle';
 import {
   FilmPostProcessing,
   DEFAULT_FILM_PARAMS,
@@ -165,6 +166,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 否则用 sessionStorage 的恢复数据（从 trace 页白闪返回），最后兜底 0
   const startSection = hashSection ?? initialRestore?.section ?? 0;
   const [sectionIndex, setSectionIndex] = useState(startSection);
+  // 标题翻牌方向（±1，随 section 增减），传给 FlipTitle
+  const [flipDir, setFlipDir] = useState(1);
   // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
   // mount 时 entering=true（白屏），下一帧加 fade-out class 触发淡出过渡
   const [enteringFadeOut, setEnteringFadeOut] = useState(false);
@@ -370,11 +373,13 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
 
   // 鼠标视差偏移量（写入 CSS 变量，供 hero-block 使用）
   const heroBlockRef = useRef<HTMLDivElement>(null);
-  // 文字组 refs（section 切换的 gsap 弹簧动画目标：段号→标题→副标题→描述）
+  // 文字组 refs（section 切换的 gsap 动画目标：段号→副标题→描述；
+  // 标题由 FlipTitle 自管棱柱翻牌）
   const filmIndexRef = useRef<HTMLDivElement>(null);
-  const filmTitleRef = useRef<HTMLHeadingElement>(null);
   const filmSubtitleRef = useRef<HTMLParagraphElement>(null);
   const filmDescRef = useRef<HTMLParagraphElement>(null);
+  // 上一个 section 索引（算翻牌方向用）
+  const sectionIndexRef = useRef(startSection);
   // 共享鼠标归一化坐标（-1~1），供 3D 相机视差旋转使用
   const mouseRef = useRef({ x: 0, y: 0 });
   // 鼠标轨迹队列（pointermove 逐事件推入，含合并事件，带时间戳）：
@@ -385,11 +390,10 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 这里只承载初始 section 的定位
   const dragOffsetRef = useRef(startSection);
 
-  // 文字组首次入场（与切换同款：裁切框内从下方滑入 + 顺次揭示）
+  // 文字组首次入场（裁切框内从下方滑入 + 顺次揭示；标题由 FlipTitle 自管）
   useEffect(() => {
     const els = ([
       filmIndexRef.current,
-      filmTitleRef.current,
       filmSubtitleRef.current,
       filmDescRef.current,
     ] as (HTMLElement | null)[]).filter((el): el is HTMLElement => !!el);
@@ -633,9 +637,11 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
    *  - 段号→标题→副标题→描述 按 60ms 顺次揭示
    */
   const handleSectionChange = useCallback((index: number) => {
+    setFlipDir(index >= sectionIndexRef.current ? 1 : -1);
+    sectionIndexRef.current = index;
+    // 标题由 FlipTitle 自管（棱柱翻牌）；这里只驱动 段号/副标题/描述
     const els = ([
       filmIndexRef.current,
-      filmTitleRef.current,
       filmSubtitleRef.current,
       filmDescRef.current,
     ] as (HTMLElement | null)[]).filter((el): el is HTMLElement => !!el);
@@ -795,9 +801,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
             className="hero-block film-hero-block"
             ref={heroBlockRef}
           >
-          <div className="reveal-clip"><h1 className="film-title" ref={filmTitleRef}>
-            {currentSection.title}
-          </h1></div>
+          {/* 大标题：旋转棱柱翻牌（shader.se m7 复刻，自管切换动画） */}
+          <FlipTitle text={currentSection.title} direction={flipDir} className="film-title" />
           <div className="reveal-clip"><p className="film-subtitle" ref={filmSubtitleRef}>
             {currentSection.subtitle}
           </p></div>
