@@ -171,9 +171,23 @@ export class LusionCard {
     this.mesh.renderOrder = 10;
   }
 
-  /** 项目名 → 逐字母滑入结构（每字母一个 overflow:hidden 列 + 单 span） */
+  /**
+   * 把项目名拆成"逐字母滑入"结构（每字母一个 overflow:hidden 列 + 单 span）
+   *
+   * @param title 原始项目名（内部统一转大写，空格用占位列表示）
+   * @returns 无（副作用：写入 domFooterLine2 的子节点与 footerLetters）
+   * @throws 无（纯 DOM 操作，元素由 Overlay 保证已挂载）
+   *
+   * 注意事项：
+   *  - 目标容器 `.lusion-item-line-2-inner` 由 Overlay 常驻挂载，只有本类的
+   *    实例会被反复重建（Canvas 失活卸载、回到第 0 帧重挂 → LusionScene 重建
+   *    卡片）。先 replaceChildren() 清掉上一轮实例留下的字母列，否则每次
+   *    重建都会把同一串字母再追加一份，标题横向重复叠加。
+   */
   private buildTitle(title: string): void {
     const inner = this.opts.domFooterLine2;
+    // 清空上一轮遗留的字母列（重挂即重建，不清会累积重复标题）
+    inner.replaceChildren();
     inner.style.display = 'flex';
     for (const ch of title.toUpperCase()) {
       const col = document.createElement('span');
