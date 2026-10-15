@@ -475,7 +475,7 @@ body.camera-debug-mode .scroll-container {
 }
 
 .flip-title {
-  /* 旋转棱柱翻牌（shader.se m7 复刻）:grid 叠层,ghost 撑宽,stage 切片 */
+  /* 逐字母翻牌：grid 叠层 + ghost 撑宽，stage 内是「一旧一新」两块逐字母层 */
   display: grid;
   perspective: 1100px;
   margin: 0 0 10px;
@@ -490,34 +490,35 @@ body.camera-debug-mode .scroll-container {
 .flip-stage {
   grid-area: 1 / 1;
   position: relative;
-  display: flex;
   width: 100%;
 }
 
-.flip-slice {
-  /* 2D 竖向条带:各占 1/8 宽,overflow 裁出该段文字切片 */
-  flex: 1 1 0;
-  overflow: hidden;
-  position: relative;
-}
-
-.flip-rot {
-  /* 旋转体:preserve-3d 不能与 overflow 同元素(会被压平),故独立一层 */
-  position: relative;
-  height: 100%;
-  transform-style: preserve-3d;
-  will-change: transform;
-}
-
-.flip-face {
+.flip-layer {
+  /* 一块文字（旧/新各一块）：横向位置与宽度由 JS 按该文字自己的字距给出，
+     并以自身中心对齐 h1 中心（换标题宽度变化时中心不动，不会左右跳） */
   position: absolute;
   top: 0;
   height: 100%;
-  backface-visibility: hidden;
 }
 
-.flip-face-back {
-  transform: rotateY(180deg);
+.flip-cell {
+  /* 一个字母的翻转卡：格子按该字母的 advance 盒 + 左右余量给定，
+     overflow 裁掉透视放大溢出的边角；透视放在格子上 → 每格绕自己中心翻 */
+  position: absolute;
+  top: 0;
+  height: 100%;
+  overflow: hidden;
+  perspective: 700px;
+}
+
+.flip-glyph {
+  /* 被旋转的字形：backface 隐藏，转过 90° 后不会露出镜像背面；
+     左内边距 = 格子余量，保证字形落在自己原来的位置上 */
+  position: relative;
+  height: 100%;
+  white-space: nowrap;
+  backface-visibility: hidden;
+  will-change: transform;
 }
 
 
