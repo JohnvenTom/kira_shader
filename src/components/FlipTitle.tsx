@@ -53,30 +53,37 @@ interface TextLayout {
   w: number;
   /** 逐字母格（空格不建格，其区间自然留白）；空数组表示量取失败 */
   cells: LetterCell[];
+  /** 真实布局里这段文字会换行 → 退化为"整块一格 + 不做折叠动画" */
+  wrap: boolean;
 }
 
 /**
- * 读一个真 ghost 的行数
+ * 判断一段文字在真实布局里会不会换行（静态判据）
  *
- * 功能：用 Range 跑一遍 ghost 内容并按行取矩形，行数 > 1 即真实布局里换行了。
+ * 功能：把"文字自然宽"与"容器可用宽"比较；可用宽取「父元素 max-width（若为有限 px 值）」
+ *      与「视口宽」的较小值。
  *
- * 参数：el 真实的隐形 ghost 元素（可为 null）
+ * 参数：
+ *  - liveH1 真实标题元素
+ *  - naturalW 文字自然宽(px)
  *
- * 返回值：行数；量不到时返回 1（按"不换行"处理）
+ * 返回值：true = 会换行（可用宽装不下）
  *
  * 异常：无
  *
- * 注意事项：行数是纯布局量（矩形个数），不受鼠标视差的三维投影影响，可安全用于判定换行。
- *          早先用"文字自然宽 vs 父容器 clientWidth"来判定是错的——那个父容器是被子元素
- *          撑出来的（宽 = h1 的 max-content），于是判定退化成"新标题比旧标题宽吗"，
- *          导致"新标题更宽"的切换被误判成换行 → 动画被跳过、文字直接出现。
+ * 注意事项：**必须用静态判据，不能读真 ghost 的实时行数**——首次进入某个 section 时，
+ *          标题还在做入场揭示（裁切/宽度未稳定），真 ghost 在那个瞬间会呈现多行，
+ *          用行数判定就会把"第一次滑到"误判成换行 → 跳过折叠动画、文字直接出现；
+ *          后续再经过时布局已稳定，行数恢复 1，于是看起来"只有第一次不播动画"。
+ *          父元素 max-width 与视口宽都不受入场动画影响，所以判据是稳定的。
  */
-function ghostLineCount(el: HTMLElement | null): number {
-  if (!el || !el.firstChild) return 1;
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const count = range.getClientRects().length;
-  return count > 0 ? count : 1;
+function wrapsInLayout(liveH1: HTMLElement, naturalW: number): boolean {
+  const parent = liveH1.parentElement;
+  const maxW = parent ? parseFloat(getComputedStyle(parent).maxWidth) : NaN;
+  const viewport = typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : Infinity;
+  const avail = Math.min(Number.isFinite(maxW) ? maxW : Infinity, viewport);
+  if (!Number.isFinite(avail) || avail <= 0 || naturalW <= 0) return false;
+  return naturalW > avail + 1;
 }
 
 /**
@@ -95,7 +102,7 @@ function ghostLineCount(el: HTMLElement | null): number {
  * 注意事项：只比较渲染真正用到的字段，浮点直接全等比较即可（同一输入下量取值稳定）。
  */
 function sameLayout(a: TextLayout | undefined, b: TextLayout): boolean {
-  if (!a || a.w !== b.w || a.cells.length !== b.cells.length) return false;
+  if (!a || a.w !== b.w || a.wrap !== b.wrap || a.cells.length !== b.cells.length) return false;
   for (let i = 0; i < a.cells.length; i++) {
     const x = a.cells[i];
     const y = b.cells[i];
@@ -109,6 +116,13 @@ interface FlipTitleProps {
   className?: string;
   /** 切换方向(±1)，控制绕 Y 旋转的正负 */
   direction?: number;
+  /**
+   * 首帧折入是否可以播了（默认 true）。
+   * 胶片页首次挂载时有一层全屏黑幕（.demo-flash.entering，0.2s 延迟 + 0.8s 淡出），
+   * 黑幕盖着时播挂载折入，用户只会看到"黑幕散去后标题已是成品"——即"没有动画、直接出现"。
+   * 所以由父组件在黑幕淡出后把它置为 true。
+   */
+  enterReady?: boolean;
 }
 
 /**
@@ -155,7 +169,8 @@ function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
     const node = ghost.firstChild;
     const naturalW = parseFloat(getComputedStyle(ghost).width);
     const w = Number.isFinite(naturalW) && naturalW > 0 ? naturalW : 0;
-    if (!node || w <= 0) return { w: 0, cells: [] };
+    // 空文字/量不到：不算"会换行"（wrap 只表示真实换行），空转出层因此不会触发退化路径
+    if (!node || w <= 0) return { w: 0, cells: [], wrap: false };
 
     const originX = clone.getBoundingClientRect().left;
     const range = document.createRange();
@@ -170,8 +185,8 @@ function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
       if (!Number.isFinite(x) || !Number.isFinite(b.width) || b.width <= 0) continue;
       cells.push({ ch, x, w: b.width });
     }
-    if (cells.length === 0) return { w: 0, cells: [] };
-    return { w, cells };
+    if (cells.length === 0) return { w: 0, cells: [], wrap: true };
+    return { w, cells, wrap: wrapsInLayout(liveH1, w) };
   } finally {
     document.body.removeChild(host);
   }
@@ -198,7 +213,7 @@ function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
  *  - 连续快速换文字时，上一轮"转入层"会原地变成新的一轮"转出层"，折叠从当前角度继续
  *    （不会跳回 0），但更早那层若还在转入途中会被卸载 —— 极快速连切时可能看到一次骤停
  */
-export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
+export function FlipTitle({ text, className, direction = 1, enterReady = true }: FlipTitleProps) {
   const [steady, setSteady] = useState(text);
   const [outText, setOutText] = useState<string | null>(null);
   const [flipToken, setFlipToken] = useState(0);
@@ -263,8 +278,17 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
     }
     const out = measureTextLayout(el, prev);
     const incoming = measureTextLayout(el, text);
-    if (out.cells.length === 0 || incoming.cells.length === 0) {
-      // 逐字母量取不可用（极端布局/字体未就绪）→ 直接切换文字，不做折叠
+    // 把这次量取结果同步写进 layouts：必须与 flipToken 同一批提交。
+    // 否则折叠 effect 运行的当次提交里转入层还没渲染（新文字的排版数据是下一拍才进 state 的），
+    // inGlyphs 拿到空数组 → 新字母既没被立成 -90° 也没被补间，直接以 0° 呈现，
+    // 表现就是"新标题比副标题更早到位、没有折叠动画"，且只有"首次到达该帧"才会出现
+    // （回看时该文字已在 layouts 里，转入层当次就渲染出来，于是正常）。
+    setLayouts((prevLayouts) => ({ ...prevLayouts, [prev]: out, [text]: incoming }));
+    // 只有"转入方"的换行/量取失败才需要退化；转出层是空文字（首次挂载）时不算问题
+    const wrap = incoming.wrap || (prev.length > 0 && out.wrap);
+    setWrapped(wrap);
+    if (wrap || incoming.cells.length === 0) {
+      // 会换行 / 逐字母量取不可用 → 直接切换文字，不做折叠
       setOutText(null);
       setSteady(text);
       return;
@@ -289,10 +313,9 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
         changed = true;
       }
     });
-    // 真·换行判定：读真 ghost 的行数（用宽度比较会把"新标题更宽"误判成换行）
-    const ghosts = el.querySelectorAll<HTMLElement>('.flip-ghost');
-    const wrappedNow = ghostLineCount(ghosts[1] ?? null) > 1;
-    if (wrappedNow !== wrapped) setWrapped(wrappedNow);
+    // 换行判定同样走静态判据（见 wrapsInLayout 注释），不受入场揭示影响
+    const wrapNow = !!next[steady]?.wrap || (outText ? !!next[outText]?.wrap : false);
+    if (wrapNow !== wrapped) setWrapped(wrapNow);
     if (changed) setLayouts(next);
   }, [steady, outText, version, layouts, wrapped]);
 
@@ -315,22 +338,31 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
     };
   }, []);
 
+  // 首次挂载：没有"上一段文字"，按"从无到有"播一次逐字母折入。
+  // 胶片页的内容是首次激活时才挂载的，所以"第一次滑到某一帧"其实是"新挂载 + 没有文字变化"，
+  // 不补这一次入场，就会表现为"第一次不播动画、文字直接出现"；后续来回切因组件已挂载才有折叠。
+  // 转出层用空字符串：它没有字母卡、不渲染，只负责让转入层从 -90° 折进来。
+  // 这里立刻触发（不等 enterReady）：折叠 effect 会先把字母立成 -90° 藏起来（在黑幕后面），
+  // 只把补间延后到 enterReady——否则黑幕将淡完时会把"成品标题"漏出来一瞬。
+  const [enteredOnce, setEnteredOnce] = useState(false);
+  useLayoutEffect(() => {
+    if (enteredOnce) return;
+    setEnteredOnce(true);
+    setOutText('');
+    setFlipToken((t) => t + 1);
+  }, [enteredOnce]);
+
   // 折叠动画：在层 DOM 提交后、首次绘制前启动（转入层先立成 -90°，避免闪出新文字）
   useLayoutEffect(() => {
     if (!flipToken) return;
     const dir = directionRef.current;
-    // 真 ghost 行数 > 1 = 真实布局里换行了 → 折叠模型（单行逐字母格）不成立，
-    // 直接退化为"文字当场出现"：清掉转出层，转入层按整块一格渲染（排版与换行保持一致）
-    const ghosts = h1Ref.current?.querySelectorAll<HTMLElement>('.flip-ghost');
-    if (ghostLineCount(ghosts?.[0] ?? null) > 1 || ghostLineCount(ghosts?.[1] ?? null) > 1) {
-      setWrapped(true);
-      setOutText(null);
-      return;
-    }
     const inGlyphs = glyphsOf(inLayerRef.current);
     const outGlyphs = glyphsOf(outLayerRef.current);
     gsap.killTweensOf([...inGlyphs, ...outGlyphs]);
+    // 先把转入层立成侧立（隐藏）：无论是否被黑幕盖着，都不会闪出成品
     gsap.set(inGlyphs, { rotationY: -90 * dir });
+    // 首帧折入要等黑幕淡完再播：黑幕盖着时播完，用户只会看到成品直接出现
+    if (!enterReady) return;
 
     const n = Math.max(1, Math.max(inGlyphs.length, outGlyphs.length) - 1);
     const count = Math.max(inGlyphs.length, outGlyphs.length);
@@ -379,14 +411,15 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
       timerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flipToken]);
+  }, [flipToken, enterReady]);
 
-  // 静止时（含退化切换、首次挂载）给当前文字的字母起呼吸波
+  // 静止时（含退化切换、折叠收尾）给当前文字的字母起呼吸波。
+  // 注意用 outText !== null 判断"折叠进行中"：首次挂载的转出层是空字符串，也要算进行中。
   useLayoutEffect(() => {
-    if (flipToken && outText) return; // 折叠进行中：交给折叠收尾
+    if (flipToken && outText !== null) return;
     startWobble(glyphsOf(inLayerRef.current));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steady, flipToken, version]);
+  }, [steady, flipToken, version, outText]);
 
   // 卸载清理
   useEffect(() => {

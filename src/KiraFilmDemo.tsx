@@ -171,6 +171,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // 进入闪光：从 App 切换过来时，全屏白色淡出露出新场景
   // mount 时 entering=true（白屏），下一帧加 fade-out class 触发淡出过渡
   const [enteringFadeOut, setEnteringFadeOut] = useState(false);
+  // 进入黑幕是否已淡完：黑幕（.demo-flash.entering，0.2s 延迟 + 0.8s 淡出）盖着时
+  // 标题的首帧折入会被整段遮住，看起来就是"没有动画、文字直接出现"，所以要等它淡完再放行
+  const [enterFlashDone, setEnterFlashDone] = useState(false);
 
   // 详情模式：滚轮滚到底（镜头贴到最近）时丝滑进入对应 section 的展示页面
   // - detailOpen=true 时显示全屏详情覆盖层（项目卡片 + 完整信息）
@@ -206,6 +209,12 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       requestAnimationFrame(() => setEnteringFadeOut(true));
     });
     return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // 兜底：万一黑幕的 transitionend 没触发（过渡被打断等），按时长上限放行首帧折入
+  useEffect(() => {
+    const timer = window.setTimeout(() => setEnterFlashDone(true), 1400);
+    return () => window.clearTimeout(timer);
   }, []);
 
   /**
@@ -723,8 +732,12 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
 
   return (
     <>
-      {/* 进入闪光层：从 App 切换过来时全屏白色，mount 后淡出露出新场景 */}
-      <div className={`demo-flash entering ${enteringFadeOut ? 'fade-out' : ''}`} />
+      {/* 进入闪光层：从 App 切换过来时全屏白色，mount 后淡出露出新场景
+          transitionend 用于放行标题首帧折入（见 FlipTitle 的 enterReady） */}
+      <div
+        className={`demo-flash entering ${enteringFadeOut ? 'fade-out' : ''}`}
+        onTransitionEnd={() => setEnterFlashDone(true)}
+      />
 
       {/* 穿回主页面闪光层：向上快速滚到 SCROLL_BACK → 白色渐显掩盖切回 `/` */}
       <div className={`demo-flash outgoing ${backFlash ? 'visible' : ''}`} />
@@ -802,7 +815,12 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
             ref={heroBlockRef}
           >
           {/* 大标题：旋转棱柱翻牌（shader.se m7 复刻，自管切换动画） */}
-          <FlipTitle text={currentSection.title} direction={flipDir} className="film-title" />
+          <FlipTitle
+            text={currentSection.title}
+            direction={flipDir}
+            className="film-title"
+            enterReady={enterFlashDone}
+          />
           <div className="reveal-clip"><p className="film-subtitle" ref={filmSubtitleRef}>
             {currentSection.subtitle}
           </p></div>
