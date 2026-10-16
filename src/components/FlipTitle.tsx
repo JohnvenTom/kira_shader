@@ -32,8 +32,8 @@ const FOLD_MIN = 0.42;
 const FOLD_MAX = 0.86;
 /** 相邻字母起始错峰(s) */
 const STAGGER = 0.045;
-/** 转入相对转出的滞后比例（转出走完这么多才开始转入） */
-const IN_LAG = 0.85;
+/** 转入相对转出的滞后比例：1.0 = 同一字母的转出折完才转入，逐字母交接、不叠影 */
+const IN_LAG = 1;
 /** 静止呼吸波：幅度(deg) 与单程时长(s) */
 const WOBBLE_AMP = 0.8;
 const WOBBLE_DUR = 1.6;
@@ -51,10 +51,57 @@ interface LetterCell {
 interface TextLayout {
   /** 文字自然宽(px) */
   w: number;
-  /** 逐字母格（空格不建格，其区间自然留白） */
+  /** 逐字母格（空格不建格，其区间自然留白）；空数组表示量取失败 */
   cells: LetterCell[];
-  /** 真实布局里这段文字会换行 → 退化为"整块一格 + 不做折叠动画" */
-  wrap: boolean;
+}
+
+/**
+ * 读一个真 ghost 的行数
+ *
+ * 功能：用 Range 跑一遍 ghost 内容并按行取矩形，行数 > 1 即真实布局里换行了。
+ *
+ * 参数：el 真实的隐形 ghost 元素（可为 null）
+ *
+ * 返回值：行数；量不到时返回 1（按"不换行"处理）
+ *
+ * 异常：无
+ *
+ * 注意事项：行数是纯布局量（矩形个数），不受鼠标视差的三维投影影响，可安全用于判定换行。
+ *          早先用"文字自然宽 vs 父容器 clientWidth"来判定是错的——那个父容器是被子元素
+ *          撑出来的（宽 = h1 的 max-content），于是判定退化成"新标题比旧标题宽吗"，
+ *          导致"新标题更宽"的切换被误判成换行 → 动画被跳过、文字直接出现。
+ */
+function ghostLineCount(el: HTMLElement | null): number {
+  if (!el || !el.firstChild) return 1;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const count = range.getClientRects().length;
+  return count > 0 ? count : 1;
+}
+
+/**
+ * 比较两份排版量取结果是否一致
+ *
+ * 功能：逐字母比较总宽与各字母格的字符/位置/宽度，用于避免"量取结果没变也 setState"。
+ *
+ * 参数：
+ *  - a 旧结果（可能为 undefined，表示还没量过）
+ *  - b 新结果
+ *
+ * 返回值：true = 完全一致（渲染用不到任何变化）
+ *
+ * 异常：无
+ *
+ * 注意事项：只比较渲染真正用到的字段，浮点直接全等比较即可（同一输入下量取值稳定）。
+ */
+function sameLayout(a: TextLayout | undefined, b: TextLayout): boolean {
+  if (!a || a.w !== b.w || a.cells.length !== b.cells.length) return false;
+  for (let i = 0; i < a.cells.length; i++) {
+    const x = a.cells[i];
+    const y = b.cells[i];
+    if (x.ch !== y.ch || x.x !== y.x || x.w !== y.w) return false;
+  }
+  return true;
 }
 
 interface FlipTitleProps {
@@ -84,8 +131,7 @@ interface FlipTitleProps {
  *  - 克隆容器给 max-content（而不是固定超宽）：克隆里的 ghost 是单列 auto 网格项，
  *    会被拉到容器宽度上，容器一宽 ghost 的宽度也跟着变，换行判定就会误判
  *  - 克隆里强制单行：真实渲染也是单行（.flip-glyph 为 nowrap），逐字符盒子永远单行有效
- *  - 换行判定用"父容器 clientWidth"（真实可用宽，布局值），而不是 h1 自己的宽：
- *    h1 的宽是被文字撑出来的，文字更宽时它自己也会跟着变宽，判断不出换行
+ *  - 换行与否由调用方用真 ghost 的行数判定（ghostLineCount），这里只负责"逐字母"量取
  *  - 字体未就绪时量到的是回退字体的度量，调用方在 fonts.ready / 尺寸变化时会作废缓存重量
  */
 function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
@@ -109,11 +155,7 @@ function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
     const node = ghost.firstChild;
     const naturalW = parseFloat(getComputedStyle(ghost).width);
     const w = Number.isFinite(naturalW) && naturalW > 0 ? naturalW : 0;
-    // 真实可用宽：h1 的父容器内容宽（换行与否取决于它，而不是被文字撑开的 h1）
-    const avail = liveH1.parentElement ? liveH1.parentElement.clientWidth : 0;
-    if (!node || w <= 0 || (avail > 0 && w > avail + 1)) {
-      return { w: 0, cells: [], wrap: true };
-    }
+    if (!node || w <= 0) return { w: 0, cells: [] };
 
     const originX = clone.getBoundingClientRect().left;
     const range = document.createRange();
@@ -128,8 +170,8 @@ function measureTextLayout(liveH1: HTMLElement, text: string): TextLayout {
       if (!Number.isFinite(x) || !Number.isFinite(b.width) || b.width <= 0) continue;
       cells.push({ ch, x, w: b.width });
     }
-    if (cells.length === 0) return { w: 0, cells: [], wrap: true };
-    return { w, cells, wrap: false };
+    if (cells.length === 0) return { w: 0, cells: [] };
+    return { w, cells };
   } finally {
     document.body.removeChild(host);
   }
@@ -161,10 +203,18 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
   const [outText, setOutText] = useState<string | null>(null);
   const [flipToken, setFlipToken] = useState(0);
   const [version, setVersion] = useState(0);
+  /**
+   * 排版量取结果的 state：分段文字 → 逐字母格。
+   * 必须是 state 而不是 ref：渲染期读 ref 时，一旦清缓存就会出现"层卸载 → 下一拍重挂"，
+   * 重挂的字形没有任何 transform（rotationY 0 裸露），而 GSAP 补间还挂在旧节点上，
+   * 结果就是新旧文字平铺叠在一起、看不到动画（变宽切换时 h1 变宽必现）。
+   */
+  const [layouts, setLayouts] = useState<Record<string, TextLayout>>({});
+  /** 真实布局里当前标题换行了（真 ghost 行数 > 1）→ 退化为整块一格、不做折叠动画 */
+  const [wrapped, setWrapped] = useState(false);
   const h1Ref = useRef<HTMLHeadingElement>(null);
   const inLayerRef = useRef<HTMLDivElement>(null);
   const outLayerRef = useRef<HTMLDivElement>(null);
-  const cacheRef = useRef<Record<string, TextLayout>>({});
   const steadyRef = useRef(steady);
   const directionRef = useRef(direction);
   const timerRef = useRef<number | null>(null);
@@ -211,59 +261,57 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
       setOutText(null);
       return;
     }
-    const out = cacheRef.current[prev] ?? (cacheRef.current[prev] = measureTextLayout(el, prev));
-    const incoming = cacheRef.current[text] ?? (cacheRef.current[text] = measureTextLayout(el, text));
-    if (out.wrap || incoming.wrap) {
-      // 退化：真实布局会换行（文字比容器宽）→ 直接切换，保持换行排版不做折叠
+    const out = measureTextLayout(el, prev);
+    const incoming = measureTextLayout(el, text);
+    if (out.cells.length === 0 || incoming.cells.length === 0) {
+      // 逐字母量取不可用（极端布局/字体未就绪）→ 直接切换文字，不做折叠
       setOutText(null);
       setSteady(text);
-      setVersion((v) => v + 1);
       return;
     }
     setOutText(prev);
     setSteady(text);
-    setVersion((v) => v + 1);
     setFlipToken((t) => t + 1);
   }, [text]);
 
-  // 排版：按需量取当前渲染到的每段文字（层渲染要用它）。
-  // 依赖里必须带 version：字体就绪/尺寸变化会清空缓存，只有 version 变化才能触发重建，
-  // 否则缓存被清空后再也没人填，层会一直渲染不出来。
+  // 排版量取：把当前渲染到的每段文字量成 state 交给渲染用。
+  // 不在渲染期读 ref、也不"清空重填"，避免翻转中途层被卸载重挂（见 layouts 的注释）。
   useLayoutEffect(() => {
     const el = h1Ref.current;
     if (!el) return;
+    const next: Record<string, TextLayout> = { ...layouts };
     let changed = false;
     [steady, outText].forEach((t) => {
       if (!t) return;
-      const had = !!cacheRef.current[t];
-      if (had && !cacheRef.current[t].wrap) return;
-      cacheRef.current[t] = measureTextLayout(el, t);
-      if (!had) changed = true; // 只在"新建缓存"时重渲染一次，避免与清缓存互相触发成死循环
+      const measured = measureTextLayout(el, t);
+      if (!sameLayout(layouts[t], measured)) {
+        next[t] = measured;
+        changed = true;
+      }
     });
-    if (changed) setVersion((v) => v + 1);
-  }, [steady, outText, version]);
+    // 真·换行判定：读真 ghost 的行数（用宽度比较会把"新标题更宽"误判成换行）
+    const ghosts = el.querySelectorAll<HTMLElement>('.flip-ghost');
+    const wrappedNow = ghostLineCount(ghosts[1] ?? null) > 1;
+    if (wrappedNow !== wrapped) setWrapped(wrappedNow);
+    if (changed) setLayouts(next);
+  }, [steady, outText, version, layouts, wrapped]);
 
-  // 字体就绪 / 容器尺寸变化 → 作废缓存并重渲染（字号、视口变化都会改变逐字母位置）
+  // 字体就绪 / 视口尺寸变化 → 重新量取（字号是 7vw，换行阈值也随视口变）。
+  // 特意不观察 h1 自身：它的宽度变化是"ghost 取 max(旧,新)"造成的自扰信号，翻转起点必触发一次，
+  // 拿它做"清缓存"的触发源正是"直接重叠"的成因。
   useLayoutEffect(() => {
-    const el = h1Ref.current;
-    if (!el) return;
     let cancelled = false;
-    const invalidate = () => {
+    const schedule = () => {
       if (cancelled) return;
-      cacheRef.current = {};
       setVersion((v) => v + 1);
     };
     if (document.fonts?.ready) {
-      document.fonts.ready.then(() => invalidate()).catch(() => undefined);
+      document.fonts.ready.then(() => schedule()).catch(() => undefined);
     }
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => invalidate());
-      ro.observe(el);
-    }
+    window.addEventListener('resize', schedule);
     return () => {
       cancelled = true;
-      ro?.disconnect();
+      window.removeEventListener('resize', schedule);
     };
   }, []);
 
@@ -271,6 +319,14 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
   useLayoutEffect(() => {
     if (!flipToken) return;
     const dir = directionRef.current;
+    // 真 ghost 行数 > 1 = 真实布局里换行了 → 折叠模型（单行逐字母格）不成立，
+    // 直接退化为"文字当场出现"：清掉转出层，转入层按整块一格渲染（排版与换行保持一致）
+    const ghosts = h1Ref.current?.querySelectorAll<HTMLElement>('.flip-ghost');
+    if (ghostLineCount(ghosts?.[0] ?? null) > 1 || ghostLineCount(ghosts?.[1] ?? null) > 1) {
+      setWrapped(true);
+      setOutText(null);
+      return;
+    }
     const inGlyphs = glyphsOf(inLayerRef.current);
     const outGlyphs = glyphsOf(outLayerRef.current);
     gsap.killTweensOf([...inGlyphs, ...outGlyphs]);
@@ -343,8 +399,8 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const inLayout = cacheRef.current[steady];
-  const outLayout = outText ? cacheRef.current[outText] : undefined;
+  const inLayout = layouts[steady];
+  const outLayout = outText ? layouts[outText] : undefined;
 
   return (
     <h1 ref={h1Ref} className={`${className ?? ''} flip-title`}>
@@ -357,12 +413,12 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
       </span>
       <div className="flip-stage" aria-live="polite">
         {/* 转入/常驻层：当前文字 */}
-        {inLayout && (
+        {inLayout && inLayout.cells.length > 0 && (
           <div
             ref={inLayerRef}
             className="flip-layer"
             style={
-              inLayout.wrap
+              wrapped
                 ? { left: 0, right: 0 }
                 : {
                     left: '50%',
@@ -371,7 +427,7 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
                   }
             }
           >
-            {inLayout.wrap ? (
+            {wrapped ? (
               <div className="flip-cell" style={{ left: 0, right: 0 }}>
                 <div className="flip-glyph" style={{ whiteSpace: 'normal' }}>
                   {steady}
@@ -381,7 +437,7 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
               inLayout.cells.map((c, i) => (
                 <div
                   className="flip-cell"
-                  key={`${i}-${c.x}`}
+                  key={i}
                   style={{ left: `${c.x - CELL_PAD}px`, width: `${c.w + CELL_PAD * 2}px` }}
                 >
                   <div className="flip-glyph" style={{ paddingLeft: `${CELL_PAD}px` }}>
@@ -394,7 +450,7 @@ export function FlipTitle({ text, className, direction = 1 }: FlipTitleProps) {
         )}
 
         {/* 转出层：翻牌期间临时挂载的旧文字 */}
-        {outText && outLayout && !outLayout.wrap && (
+        {!wrapped && outText && outLayout && outLayout.cells.length > 0 && (
           <div
             ref={outLayerRef}
             className="flip-layer"
