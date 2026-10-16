@@ -1529,20 +1529,24 @@ function OfficeDetailPage({
  *      下溢出 → mov_y -= container_height（跳到上边）
  *      上溢出 → mov_y += container_height（跳到下边）
  *  - 回绕时 GSAP duration=0 立即跳转，正常拖拽 duration=1 平滑过渡
- *  - 容器整体 scale 适配不同屏幕（基准宽度 1440px）
+ *  - 容器整体 scale 高度锚定：卡片屏幕高恒为 视口高 ÷ WORK_VISIBLE_ROWS
+ *    （未缩放一屏 4 行、×2 后 2 行），与屏宽/宽高比无关；超宽屏兜底横向铺满
  *  - 卡片数据循环复用 PROJECTS（6 列 × 7 行 = 42 张），上下各多一行作回绕缓冲
  *  - 滚轮平滑缩放：下滚连续放大（1→×2，一屏两卡高度），上滚连续缩小，
  *    完全还原后上滚冒泡走外层退出路径
  *  - 镜头鱼眼：SVG feDisplacementMap 位图位移滤镜（contact 页同款
  *    像素级畸变，非卡片网格位移），单条连续曲线：未放大满枕形内弯
- *    → 缩放中点过零 → ×2 满桶形外弯，两侧等幅，随缩放因子平滑过渡
+ *    → 缩放中点过零 → ×2 满桶形外弯，两侧等幅，随缩放因子平滑过渡；
+ *    滤镜区域对齐屏幕可见区、强度按可见区宽取比例 → 任意分辨率观感一致
  */
 /** 滚轮平滑缩放灵敏度：每像素 deltaY 的缩放因子增量（1→2 全程约 450px，4 个滚轮格） */
 const WORK_ZOOM_SENS = 0.0022;
 /** 最大缩放因子：×2 后卡片高度 = 视口一半（一屏恰好两卡） */
 const WORK_ZOOM_MAX = 2;
-/** 镜头鱼眼滤镜最大位移强度（feDisplacementMap scale，容器本地 px，两侧等幅） */
-const WORK_FISHEYE_MAX = 310;
+/** 设计基准：未缩放（factor=1）时一屏纵向可见 4 行卡片（×2 后恰好 2 行两卡） */
+const WORK_VISIBLE_ROWS = 4;
+/** 镜头鱼眼最大位移量相对「屏幕可见区宽度」的比例（两侧等幅，视觉量级与分辨率无关） */
+const WORK_FISHEYE_RATIO = 0.22;
 function WorkDetailPage({
   mouseRef,
   detailOpen,
@@ -1560,8 +1564,9 @@ function WorkDetailPage({
   const innerRef = useRef<HTMLDivElement>(null);
   // 连续缩放因子 1~WORK_ZOOM_MAX（1 标准 / ×2 一屏两卡），滚轮平滑驱动
   const zoomFactorRef = useRef(1);
-  // 鱼眼滤镜：位移图 dataURL（一次性 canvas 生成）+ feDisplacementMap 节点 ref
-  // + GSAP 补间代理（滚轮事件之间平滑过渡滤镜强度）
+  // 鱼眼滤镜：位移图 dataURL（一次性 canvas 生成）+ 滤镜区域 ref
+  // + feDisplacementMap 节点 ref + GSAP 补间代理（滚轮事件之间平滑过渡滤镜强度）
+  const fisheyeFilterRef = useRef<SVGFilterElement | null>(null);
   const fisheyeDispRef = useRef<SVGFEDisplacementMapElement | null>(null);
   const fisheyeProxyRef = useRef({ v: 0 });
   // 视差变形层 ref（写入 --px/--py/--rx/--ry 驱动标题 3D 视差）
@@ -1612,8 +1617,7 @@ function WorkDetailPage({
    *                           （容器居中缩放显示，可见区 = 容器中心的一段；
    *                             回绕判定用可见区而非容器边界，消除"屏幕外
    *                             但容器内"的死区黑边）
-   *  - scaleNums             当前视口相对基准宽度的缩放比例
-   *  - standardWidth         设计基准宽度 1440px
+   *  - scaleNums             当前缩放比例（高度锚定：视口高 ÷ 可见行数 ÷ 卡片本地高）
    */
   const dimsRef = useRef({
     containerWidth: 0,
@@ -1625,7 +1629,6 @@ function WorkDetailPage({
     visibleTop: 0,
     visibleBottom: 0,
     scaleNums: 1,
-    standardWidth: 1440,
   });
 
   /**
@@ -1714,8 +1717,15 @@ function WorkDetailPage({
     dims.containerHeight = container.offsetHeight;
     dims.photoWidth = cards[0].offsetWidth;
     dims.photoHeight = cards[0].offsetHeight;
-    // 基础适配 × 当前缩放因子（滚轮平滑缩放中窗口变化不丢缩放）
-    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * zoomFactorRef.current;
+    // 高度锚定基础适配 × 当前缩放因子（滚轮平滑缩放中窗口变化不丢缩放）：
+    // 卡片屏幕高恒为 视口高 ÷ WORK_VISIBLE_ROWS（与屏宽、宽高比无关）；
+    // 再以"容器本地宽 × 缩放 ≥ 视口宽"兜底，保证超宽屏（宽高比 > 2.8:1）
+    // 下网格仍能横向铺满、不露黑底
+    const baseScale = Math.max(
+      window.innerHeight / (WORK_VISIBLE_ROWS * dims.photoHeight),
+      window.innerWidth / dims.containerWidth
+    );
+    dims.scaleNums = baseScale * zoomFactorRef.current;
     // 屏幕可见区换算到容器本地坐标：容器在视口中居中（flex 居中 + scale 原点为中心），
     // 可见区宽高 = 视口宽高 ÷ 缩放比例，再以容器中心对称求出四条边界
     const visW = window.innerWidth / dims.scaleNums;
@@ -1795,28 +1805,50 @@ function WorkDetailPage({
    * 返回值：无
    *
    * 注意事项：
+   *  - 滤镜区域对齐"屏幕可见区"（元素本地坐标）：位移图的 r 便归一到可见区
+   *    半宽/半高，鱼眼曲率只与屏幕有关，不再被容器/字号放大而稀释 ——
+   *    小分辨率下同样清晰可见
+   *  - 位移强度 = WORK_FISHEYE_RATIO × 可见区宽 × k：屏幕上的视觉量级与分辨率无关
    *  - 去重守卫：取整值不变不写 attribute —— feDisplacementMap 每次变更
    *    都触发整容器 SVG 滤镜重栅格化，开销大
    */
   const applyFisheye = useCallback((factor: number) => {
     const container = photosRef.current;
     const disp = fisheyeDispRef.current;
-    if (!container || !disp) return;
+    const filter = fisheyeFilterRef.current;
+    if (!container || !disp || !filter) return;
+    const dims = dimsRef.current;
+    const visW = dims.visibleRight - dims.visibleLeft;
+    const visH = dims.visibleBottom - dims.visibleTop;
+    // 滤镜区域对齐可见区（百分比相对元素 bbox：x/width 按容器宽，y/height 按容器高）
+    if (visW > 0 && visH > 0 && dims.containerWidth > 0 && dims.containerHeight > 0) {
+      filter.setAttribute('x', `${(dims.visibleLeft / dims.containerWidth) * 100}%`);
+      filter.setAttribute('y', `${(dims.visibleTop / dims.containerHeight) * 100}%`);
+      filter.setAttribute('width', `${(visW / dims.containerWidth) * 100}%`);
+      filter.setAttribute('height', `${(visH / dims.containerHeight) * 100}%`);
+    }
     const k = (2 * factor - (1 + WORK_ZOOM_MAX)) / (WORK_ZOOM_MAX - 1);
     container.style.filter = Math.abs(k) > 0.001 ? 'url(#work-fisheye)' : '';
-    let lastScale = Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX);
+    // 位移强度 = 比例 × 可见区宽（屏幕看得见的量级）× k
+    const maxScale = WORK_FISHEYE_RATIO * visW;
+    // 去重基准取"当前实际写入值"（而非 proxy.v × maxScale）：maxScale 每次调用都可能变
+    let lastScale = Number(disp.getAttribute('scale') ?? 0);
+    const writeScale = () => {
+      const s = Math.round(fisheyeProxyRef.current.v * maxScale);
+      if (s !== lastScale) {
+        lastScale = s;
+        disp.setAttribute('scale', String(s));
+      }
+    };
+    // 先按新 maxScale 主动对齐一次：窗口/resize 变化时 proxy.v 往往已停在端点，
+    // 随后的 0.45s 补间不再产生数值变化，不主动写就会残留上一次窗口的强度
+    writeScale();
     gsap.to(fisheyeProxyRef.current, {
       v: k,
       duration: 0.45,
       ease: 'power2.out',
       overwrite: true,
-      onUpdate: () => {
-        const s = Math.round(fisheyeProxyRef.current.v * WORK_FISHEYE_MAX);
-        if (s !== lastScale) {
-          lastScale = s;
-          disp.setAttribute('scale', String(s));
-        }
-      },
+      onUpdate: writeScale,
     });
   }, []);
 
@@ -1850,7 +1882,12 @@ function WorkDetailPage({
     const container = photosRef.current;
     const dims = dimsRef.current;
     if (!container || !dims.containerWidth) return;
-    dims.scaleNums = (document.body.offsetWidth / dims.standardWidth) * clamped;
+    // 与 resize 同一高度锚定公式（含横向铺满兜底），只把基准乘上滚轮缩放因子
+    const baseScale = Math.max(
+      window.innerHeight / (WORK_VISIBLE_ROWS * dims.photoHeight),
+      window.innerWidth / dims.containerWidth
+    );
+    dims.scaleNums = baseScale * clamped;
     const visW = window.innerWidth / dims.scaleNums;
     const visH = window.innerHeight / dims.scaleNums;
     dims.visibleLeft = (dims.containerWidth - visW) / 2;
@@ -2429,9 +2466,18 @@ function WorkDetailPage({
       }
     >
       {/* 镜头鱼眼滤镜：位移图（fisheyeMapUrl）+ feDisplacementMap，
-          强度 scale 由 applyZoomFactor 随缩放因子补间；挂在 .work-photos 上 */}
+          滤镜区域由 applyFisheye 对齐到"屏幕可见区"，强度 scale 随缩放因子
+          补间（视觉量级与分辨率无关）；挂在 .work-photos 上 */}
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
-        <filter id="work-fisheye" x="-5%" y="-5%" width="110%" height="110%" colorInterpolationFilters="sRGB">
+        <filter
+          id="work-fisheye"
+          ref={fisheyeFilterRef}
+          x="-5%"
+          y="-5%"
+          width="110%"
+          height="110%"
+          colorInterpolationFilters="sRGB"
+        >
           <feImage
             href={fisheyeMapUrl}
             x="0"
