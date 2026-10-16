@@ -17,7 +17,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
  *   → 动态模糊(帧率无关 ping-pong mix) → motionRT
  *   → FilmShader: pow → sepia → 亮度 → 对比度 → 饱和度 → 垂直色差
  *      → 高斯颗粒 → 暗角
- *   → 体积雾(本站自有，原站无；默认参数关闭)
+ *   → 2D 屏幕空间雾(本站自有，原站无；胶片页已开启淡档；不需要深度，鼠标流场拨开)
  *
  * 架构说明：bloom 与 motion blur 在 composer 外用独立 RT 链执行
  * （bloom 需要自有 mip 链；motion 的 tPrevious 若挂在 composer 的
@@ -75,10 +75,11 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   // 想恢复：0.1 = 隐约自然档，0.35 = 中等，0.87 = shader.se 原版风格。
   noiseIntensity: 0,
   noiseVelocity: 1.0,
-  // 体积雾是本站自有功能（shader.se 无）；胶片页默认关闭，
-  // 需要时把 fogOpacity 调回 0~1
-  fogDensity: 0.22,
-  fogOpacity: 0.0,
+  // 体积雾是本站自有功能（shader.se 无）；胶片页打开，走「淡档」：
+  // fogDensity 控随深度累积的浓度、fogOpacity 是整体不透明度（0 = 完全关闭）。
+  // 更浓 → 0.25~0.35；更淡 → 0.10~0.14；黑洞页自己把 fogOpacity 钉为 0（见其专用参数）
+  fogDensity: 0.14,
+  fogOpacity: 0.16,
 };
 
 /* =========================================================================
@@ -390,23 +391,18 @@ const FluidAdvShader = {
   `,
 };
 
-const VolumetricFogShader = {
+const ScreenFogShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
-    tDepth: { value: null as THREE.Texture | null },
-    uProjInv: { value: new THREE.Matrix4() },
-    uViewInv: { value: new THREE.Matrix4() },
     uTime: { value: 0 },
-    uFogColor: { value: new THREE.Color(0.55, 0.52, 0.47) },
+    // 雾色：暗暖灰（原值 0.55/0.52/0.47 太亮，线性 0.55 转 sRGB 后≈0.77，在暗场景里
+    // 读起来就是"白雾"）。这里压到线性 0.19，sRGB 约 0.47 的灰，只当一层薄霾
+    uFogColor: { value: new THREE.Color(0.19, 0.18, 0.17) },
     uDensity: { value: 0.22 },
     uNoiseScale: { value: 0.35 },
     uDrift: { value: REDUCED_MOTION ? 0 : FOG_DRIFT_SPEED },
-    uMaxDist: { value: 26.0 },
     uMaxOpacity: { value: 0.45 },
-    uLightDir: { value: new THREE.Vector3(-0.45, 0.7, 0.35).normalize() },
-    uSteps: { value: 12 },
     tVel: { value: null as THREE.Texture | null },
-    uVP: { value: new THREE.Matrix4() },
     uVelStrength: { value: 2.2 },
   },
   vertexShader: `
@@ -418,20 +414,13 @@ const VolumetricFogShader = {
   `,
   fragmentShader: `
     uniform sampler2D tDiffuse;
-    uniform sampler2D tDepth;
-    uniform mat4 uProjInv;
-    uniform mat4 uViewInv;
+    uniform sampler2D tVel;
     uniform float uTime;
     uniform vec3 uFogColor;
     uniform float uDensity;
     uniform float uNoiseScale;
     uniform float uDrift;
-    uniform float uMaxDist;
     uniform float uMaxOpacity;
-    uniform vec3 uLightDir;
-    uniform float uSteps;
-    uniform sampler2D tVel;
-    uniform mat4 uVP;
     uniform float uVelStrength;
     varying vec2 vUv;
 
@@ -464,45 +453,17 @@ const VolumetricFogShader = {
 
     void main() {
       vec4 base = texture2D(tDiffuse, vUv);
-      float depth = texture2D(tDepth, vUv).x;
-
-      vec4 cn = uProjInv * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
-      vec3 vNear = cn.xyz / cn.w;
-      vec4 cf = uProjInv * vec4(vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-      vec3 vFar = cf.xyz / cf.w;
-      vec3 dirView = normalize(vFar - vNear);
-
-      vec3 camWorld = (uViewInv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-      vec3 dirWorld = normalize((uViewInv * vec4(dirView, 0.0)).xyz);
-
-      float dist = (depth >= 0.9999) ? uMaxDist : length(vFar);
-
-      float stepLen = dist / uSteps;
-      float densityScale = max(0.05, stepLen) * uDensity;
-      float phase = 0.55 + 0.45 * max(0.0, dot(dirWorld, -uLightDir));
-
-      float acc = 0.0;
-      float wsum = 0.0;
-      for (int i = 0; i < 12; i++) {
-        if (float(i) >= uSteps) break;
-        float t = (float(i) + 0.5) * stepLen;
-        vec3 wp = camWorld + dirWorld * t;
-        vec4 clipPos = uVP * vec4(wp, 1.0);
-        vec2 suv = clipPos.xy / clipPos.w * 0.5 + 0.5;
-        vec2 flow = texture2D(tVel, clamp(suv, vec2(0.0), vec2(1.0))).xy;
-        vec3 np = wp * uNoiseScale
-          + vec3(uTime * uDrift, uTime * uDrift * 0.35, -uTime * uDrift * 0.6)
-          + vec3(flow * uVelStrength, 0.0);
-        float w = smoothstep(0.6, 2.2, t);
-        float n = smoothstep(0.44, 0.98, fbm(np));
-        acc += n * w;
-        wsum += w;
-      }
-      float fog = 1.0 - exp(-acc * densityScale * 3.0);
-      fog = clamp(fog, 0.0, 1.0) * uMaxOpacity;
-
-      float nAvg = wsum > 0.001 ? acc / wsum : 0.0;
-      vec3 fogLit = uFogColor * (0.55 + 0.85 * phase) * (0.3 + 1.05 * nAvg);
+      // 2D 雾（无深度）：取 3D 噪声的一个"屏幕切片" —— 屏幕坐标 × 尺度 + 时间漂移
+      // + 鼠标流场位移（tVel 本身就是屏幕空间的 2D 速度场，划动把雾推开）
+      vec2 flow = texture2D(tVel, vUv).xy;
+      vec3 np = vec3(
+        vUv * uNoiseScale * 7.0 + flow * uVelStrength * 0.35,
+        uTime * uDrift * 0.12
+      );
+      float n = fbm(np);
+      // uDensity 控制「噪声 → 雾」的浓度与对比：0.14 淡档，0.25 以上明显
+      float fog = clamp((n - 0.42) * uDensity * 12.0, 0.0, 1.0) * uMaxOpacity;
+      vec3 fogLit = uFogColor * (0.85 + 0.35 * n);
       vec3 outColor = mix(base.rgb, fogLit, fog);
       // 链尾线性→sRGB（雾 pass 为最终屏幕输出时）
       outColor = mix(outColor * 12.92, pow(outColor, vec3(1.0 / 2.4)) * 1.055 - 0.055,
@@ -715,7 +676,6 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
   const velReadRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velWriteRef = useRef<THREE.WebGLRenderTarget | null>(null);
   const velQuadRef = useRef<FullScreenQuad | null>(null);
-  const tmpVPRef = useRef(new THREE.Matrix4());
 
   // 流场模拟资源（体积雾交互，不变）
   useEffect(() => {
@@ -800,18 +760,17 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
         })
       );
 
-      // 体积雾 quad（链尾直绘屏幕：采样场景深度构成反馈环的唯一安全位置）
+      // 2D 屏幕空间雾 quad（链尾直绘屏幕：不采样深度，纯屏幕噪声 + 鼠标流场）
       if (!transparent) {
         fogQuadRef.current = new FullScreenQuad(
           new THREE.ShaderMaterial({
-            uniforms: THREE.UniformsUtils.clone(VolumetricFogShader.uniforms),
-            vertexShader: VolumetricFogShader.vertexShader,
-            fragmentShader: VolumetricFogShader.fragmentShader,
+            uniforms: THREE.UniformsUtils.clone(ScreenFogShader.uniforms),
+            vertexShader: ScreenFogShader.vertexShader,
+            fragmentShader: ScreenFogShader.fragmentShader,
             depthTest: false,
             depthWrite: false,
           })
         );
-        (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms.tDepth.value = depthTexture;
       }
     } catch (err) {
       console.error('[FilmPostProcessing] init ERROR:', err);
@@ -1041,15 +1000,9 @@ export function FilmPostProcessing({ params, enabled = true, transparent = false
       filmQuadRef.current.render(gl);
       const fu = (fogQuadRef.current.material as THREE.ShaderMaterial).uniforms;
       fu.uTime.value = time;
-      (fu.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
-      (fu.uViewInv.value as THREE.Matrix4).copy(camera.matrixWorld);
       if (velReadRef.current) {
         fu.tVel.value = velReadRef.current.texture;
       }
-      camera.updateMatrixWorld();
-      (tmpVPRef.current as THREE.Matrix4)
-        .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-      (fu.uVP.value as THREE.Matrix4).copy(tmpVPRef.current);
       fu.tDiffuse.value = filmRTRef.current.texture;
       gl.setRenderTarget(null);
       fogQuadRef.current.render(gl);

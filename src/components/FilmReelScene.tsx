@@ -244,6 +244,33 @@ const ReelShader = {
   `,
 };
 
+const StarShader = {
+  vertex: `
+    attribute float aSeed;
+    uniform float uTime;
+    uniform float uSize;
+    varying float vTw;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = uSize * (320.0 / max(1.0, -mv.z));
+      float ph = aSeed * 6.2831;
+      float sp = 0.6 + fract(aSeed * 7.31) * 2.4;
+      float tw = pow(0.5 + 0.5 * sin(uTime * sp + ph), 3.0);
+      float burst = step(0.972, fract(sin(floor(uTime * 2.0 + aSeed * 13.0)) * 43758.5453));
+      vTw = tw * 0.85 + burst * 0.9;
+    }
+  `,
+  fragment: `
+    varying float vTw;
+    void main() {
+      vec2 d = gl_PointCoord - 0.5;
+      float a = smoothstep(0.5, 0.05, length(d));
+      gl_FragColor = vec4(vec3(1.0, 0.98, 0.94) * vTw, a * vTw);
+    }
+  `,
+};
+
 interface FilmReelSceneProps {
   /** 滚轮推进进度 ref（-1~1，驱动相机推近/详情页进入）：用 ref 传值，
    *  避免外层滚动帧循环每帧 setState 触发整棵组件树重渲染 */
@@ -369,6 +396,23 @@ export function FilmReelScene({
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }, []);
+
+  const starGeometry = useMemo(() => {
+    const COUNT = 1200;
+    const pos = new Float32Array(COUNT * 3);
+    const seed = new Float32Array(COUNT);
+    for (let i = 0; i < COUNT; i++) {
+      pos[i * 3] = (Math.random() * 2 - 1) * bgSize.width * 0.52;
+      pos[i * 3 + 1] = (Math.random() * 2 - 1) * bgSize.height * 0.52;
+      pos[i * 3 + 2] = 0.5 + Math.random() * 6;
+      seed[i] = Math.random();
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+    return g;
+  }, [bgSize.width, bgSize.height]);
+  const starUniforms = useMemo(() => ({ uTime: { value: 0 }, uSize: { value: 1.7 } }), []);
 
   const reelMeshRef = useRef<THREE.Mesh>(null);
   const bgMeshRef = useRef<THREE.Mesh>(null);
@@ -542,6 +586,7 @@ export function FilmReelScene({
       const n = 1 + 0.5 * t;
       bgMeshRef.current.scale.set(n, n, 1);
     }
+    starUniforms.uTime.value = performance.now() * 0.001;
   });
 
   return (
@@ -552,6 +597,17 @@ export function FilmReelScene({
       <mesh ref={bgMeshRef} position={[0, 17, -200]}>
         <planeGeometry args={[bgSize.width, bgSize.height]} />
         <meshBasicMaterial map={gradientTexture} fog={false} toneMapped={false} />
+        <points geometry={starGeometry}>
+          <shaderMaterial
+            uniforms={starUniforms}
+            vertexShader={StarShader.vertex}
+            fragmentShader={StarShader.fragment}
+            transparent
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </points>
       </mesh>
 
       {/* 胶片卷缎带（原版层级等效：group 0.4 + mesh y=eg + 响应式缩放） */}
