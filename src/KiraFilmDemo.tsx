@@ -134,6 +134,9 @@ const SCROLL_ENTER = 0.92;       // 跃进阈值：显示进度超过它 → 进
 const SCROLL_EXIT = 0.85;        // 退出阈值：显示进度跌破它 → 退回主场景
 // 穿回阈值（本项目保留的额外手势，原站没有）：向上多滚约 1 屏即触发白闪切回主页面
 const SCROLL_BACK = -SCROLL_GAIN;
+/** 手势分界间隔（ms）：相邻滚轮事件间隔超过它 = 新手势。
+ *  阶段护栏（见 scrollStateRef.stageGuardDir）靠它复位 —— 同一个手势内只允许跨一个阶段 */
+const GESTURE_GAP_MS = 260;
 
 /** 受影响锚点的信息槽（复用池元素，避免帧循环逐帧新建对象） */
 type AffectedSnap = {
@@ -278,6 +281,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   // - dir     滚动方向（1 下 / -1 上，取自滚轮输入符号），决定 snap 取 forward/backward 配置
   // - touchActive    触摸中：snap 不施力，且改用更紧的触摸阻尼率
   // - inputMultiplier snap 松手释放时置 0，短暂屏蔽滚轮噪声（原站同款）
+  // - lastWheelAt    上一次滚轮注入时刻（ms）：与 GESTURE_GAP_MS 比较判定"是否新手势"
+  // - stageGuardDir  阶段护栏：本手势内已完成过一次"退阶"（详情→主场景）时记 -1，
+  //                  该手势内不再放行继续上滚到穿回主页 —— 即「一次滚轮只回一个阶段」
   const scrollStateRef = useRef({
     v: 0,
     energy: 0,
@@ -288,6 +294,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     dir: 1,
     touchActive: false,
     inputMultiplier: 1,
+    lastWheelAt: 0,
+    stageGuardDir: 0,
   });
   // 滚动进度（-1~1，驱动 3D 镜头推进与详情滞回）：
   // 放 ref 而不是 useState —— 滚动帧循环每帧都会改写它，用 setState 会每帧重渲染
@@ -567,7 +575,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   const mousePathRef = useRef<MousePathPoint[]>([]);
   // 鼠标拖动偏移（连续 section 指针：idle 为整数索引；拖动时 = 索引+窥视。
   // 拖拽的写入在 FilmReelScene 内（橡皮筋模型，原版 mh 拖拽层），
-  // 这里只承载初始 section 的定位
+  // 这里只承载初始 section 的定位。
+  // 胶片改成无限循环后该值不再受 [0, N-1] 限制（可负、可超过 N），
+  // 需要节号的地方（section 通知 / UI）在 FilmReelScene 里用 wrapIndex 折回
   const dragOffsetRef = useRef(startSection);
 
   // 文字组首次入场（裁切框内从下方滑入 + 顺次揭示；标题由 FlipTitle 自管）
@@ -717,6 +727,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     } else if (open && st.display < SCROLL_EXIT) {
       detailOpenRef.current = false;
       setDetailOpen(false);
+      // 阶段护栏：详情→主场景 这一阶段已在本手势内用掉，
+      // 本手势内不再放行继续上滚（见 injectScroll 里的同名字段）
+      st.stageGuardDir = -1;
     }
 
     // 5. 收敛静止 → 停帧（滚轮注入时会重新唤醒）
@@ -762,6 +775,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
    *  - 1 屏位移推进 SCROLL_GAIN（= 2 个锚点间距），对应原站「1 单位 = 1 视口高度」
    *  - inputMultiplier 由 snap 松手释放置 0，用于短暂屏蔽施力期间的滚轮噪声（原站同款）
    *  - 穿回主页手势（本项目保留）：energy 跌破 SCROLL_BACK 立刻锁存 → 450ms 白闪后切回 `/`
+   *  - 阶段护栏：一次滚动手势（相邻事件间隔 ≤ GESTURE_GAP_MS）内只允许跨一个阶段，
+   *    退过"详情→主场景"之后必须重新起手势，才可能继续退到穿回主页
    */
   const injectScroll = useCallback((dy: number) => {
     const st = scrollStateRef.current;
@@ -770,12 +785,22 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     // 详情页内只接受上滚（下滚交给详情页内部滚动容器，如钢琴镜头旅程）
     if (detailOpenRef.current && dy > 0) return;
 
+    // 手势分界：距上次注入超过 GESTURE_GAP_MS 视为新手势 → 解除阶段护栏；
+    // 反向滚动同样解除（护栏只限制"同一手势内继续退"）
+    const now = performance.now();
+    if (now - st.lastWheelAt > GESTURE_GAP_MS || dy > 0) st.stageGuardDir = 0;
+    st.lastWheelAt = now;
+
     // 方向取本次滚轮位移的符号（原站 Lenis 的 direction 即取自 wheel delta）
     if (dy !== 0) st.dir = dy > 0 ? 1 : -1;
 
     // 目标进度累加：1 屏位移推进 SCROLL_GAIN；snap 施力期间按 inputMultiplier 屏蔽
-    st.energy += (dy / innerH) * SCROLL_GAIN * st.inputMultiplier;
-    st.energy = Math.max(-1.08, Math.min(1.08, st.energy));
+    const raw = st.energy + (dy / innerH) * SCROLL_GAIN * st.inputMultiplier;
+    // 阶段护栏：本手势内已经退过一阶（详情→主场景）→ 继续上滚只允许走到原始位置 0 为止，
+    // 想穿回主页必须松开滚轮、重新给一次手势（避免一次滚轮从详情一路缩回又换页）
+    st.energy = st.stageGuardDir === -1 && dy < 0
+      ? Math.max(0, raw)
+      : Math.max(-1.08, Math.min(1.08, raw));
 
     // 穿回首页判定：冲到 SCROLL_BACK 立即锁存 → 450ms 白闪后切回 `/`
     if (!detailOpenRef.current && st.energy <= SCROLL_BACK && !backSwitchingRef.current) {

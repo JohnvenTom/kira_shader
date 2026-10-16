@@ -28,7 +28,7 @@ import { SECTIONS } from './FilmScene';
  *   拖动 = 窥视 ±0.4 帧（drag 像素 clamp ±0.2w，/(0.05w) 折算）
  *   释放 |drag|>0.1·w → 指针 ±1（弹簧 damping14/stiffness90 滑过去）
  *   横向滚轮：累计 0.1·w 翻一帧（700ms 锁）
- *   dragOffsetRef 语义 = 连续 section 指针（idle 为整数索引）
+ *   dragOffsetRef 语义 = 连续 section 指针（idle 为整数索引；无限循环下不设上下限）
  */
 
 /** 原版曲线控制点（bundle: ms = new CatmullRomCurve3([...]) ×0.2 ×(1,1,0.8)） */
@@ -66,6 +66,10 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const remap = (v: number, a: number, b: number, c: number, d: number) =>
   c + ((v - a) * (d - c)) / (b - a);
 const lerp = (a: number, b: number, t: number) => (1 - t) * a + t * b;
+/** 正模取模（双向）：把任意整数（含负数、超范围）折回 [0, n)。
+ *  胶片无限循环用 —— section 索引可以无限增长（胶片位移因此永远连续、无回跳），
+ *  只在"消费"它的地方（section 通知 / UI 节号）折回有效节号 */
+const wrapIndex = (v: number, n: number) => ((v % n) + n) % n;
 
 /**
  * 构建缎带几何（原版 mu 函数逐行移植）
@@ -246,7 +250,8 @@ interface FilmReelSceneProps {
   scrollProgressRef: React.MutableRefObject<number>;
   /** 鼠标 NDC（-1~1，屏幕向下为正） */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
-  /** 连续 section 指针：idle 为整数索引；拖动时 = 索引 + 窥视（原版语义） */
+  /** 连续 section 指针：idle 为整数索引；拖动时 = 索引 + 窥视（原版语义）。
+   *  胶片无限循环下不设上下限（可负、可超过 SECTIONS.length），消费处用 wrapIndex 折回 */
   dragOffsetRef: React.MutableRefObject<number>;
   /** section 切换回调 */
   onSectionChange?: (index: number) => void;
@@ -432,7 +437,9 @@ export function FilmReelScene({
       // 释放：|dragPx| > 0.1w → 指针翻一帧（原版 index += −sign(dragPx)）
       let target = Math.round(pointerStart);
       if (Math.abs(lastD) > DRAG_SNAP_RATIO * window.innerWidth) {
-        target = clamp(Math.round(pointerStart) - Math.sign(lastD), 0, SECTIONS.length - 1);
+        // 无限循环：不夹在 [0, N-1] —— 索引可负、可超过 N，
+        // 于是拖过最后一节继续拖 = 胶片继续往前卷、绕回第一节（画面无回跳）
+        target = Math.round(pointerStart) - Math.sign(lastD);
       }
       dragOffsetRef.current = target;
     };
@@ -450,9 +457,9 @@ export function FilmReelScene({
       const step = WHEEL_STEP_RATIO * window.innerWidth;
       if (Math.abs(wheelAcc) > step) {
         // 原版 index += −sign(acc)：右滚(deltaX>0→acc<0)→下一帧
-        const cur = clamp(Math.round(dragOffsetRef.current), 0, SECTIONS.length - 1);
-        const next = clamp(cur - Math.sign(wheelAcc), 0, SECTIONS.length - 1);
-        dragOffsetRef.current = next;
+        // 无限循环：与拖拽同理，只做整数步进、不夹取
+        const cur = Math.round(dragOffsetRef.current);
+        dragOffsetRef.current = cur - Math.sign(wheelAcc);
         wheelAcc = 0;
         wheelLockUntil = now + 700;
       }
@@ -502,8 +509,8 @@ export function FilmReelScene({
     flexRef.current = clamp(lerp(flexRef.current, flexTarget, 1 - Math.exp(-10 * dt)), -300, 300);
     uniforms.uFlexAnimation.value = flexRef.current;
 
-    // section 吸附通知
-    const newSection = clamp(Math.round(dragOffsetRef.current), 0, SECTIONS.length - 1);
+    // section 吸附通知：索引无限增长，这里折回 [0, N) 再给 UI / 回调用
+    const newSection = wrapIndex(Math.round(dragOffsetRef.current), SECTIONS.length);
     if (newSection !== sectionIndex) setSectionIndex(newSection);
 
     // === 相机（原版：pos(0.2mx, 0.2my, 5-5t)，lookAt(0, 0.03, 0)）===
