@@ -241,8 +241,9 @@ const ReelShader = {
 };
 
 interface FilmReelSceneProps {
-  /** 滚轮推进进度 0~1（驱动相机推近/详情页进入） */
-  scrollProgress: number;
+  /** 滚轮推进进度 ref（-1~1，驱动相机推近/详情页进入）：用 ref 传值，
+   *  避免外层滚动帧循环每帧 setState 触发整棵组件树重渲染 */
+  scrollProgressRef: React.MutableRefObject<number>;
   /** 鼠标 NDC（-1~1，屏幕向下为正） */
   mouseRef: React.MutableRefObject<{ x: number; y: number }>;
   /** 连续 section 指针：idle 为整数索引；拖动时 = 索引 + 窥视（原版语义） */
@@ -259,7 +260,7 @@ interface FilmReelSceneProps {
  * FilmReelScene — 胶片卷场景组件（替换旧直线走廊 FilmScene）
  */
 export function FilmReelScene({
-  scrollProgress,
+  scrollProgressRef,
   mouseRef,
   dragOffsetRef,
   onSectionChange,
@@ -267,8 +268,6 @@ export function FilmReelScene({
   dragEnabled = true,
 }: FilmReelSceneProps) {
   const { camera, size } = useThree();
-  const progressRef = useRef(scrollProgress);
-  progressRef.current = scrollProgress;
   const dragEnabledRef = useRef(dragEnabled);
   dragEnabledRef.current = dragEnabled;
   const aspect = size.width / Math.max(1, size.height);
@@ -508,7 +507,7 @@ export function FilmReelScene({
     if (newSection !== sectionIndex) setSectionIndex(newSection);
 
     // === 相机（原版：pos(0.2mx, 0.2my, 5-5t)，lookAt(0, 0.03, 0)）===
-    const t = clamp(progressRef.current, 0, 1);
+    const t = clamp(scrollProgressRef.current, 0, 1);
     const ms = mouseRef.current;
     const sm = mouseSmoothedRef.current;
     sm.x += (ms.x - sm.x) * 0.08;

@@ -44,25 +44,181 @@ export const FILM_SECTION_BY_HASH: Record<string, number> = {
 };
 
 /**
- * === 镜头推进惯性系统参数（速度门控 + 自动回退，双向）===
+ * === 镜头推进输入模型（1:1 复刻 shader.se / Lenis 1.3.3 + snap 插件）===
  *
- * 与主页面（App.tsx）同构的交互模型，并扩展为双向：
- *  - 滚轮瞬时速度 >= SCROLL_V_ON（刻意快速甩滚）→ 大增益充能：
- *    向下滚推镜头前进（越过 SCROLL_ENTER 进详情页），
- *    向上滚拉镜头后退（越过 SCROLL_BACK 穿回主页面）
- *  - 低于阈值 → 阻力微推，被泄能抵消，推不动
- *  - 滚速不足/停止 → 能量向 0 泄放，镜头自动平滑回退到初始位置
+ * 反编译来源（shader.se 产物）：站点在 #scroll-container 上创建 Lenis 实例：
+ *   new Lenis({ autoRaf:false, wrapper:#scroll-container, syncTouch:true,
+ *               syncTouchLerp:.05, touchMultiplier:1 })
+ * 其余全部走 Lenis 默认：smoothWheel:true、lerp:0.1、wheelMultiplier:1、overscroll:true；
+ * 吸附由其 snap 插件（每帧施力式，非 CSS scroll-snap）按 snapPoints 驱动。
+ * 下面所有常量都与该实现逐项对齐（含原站数值注释）。
+ *
+ * 手感三特征（就是 shader.se 的特征）：
+ *  - 无速度门控：滚轮位移等量累加，慢滚不会被回弹
+ *  - 阻尼来自 lerp=0.1（rate 6/s，时间常数 ≈167ms），比本项目主页的 12/s 慢一倍 → 更绵
+ *  - 每帧施力式吸附：松手后被拉向最近锚点（迟滞感的来源）
  */
-const SCROLL_V_ON = 2.0;         // 快速滚动速度阈值（px/ms），需刻意快速甩滚才能超过
-const SCROLL_GAIN_FAST = 0.008;  // 快速滚每像素充能（一格约 100px → ±0.2，5 格快滚即可穿行）
-const SCROLL_GAIN_SLOW = 0.001; // 慢速滚每像素充能（有阻力地微推，随后被泄能回弹）
-const SCROLL_GAIN_EXIT = 0.0012; // 详情页内上滚退能灵敏度（固定增益，不带速度门控）
-const SCROLL_LEAK = 0.40;        // 每秒泄能率（速度不足后约 2.5s 从顶平滑退回原位）
-const SCROLL_SMOOTH = 12;        // 显示进度追能量的时间常数（lambda/s，约 80ms 收敛）
-const SCROLL_DELAY = 0.30;       // 滚轮注入后镜头响应延迟（秒）：滚完歇 0.3s 镜头才开始运动
+/** 滚轮按「行」计量时的归一化：Lenis VirtualScroll 用 100/6 ≈ 16.667px/行 */
+const WHEEL_LINE_PX = 100 / 6;
+/** 显示进度阻尼率：Lenis lerp=0.1 @60fps ⇔ a = 1 − exp(−6·dt)（时间常数约 167ms） */
+const SCROLL_LERP_RATE = 6;
+/** 触摸同步阻尼率：Lenis syncTouchLerp=0.05 ⇔ 3/s（触摸跟手更紧） */
+const SCROLL_TOUCH_LERP_RATE = 3;
+/** 锚点间距（进度）：相邻 section 的进度差，同时是 snap 插件里的「1 单位 = 1 屏」 */
+const SCROLL_UNIT = 1 / (SECTIONS.length - 1);
+/** 滚轮增益：1 屏滚轮位移推进的进度（= 2 个锚点间距，即 1 屏 = 2 个 section）。
+ *  这是「滚动距离」的唯一调节旋钮 —— 调大它只会让滚轮更跟手，snap 插件的
+ *  全部数学仍按 SCROLL_UNIT（锚点间距 = 1 单位）原样运行 */
+const SCROLL_GAIN = SCROLL_UNIT * 2;
+/** snap 锚点：每屏一个，首末锚点用超宽区间，中间锚点用不对称倍率。
+ *  窗口按本项目锚点间距（=1）等比例收窄 —— 原站 forward [-0.9, 0.3]（宽 1.2）是
+ *  配它的不等距锚点（0/1/3.4/5，间距 1/2.4/1.6）的；我们有 6 个等距锚点，照搬会让
+ *  相邻锚点窗口重叠、两股力互相拉扯，主观感受就是"粘手推不动"。这里收窄到
+ *  forward [-0.45, 0.15] / backward [-0.11, 0.3]，保持原站的不对称比例。
+ *
+ *  === 滚进 / 滚退 的语义 ===
+ *  详情（progress 1.0）就是末锚点：下滚时末锚点用超宽 forward 窗口整段施力，
+ *  把人「吸进」详情 —— 滚进手感的来源（保持不变）。
+ *  滚退则完全相反：末锚点的 backward 只留在「越界回位」（[0, 0.3]），
+ *  绝不在下方整段施力 —— 否则它会把主场景一路拽回详情，
+ *  实测表现为「退出后立刻被吸回」「退到一半卡住」。
+ *  其余锚点的 backward 窗口统一为「自身向上 1 屏」[0, 1]：
+ *  上滚时永远由「最近的下方锚点」按同一套 距离→力 公式施力，
+ *  越靠近它力越弱、越过它就把接力棒交给下一个更低的锚点 —— 逐级吸附回位，
+ *  最终停在原始位置 0（anchor0 的窗口终点，之后力归零、可继续上滚穿回主页）。
+ *  因为距离 ≤ 1 屏，力度温和（0 ~ 0.63 屏/秒），既能自动回位，
+ *  又不会像「整段哨兵」那样把人硬锁在某个位置（曾用 0.8 锚点倍率 9 整段施力，
+ *  结果上滚被硬锁在 0.8，正是「卡住」的根因）。 */
+type SnapSide = { range: [number, number]; multiplier: number | number[] };
+type SnapPoint = { position: number; forward: SnapSide; backward: SnapSide };
+const SNAP_POINTS: SnapPoint[] = Array.from({ length: SECTIONS.length }, (_, i) => ({
+  position: i,
+  ...(i === 0
+    ? {
+        // 起点：下滚时吞掉负向越界区（穿回主页手势）；
+        // 上滚时窗口整段覆盖 [0, 1e4]（不含负向，避免抢走穿回主页手势），
+        // 倍率 0.3 让回位力度柔和（远处约 0.3 屏/秒，与旧惯性系统的"自动回退原位"同级）
+        forward: { range: [-1e4, 0.1] as [number, number], multiplier: 1 },
+        backward: { range: [0, 1e4] as [number, number], multiplier: 0.3 },
+      }
+    : i === SECTIONS.length - 1
+    ? {
+        // 终点（= 详情）：下滚整段吸附（滚进手感来源，保持不变）；
+        // 上滚只覆盖「越界回位」，绝不在下方整段施力（否则退回被锁死）
+        forward: { range: [-1e4, 0.1] as [number, number], multiplier: 1 },
+        backward: { range: [0, 0.3] as [number, number], multiplier: 1 },
+      }
+    : {
+        // 中间锚点：下滚窗口 forward [-0.45, 0.15]（滚进侧的迟滞）；
+        // 上滚窗口 backward [0, 1]（只覆盖自身向上 1 屏）→ 由"最近的下方锚点"逐级吸附
+        forward: { range: [-0.45, 0.15] as [number, number], multiplier: 1 },
+        backward: { range: [0, 1] as [number, number], multiplier: [3, 1] },
+      }),
+}));
+/** snap 距离 → 力增益（原站 0.025，单位=屏） */
+const SNAP_DIST_GAIN = 0.025;
+/** snap 力的软幂（原站 0.8，让贴近锚点时力衰减更慢） */
+const SNAP_FORCE_POW = 0.8;
+/** snap 单帧最大作用力（原站 0.1，单位=屏） */
+const SNAP_MAX_FORCE = 0.1;
+/** snap 逆向衰减：base + VEL × |v|（原站 0.4 + 0.05×|v|，v 单位 px/s） */
+const SNAP_COUNTER_BASE = 0.4;
+const SNAP_COUNTER_VEL = 0.05;
+/** 参与施力的最小距离（原站 0.01，单位=屏） */
+const SNAP_MIN_DIST = 0.01;
+/** 松手释放：|v| 落在 [MIN,MAX] px/s 且越过锚点时，把目标抛到锚点外一截（原站 5/100/150） */
+const SNAP_RELEASE_VMIN = 5;
+const SNAP_RELEASE_VMAX = 100;
+const SNAP_RELEASE_DIV = 150;
 const SCROLL_ENTER = 0.92;       // 跃进阈值：显示进度超过它 → 进入详情页
 const SCROLL_EXIT = 0.85;        // 退出阈值：显示进度跌破它 → 退回主场景
-const SCROLL_BACK = -0.93;       // 穿回阈值：显示进度跌破它 → 白闪返回主页面
+// 穿回阈值（本项目保留的额外手势，原站没有）：向上多滚约 1 屏即触发白闪切回主页面
+const SCROLL_BACK = -SCROLL_GAIN;
+
+/** 受影响锚点的信息槽（复用池元素，避免帧循环逐帧新建对象） */
+type AffectedSnap = {
+  /** 距离→力的倍率（数组配置时已按锚点朝向取好分量） */
+  multiplier: number;
+  /** 锚点相对显示位置的朝向（1 = 显示位置上方 / -1 = 下方） */
+  snapDirection: number;
+  /** 锚点到显示位置的带符号距离（屏，正 = 锚点在上方） */
+  currentDeltaY: number;
+  currentDistance: number;
+  /** 锚点对应的目标进度（0~1） */
+  targetProgress: number;
+  /** 该侧原始窗口（松手释放取越界量用；±1e4 哨兵由调用方映射为 0） */
+  rangeRaw: [number, number];
+};
+/** 每帧受影响的锚点结果池（模块级复用：条目数 ≤ SNAP_POINTS.length） */
+const AFFECTED_POOL: AffectedSnap[] = SNAP_POINTS.map(() => ({
+  multiplier: 1,
+  snapDirection: 1,
+  currentDeltaY: 0,
+  currentDistance: 0,
+  targetProgress: 0,
+  rangeRaw: [0, 0] as [number, number],
+}));
+
+/**
+ * 收集「当前受影响的 snap 锚点」（1:1 复刻 shader.se snap 插件的 getAffectedSnapPoints）
+ *
+ * 功能：把显示进度换算成「屏」为单位，筛出落在锚点 range 窗口内的锚点，
+ *      按 距离 ÷ 倍率 升序写入模块级复用池 AFFECTED_POOL 并返回有效条目数，
+ *      供每帧施力与松手释放使用（升序 → 末条即最远锚点）。
+ *
+ * 参数：
+ *  - displayProgress {number} 当前显示进度（-1~1）
+ *  - dir             {number} 滚动方向（1 向下 / -1 向上）
+ *
+ * 返回值：{number} AFFECTED_POOL 中的有效条目数（0 表示本帧无锚点参与施力）
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - 结果写复用池而非新建数组：本函数在滚动帧循环里每帧被调用，
+ *    逐帧 map/filter/map/sort 会产生约 18 个临时对象、给 GC 制造无谓压力
+ *    （滚动卡顿的可疑来源之一），这里改为单遍 for + 插入排序，零分配
+ *  - 方向决定取 forward 还是 backward 那套 range/multiplier（原站同款：
+ *    向下用 forward、向上用 backward）
+ *  - multiplier 为数组时，按「锚点是否在显示位置下方」取 [0] / [1] 分量
+ */
+function collectAffectedSnapPoints(displayProgress: number, dir: number): number {
+  const disp = displayProgress / SCROLL_UNIT;   // 显示位置（屏）
+  let n = 0;
+  for (let i = 0; i < SNAP_POINTS.length; i++) {
+    const p = SNAP_POINTS[i];
+    const side = dir === -1 ? p.backward : p.forward;
+    const lo = p.position + side.range[0];
+    const hi = p.position + side.range[1];
+    if (disp < lo || disp > hi) continue;
+    const ahead = p.position >= disp;           // 锚点在显示位置上方（需下滚才能到）
+    const slot = AFFECTED_POOL[n++];
+    slot.multiplier = Array.isArray(side.multiplier)
+      ? side.multiplier[ahead ? 0 : 1]
+      : side.multiplier;
+    slot.snapDirection = ahead ? 1 : -1;
+    slot.currentDeltaY = p.position - disp;
+    slot.currentDistance = Math.abs(slot.currentDeltaY);
+    slot.targetProgress = p.position * SCROLL_UNIT;
+    slot.rangeRaw = side.range;
+  }
+  // 按 距离 ÷ 倍率 升序：插入排序（条目 ≤ 6，稳定且零分配）
+  for (let i = 1; i < n; i++) {
+    const cur = AFFECTED_POOL[i];
+    const key = cur.currentDistance / Math.max(cur.multiplier, 0.001);
+    let j = i - 1;
+    while (
+      j >= 0 &&
+      AFFECTED_POOL[j].currentDistance / Math.max(AFFECTED_POOL[j].multiplier, 0.001) > key
+    ) {
+      AFFECTED_POOL[j + 1] = AFFECTED_POOL[j];
+      j--;
+    }
+    AFFECTED_POOL[j + 1] = cur;
+  }
+  return n;
+}
+
 // 详情覆盖层 CSS 过渡时长 0.6s（+50ms 余量），一兼二用：
 //  1) 关闭详情后延迟这么久再卸载详情页（等淡出动画走完）
 //  2) 打开详情后延迟这么久再暂停主画布（淡入完成才停；起手就停会把
@@ -72,12 +228,11 @@ const DETAIL_FADE_MS = 650;
 /**
  * wheel 事件位移归一化（像素）
  *
- * 功能：不同浏览器 wheel 事件 deltaY 单位不同：
+ * 功能：不同浏览器 wheel 事件 deltaY 单位不同，折算成像素后才能与「1 屏 = 视口高」
+ *      的进度步长对齐。折算系数 1:1 取自原站 Lenis 的 VirtualScroll：
  *  - Chromium：deltaMode=0，deltaY 已是像素
- *  - Firefox：deltaMode=1，deltaY 单位是"行"（一行约 33px，否则数值过小会导致
- *    瞬时速度永远达不到快速阈值，功能在 Firefox 上失效）
- *  - 少数设备：deltaMode=2，deltaY 单位是"页"（一页 = 视口高度）
- *  统一折算成像素，保证速度门控在不同浏览器行为一致
+ *  - Firefox：deltaMode=1，deltaY 单位是"行" → × 100/6 ≈ 16.667px（Lenis 同款）
+ *  - 少数设备：deltaMode=2，deltaY 单位是"页" → × 视口高度
  *
  * 参数：
  *  - e {WheelEvent} wheel 事件对象
@@ -85,7 +240,7 @@ const DETAIL_FADE_MS = 650;
  * 返回值：{number} 归一化后的像素位移（向下为正）
  */
 function normalizeWheelDelta(e: WheelEvent): number {
-  if (e.deltaMode === 1) return e.deltaY * 33;
+  if (e.deltaMode === 1) return e.deltaY * WHEEL_LINE_PX;
   if (e.deltaMode === 2) return e.deltaY * window.innerHeight;
   return e.deltaY;
 }
@@ -115,14 +270,30 @@ function normalizeWheelDelta(e: WheelEvent): number {
  */
 export default function KiraFilmDemo({ hashSection }: { hashSection?: number } = {}) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // 惯性推进系统状态（速度门控 + 自动回退，双向）：
-  // - v       滚轮瞬时速度 EMA（px/ms），超过 SCROLL_V_ON 视为"快速滚"
-  // - energy  累积能量 [-1.08, 1.08]：向下快滚充正能推进，向上快滚充负能后退；
-  //           慢/停时向 0 泄能（"速度不足以越过屏幕时自动平滑回退到初始位置"）
-  // - display 显示进度（energy 的平滑值），驱动 3D 镜头、详情滞回与穿回主页判定
-  const scrollStateRef = useRef({ v: 0, energy: 0, display: 0, lastTs: 0, lastInjectAt: 0, lastFrame: 0, raf: 0, running: false });
-  // 滚动进度 0~1，用于驱动 3D 场景
-  const [scrollProgress, setScrollProgress] = useState(0);
+  // 滚动模型状态（Lenis 阻尼 + snap 施力，1:1 复刻 shader.se）：
+  // - energy  目标进度 [-1.08, 1.08]：滚轮位移等量累加（无速度门控、无增益分档）；
+  //           负值区为本项目保留的"上越界"穿回主页手势
+  // - display 显示进度（energy 按 Lenis 阻尼率的平滑值），驱动 3D 镜头与详情滞回
+  // - v       滚动速度（px/s，与 Lenis velocity 同量纲）
+  // - dir     滚动方向（1 下 / -1 上，取自滚轮输入符号），决定 snap 取 forward/backward 配置
+  // - touchActive    触摸中：snap 不施力，且改用更紧的触摸阻尼率
+  // - inputMultiplier snap 松手释放时置 0，短暂屏蔽滚轮噪声（原站同款）
+  const scrollStateRef = useRef({
+    v: 0,
+    energy: 0,
+    display: 0,
+    lastFrame: 0,
+    raf: 0,
+    running: false,
+    dir: 1,
+    touchActive: false,
+    inputMultiplier: 1,
+  });
+  // 滚动进度（-1~1，驱动 3D 镜头推进与详情滞回）：
+  // 放 ref 而不是 useState —— 滚动帧循环每帧都会改写它，用 setState 会每帧重渲染
+  // 整棵 KiraFilmDemo 树（含 R3F 场景协调），是滚动掉帧的主要来源之一；
+  // FilmReelScene 在 useFrame 里直接读这个 ref，不需要 React 重渲染参与
+  const scrollProgressRef = useRef(0);
 
   /**
    * 返回恢复数据（同步读取一次，跨渲染稳定）
@@ -245,7 +416,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       const st = scrollStateRef.current;
       st.energy = 1;
       st.display = 1;
-      setScrollProgress(1);
+      scrollProgressRef.current = 1;
       const t = setTimeout(() => {
         try {
           sessionStorage.removeItem('kira-return');
@@ -290,7 +461,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       const st = scrollStateRef.current;
       st.energy = 0;
       st.display = 0;
-      setScrollProgress(0);
+      scrollProgressRef.current = 0;
       detailOpenRef.current = false;
       setDetailOpen(false);
     };
@@ -424,22 +595,24 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   const filmParams = useMemo<FilmFXParams>(() => ({ ...DEFAULT_FILM_PARAMS }), []);
 
   /**
-   * 惯性推进驱动帧循环（速度门控 + 自动回退，双向）
+   * 滚动驱动帧循环（Lenis 阻尼 + snap 施力，1:1 复刻 shader.se）
    *
-   * 功能：每个动画帧推进惯性系统状态：
-   *       1. 滚轮速度自身指数衰减（停止滚动后约 250ms 内跌下快速阈值）
-   *       2. 速度低于阈值 → 能量向 0 泄放（"滚速不足以越过屏幕时，
-   *          镜头自动平滑回退到初始位置"）
-   *       3. 显示进度向能量平滑趋近（镜头运动丝滑，无跳变）
+   * 功能：每个动画帧推进滚动状态：
+   *       1. 显示进度按 Lenis 阻尼率向目标趋近（a = 1 − exp(−rate·dt)）—— 阻尼来源
+   *       2. 计算滚动速度（px/s，与 Lenis velocity 同量纲）
+   *       3. snap：按「距离 × 倍率」累加每帧作用力（软幂 0.8 / 逆向衰减 / 上限 0.1 屏）；
+   *          慢速越过锚点时改为「松手释放」——把目标抛到锚点外一截，再由阻尼收回
    *       4. 滞回判断：越过跃进阈值进详情 / 跌破退出阈值退回主场景
-   *       5. 穿回判断：跌破 SCROLL_BACK 且保持 → 白闪切回主页面
-   *       6. 收敛静止 → 停止动画帧（省资源）
+   *       5. 收敛静止 → 停止动画帧（滚轮注入时重新唤醒）
    *
    * 参数：无
    * 返回值：无
    *
    * 注意事项：
    *  - dt 上限 0.05s，避免后台标签页切回时大步长跳变
+   *  - 详情页打开期间只对「上滚（退出方向）」施 snap 力，并滤掉向内锚点，
+   *    使滚出手感与滚进对称（详见 SNAP_POINTS 上方的对称说明）
+   *  - 上越界（energy ≤ 0，穿回主页手势）期间不施 snap 力，保证手势不被吸附夺走
    */
   const tickScroll = useCallback(() => {
     const st = scrollStateRef.current;
@@ -447,30 +620,96 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     const dt = Math.min(0.05, Math.max(now - st.lastFrame, 0.001));
     st.lastFrame = now;
 
-    // 滚轮速度衰减：停止滚动后很快跌下快速阈值，转入泄能
-    st.v *= Math.exp(-dt * 9);
+    // 1. 显示进度阻尼（Lenis lerp=0.1 @60fps ⇔ rate 6/s；触摸用 syncTouchLerp=0.05 ⇔ 3/s）
+    const rate = st.touchActive ? SCROLL_TOUCH_LERP_RATE : SCROLL_LERP_RATE;
+    const prevDisplay = st.display;
+    st.display += (st.energy - st.display) * (1 - Math.exp(-rate * dt));
+    if (Math.abs(st.energy - st.display) < 0.0002) st.display = st.energy;
 
-    // 泄能回退：仅在主场景（详情未打开）且速度不足时能量向 0 泄放
-    // → 镜头平滑退回初始位置。详情页打开期间锁定能量（不泄放），
-    //   防止用户在详情页内阅读/操作时页面自动弹回；退出详情由覆盖层上滚退能驱动
-    if (!detailOpenRef.current && st.v < SCROLL_V_ON) {
-      const d = Math.min(Math.abs(st.energy), SCROLL_LEAK * dt);
-      st.energy -= Math.sign(st.energy) * d;
+    // 2. 滚动速度（px/s）：1 屏 = 视口高（换算回滚轮位移用 SCROLL_GAIN），与 Lenis 的 velocity 同量纲
+    //    注意：方向不从这里推导 —— 原站 Lenis 的 direction 取「滚轮输入的符号」，
+    //    若用显示位移推导，snap 施力引起的抖动会让方向每帧翻转、forward/backward
+    //    配置来回切换，力互相抵消把用户锁死在当前锚点（已实测到该振荡）
+    st.v = ((st.display - prevDisplay) / SCROLL_GAIN) * (window.innerHeight / dt);
+
+    // 保留负值（下限 -1）：上越界时负进度驱动 FilmScene 相机后撤，形成穿回主页的"缩小镜头"
+    scrollProgressRef.current = Math.min(1, Math.max(-1, st.display));
+
+    // 3. snap 施力（1:1 复刻原站 snap 插件每帧逻辑）
+    let snapActive = false;
+    const inDetail = detailOpenRef.current;
+    // 滚进 / 滚出对称：滚进（下滚）靠末锚点整段吸附把人吸进去；滚出（上滚）时
+    // 末锚点已收窄为 0.45 屏迟滞带，不会再整段拽回。详情打开期间对「上滚（退出）」
+    // 放行施力，让退出也走同一套吸附逻辑（迟滞带 → 由 0.8 锚点把目标拉出去）
+    if ((!inDetail || st.dir === -1) && !st.touchActive && st.energy > -0.0001) {
+      const count = collectAffectedSnapPoints(st.display, st.dir);
+      if (count > 0) {
+        // 3.1 力累加：Δ·multiplier·0.025 → 软幂 0.8 → 逆向衰减 (0.4+0.05|v|) → ×60·dt
+        let force = 0; // 单位：屏
+        // 参与「松手释放」判定的最远锚点（跳过被滤掉的向内锚点后的最后一条）
+        let last: AffectedSnap | null = null;
+        for (let i = 0; i < count; i++) {
+          const p = AFFECTED_POOL[i];
+          // 详情期内只保留「向外」的锚点：snapDirection > 0 的锚点正是把目标
+          // 拽回详情的那股力（滚出不对称的根因），退出时不让它参与施力
+          if (inDetail && p.snapDirection > 0) continue;
+          last = p;
+          if (p.currentDistance > SNAP_MIN_DIST) {
+            const raw = p.currentDeltaY * p.multiplier * SNAP_DIST_GAIN;
+            const sign = Math.sign(raw);
+            let t = Math.pow(Math.abs(raw), SNAP_FORCE_POW) * sign;
+            if (p.snapDirection !== st.dir) {
+              // 逆向衰减：原站公式 0.4 + 0.05·|v|，|v| 的设计区间是松手释放带 [5,100]px/s。
+              // 本项目显示速度可达数千 px/s（原站站点从未进入该区间），照搬会让因子
+              // 无界放大到 350×，产生巨大负力把目标砸穿到 0（实测 energy 反复被清零、
+              // 镜头卡死不再推进）。按同一设计区间上界钳制，行为回到原站意图
+              const c = Math.min(Math.abs(st.v), SNAP_RELEASE_VMAX);
+              t *= SNAP_COUNTER_BASE + SNAP_COUNTER_VEL * c;
+            }
+            force += 60 * t * dt;
+          }
+        }
+        // 力的上限钳制：原站只钳正向（d > 0.1 → 0.1），负向不设上限。这里按
+        //「单帧最大作用力」的本意做对称钳制，避免负向爆冲（原站负值由 Lenis 的
+        // [0, limit] 钳制吸收，本项目允许负进度做穿回手势，必须显式对称钳制）
+        if (Math.abs(force) > SNAP_MAX_FORCE) force = Math.sign(force) * SNAP_MAX_FORCE;
+        if (st.inputMultiplier !== 1 && Math.abs(st.v) < 1) st.inputMultiplier = 1;
+
+        // 3.2 松手释放：慢速同向、且目标已越过锚点 → 抛到锚点外一截（随后由阻尼收回）
+        const av = Math.abs(st.v);
+        const passed =
+          !!last &&
+          (last.snapDirection > 0
+            ? st.energy > last.targetProgress
+            : st.energy < last.targetProgress);
+        if (
+          last &&
+          av > SNAP_RELEASE_VMIN &&
+          av < SNAP_RELEASE_VMAX &&
+          last.snapDirection === st.dir &&
+          passed
+        ) {
+          st.inputMultiplier = 0;
+          const overshootRaw = st.dir === 1 ? last.rangeRaw[1] : last.rangeRaw[0];
+          // 哨兵防护：原站用 ±1e4 表示"该侧无界"，其 Lenis 会把滚动钳制在 [0, limit]
+          // 吸收掉它；本项目允许负进度做穿回手势，照搬会变成 -1e4 屏的暴冲
+          //（直接把能量打到 -1.08 触发穿回白闪），故把哨兵映射为 0
+          const overshoot = Math.abs(overshootRaw) > 10 ? 0 : overshootRaw;
+          st.energy = last.targetProgress + overshoot * SCROLL_UNIT * (av / SNAP_RELEASE_DIV);
+          st.v = 0;
+          snapActive = true;
+        } else if (force !== 0) {
+          // 吸附施力不得把目标推成负进度：原站滚动被钳在 0；负进度是本项目的穿回手势，
+          // 只能由用户上滚触发，不能被吸附夺走
+          st.energy = Math.max(0, st.energy + force * SCROLL_UNIT);
+          snapActive = true;
+        }
+      }
     }
+    // 目标进度钳制（与原惯性系统一致的 ±1.08 余量）
+    st.energy = Math.max(-1.08, Math.min(1.08, st.energy));
 
-    // 显示进度平滑趋近能量（lambda=SCROLL_SMOOTH，约 80ms 收敛）
-    // 滚轮注入后延迟 SCROLL_DELAY 才开始镜头运动：注入瞬间能量照常
-    // 累积/泄放，但显示进度（驱动 3D 镜头）在延迟窗口内保持静止，
-    // 窗口结束后镜头才开始平滑追赶，形成"滚了一下、歇半拍、镜头跟上"的节奏
-    if (now - st.lastInjectAt >= SCROLL_DELAY) {
-      st.display += (st.energy - st.display) * (1 - Math.exp(-dt * SCROLL_SMOOTH));
-      if (Math.abs(st.energy - st.display) < 0.0004) st.display = st.energy;
-      // 保留负值（下限 -1）：向上快滚时负进度驱动 FilmScene 相机
-      // 向后回缩拉远，形成穿回主页面前的"缩小镜头"过渡
-      setScrollProgress(Math.min(1, Math.max(-1, st.display)));
-    }
-
-    // 滞回判断：跃进详情 / 退回主场景
+    // 4. 滞回判断：跃进详情 / 退回主场景
     const open = detailOpenRef.current;
     if (!open && st.display > SCROLL_ENTER) {
       detailOpenRef.current = true;
@@ -480,8 +719,8 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       setDetailOpen(false);
     }
 
-    // 收敛静止 → 停帧（滚轮注入时会重新唤醒）
-    if (Math.abs(st.energy - st.display) < 0.0004 && st.v < 0.01) {
+    // 5. 收敛静止 → 停帧（滚轮注入时会重新唤醒）
+    if (!snapActive && Math.abs(st.energy - st.display) < 0.0004 && Math.abs(st.v) < 0.01) {
       st.running = false;
       return;
     }
@@ -507,46 +746,38 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
   }, [tickScroll]);
 
   /**
-   * 滚轮/触摸位移注入惯性系统
+   * 滚轮/触摸位移注入滚动模型
    *
-   * 功能：把一次滚轮/触摸滑动位移（dy，与 wheel deltaY 同向：向下为正）
-   *       按速度门控规则注入惯性系统（双向，与主页面同构）：
-   *       - 主场景：瞬时速度 >= 快速阈值 → 大增益充能，向下推进 / 向上后退；
-   *         低于阈值 → 阻力微推（被泄能抵消）
-   *       - 详情页内：上滚（dy<0）以固定增益退能，让镜头沿原路径退出详情页
+   * 功能：把一次滚轮/触摸位移（dy，与 wheel deltaY 同向：向下为正）**等量**累加到
+   *      目标进度 —— 1:1 复刻原站（Lenis 的 VirtualScroll 直接把归一化位移加到
+   *      targetScroll，没有速度门控、没有快慢增益分档、没有自动回退）。
+   *      详情页内只接受上滚，保持本项目「上滚退回主场景」的语义。
    *
    * 参数：
-   *  - dy  {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
-   *  - now {number} performance.now() 时间戳
+   *  - dy {number} 本次位移（像素，向下为正，与 wheel.deltaY 一致）
    *
    * 返回值：无
    *
    * 注意事项：
-   *  - 瞬时速度用 EMA 平滑（0.55/0.45），消除单次事件抖动
-   *  - dt 下限 8ms，避免连续事件间隔过短导致速度爆炸
-   *  - energy 范围 [-1.08, 1.08]，给两个方向的"冲过头"留余量
+   *  - 1 屏位移推进 SCROLL_GAIN（= 2 个锚点间距），对应原站「1 单位 = 1 视口高度」
+   *  - inputMultiplier 由 snap 松手释放置 0，用于短暂屏蔽施力期间的滚轮噪声（原站同款）
+   *  - 穿回主页手势（本项目保留）：energy 跌破 SCROLL_BACK 立刻锁存 → 450ms 白闪后切回 `/`
    */
-  const injectScroll = useCallback((dy: number, now: number) => {
+  const injectScroll = useCallback((dy: number) => {
     const st = scrollStateRef.current;
-    const dt = Math.max(now - st.lastTs, 8);
-    st.lastTs = now;
-    st.lastInjectAt = now;                   // 记录注入时刻：镜头响应延迟计时基准
-    const inst = Math.abs(dy) / dt;          // 瞬时速度 px/ms
-    st.v = st.v * 0.55 + inst * 0.45;        // EMA 平滑
+    const innerH = window.innerHeight || 1;
 
-    // 详情页内：上滚退能（固定增益，不带速度门控，令退出意图总是生效）
-    if (detailOpenRef.current && dy < 0) {
-      st.energy = Math.max(-1.08, Math.min(1.08, st.energy + dy * SCROLL_GAIN_EXIT));
-      ensureScrollLoop();
-      return;
-    }
+    // 详情页内只接受上滚（下滚交给详情页内部滚动容器，如钢琴镜头旅程）
+    if (detailOpenRef.current && dy > 0) return;
 
-    // 主场景：速度门控增益（方向由 dy 符号决定）
-    const gain = st.v >= SCROLL_V_ON ? SCROLL_GAIN_FAST : SCROLL_GAIN_SLOW;
-    st.energy = Math.max(-1.08, Math.min(1.08, st.energy + dy * gain));
+    // 方向取本次滚轮位移的符号（原站 Lenis 的 direction 即取自 wheel delta）
+    if (dy !== 0) st.dir = dy > 0 ? 1 : -1;
 
-    // 穿回首页判定：用能量（注入瞬间即达）而非显示进度（帧循环爬行值），
-    // 保证判定不依赖渲染帧节奏：冲过 SCROLL_BACK 立刻锁存 → 450ms 白闪后切回 `/`
+    // 目标进度累加：1 屏位移推进 SCROLL_GAIN；snap 施力期间按 inputMultiplier 屏蔽
+    st.energy += (dy / innerH) * SCROLL_GAIN * st.inputMultiplier;
+    st.energy = Math.max(-1.08, Math.min(1.08, st.energy));
+
+    // 穿回首页判定：冲到 SCROLL_BACK 立即锁存 → 450ms 白闪后切回 `/`
     if (!detailOpenRef.current && st.energy <= SCROLL_BACK && !backSwitchingRef.current) {
       backSwitchingRef.current = true;
       setBackFlash(true);
@@ -557,7 +788,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     ensureScrollLoop();
   }, [ensureScrollLoop]);
 
-  // 主场景滚轮/触摸监听：把输入位移注入惯性系统（速度门控 + 自动回退，双向）
+  // 主场景滚轮/触摸监听：把输入位移注入滚动模型（Lenis 等量累加 + snap 吸附）
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -566,15 +797,20 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       e.preventDefault();
       // 详情覆盖层在更上层（z-60），正常情况滚轮到不了这里，兜底忽略
       if (detailOpenRef.current) return;
-      injectScroll(normalizeWheelDelta(e), performance.now());
+      injectScroll(normalizeWheelDelta(e));
     };
 
-    // 触摸：垂直滑动按位移与速度注入（与滚轮同语义）；水平滑动不拦截，
+    // 触摸：垂直滑动按位移注入（与滚轮同语义）；水平滑动不拦截，
     // 交给既有的水平拖动切换 section 逻辑
+    //  - touchActive 置位期间 snap 不施力（原站 snap 插件同款：触摸中 return）
     let tLastX = 0, tLastY = 0;
     const onTStart = (e: TouchEvent) => {
       const t = e.touches[0];
       tLastX = t.clientX; tLastY = t.clientY;
+      scrollStateRef.current.touchActive = true;
+    };
+    const onTEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) scrollStateRef.current.touchActive = false;
     };
     const onTMove = (e: TouchEvent) => {
       const t = e.touches[0];
@@ -582,7 +818,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
       const dx = t.clientX - tLastX;
       if (Math.abs(dy) > Math.abs(dx)) {
         e.preventDefault();
-        injectScroll(dy, performance.now());
+        injectScroll(dy);
       }
       tLastX = t.clientX; tLastY = t.clientY;
     };
@@ -590,10 +826,14 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('touchstart', onTStart, { passive: true });
     el.addEventListener('touchmove', onTMove, { passive: false });
+    el.addEventListener('touchend', onTEnd, { passive: true });
+    el.addEventListener('touchcancel', onTEnd, { passive: true });
     return () => {
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('touchstart', onTStart);
       el.removeEventListener('touchmove', onTMove);
+      el.removeEventListener('touchend', onTEnd);
+      el.removeEventListener('touchcancel', onTEnd);
     };
   }, [injectScroll]);
 
@@ -628,7 +868,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (detailOpenRef.current && e.deltaY < 0) {
-        injectScroll(normalizeWheelDelta(e), performance.now());
+        injectScroll(normalizeWheelDelta(e));
       }
     };
     overlay.addEventListener('wheel', onWheel, { passive: false });
@@ -761,10 +1001,10 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           const st = scrollStateRef.current;
           st.energy = 0;
           st.display = 0;
-          setScrollProgress(0);
+          scrollProgressRef.current = 0;
         }}
         onRetreat={(dy) => {
-          injectScroll(dy, performance.now());
+          injectScroll(dy);
         }}
       />
 
@@ -774,7 +1014,9 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           gl={{
             antialias: true,
             alpha: true,
-            preserveDrawingBuffer: true,
+            // preserveDrawingBuffer 已去掉：全项目没有任何地方回读本画布的像素
+            //（截图/录制走的是系统层，不是 toDataURL/readPixels），而开它会让浏览器
+            // 每帧多一次「保留绘制缓冲」的整屏拷贝，纯属滚动帧预算的浪费
             powerPreference: 'high-performance',
           }}
           camera={{ fov: 45, near: 0.1, far: 1000, position: [0, 0, 7] }}
@@ -787,7 +1029,7 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
           {/* 胶片卷场景（shader.se #selected-work 完整复刻）：
               橡皮筋拖拽 + 弹簧滑帧在场景内部实现（原版 mh 拖拽层模型） */}
           <FilmReelScene
-            scrollProgress={scrollProgress}
+            scrollProgressRef={scrollProgressRef}
             mouseRef={mouseRef}
             dragOffsetRef={dragOffsetRef}
             onSectionChange={handleSectionChange}
@@ -893,10 +1135,11 @@ export default function KiraFilmDemo({ hashSection }: { hashSection?: number } =
               // 压到退出阈值之下：镜头在淡出掩护下平滑退回 HOME，
               // 退出后也不会被顺手的一下滚轮立刻拽回详情页
               const st = scrollStateRef.current;
-              st.energy = -0.25;
+              // 负向缓冲必须留在 SCROLL_BACK 之内，否则下一次滚轮注入会直接触发穿回首页白闪
+              st.energy = -0.1;
               st.v = 0;
               st.display = Math.min(st.display, SCROLL_EXIT - 0.01);
-              setScrollProgress(st.display);
+              scrollProgressRef.current = st.display;
               detailOpenRef.current = false;
               setDetailOpen(false);
               ensureScrollLoop();
@@ -1009,7 +1252,7 @@ function ContactDetailPage({
     atTopRef.current = el.scrollTop <= 0;
   }, []);
 
-  // 平滑循环：帧率无关指数阻尼（λ=12，与主页面 SCROLL_SMOOTH / 相机阻尼一致），
+  // 平滑循环：帧率无关指数阻尼（λ=12，约 80ms 收敛），
   // 把 contactScrollProgress 阻尼追随目标值，并同步写入 --contact-progress
   // 驱动文字层（Hello 上移淡出 / 联系卡片淡入）连续滑动而非台阶跳动。
   // 相机和后处理各自还有一层阻尼，共用该平滑值不会产生冲突，只叠更柔。
