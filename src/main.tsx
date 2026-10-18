@@ -5,6 +5,7 @@ import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
 import TraceDetailPage from './components/trace/TraceDetailPage';
 import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
+import BadgePage from './components/badge/BadgePage';
 import './styles.css';
 
 /**
@@ -60,25 +61,30 @@ function useHashRoute() {
 function Root() {
   const hash = useHashRoute();
   const isTape = hash.split('?')[0] === '#tape';
+  const isBadge = hash.split('?')[0] === '#badge';
   const isFilm =
     hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
-  // 页面本体：三者互斥
+  // 页面本体：四者互斥
   const page = isTape
     // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
     // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
     ? <TapePage key="tape" />
-    : hash === '#trace'
-      ? <TraceDetailPage key="trace" />
-      : (
-        // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
-        <React.StrictMode>
-          {isFilm ? (
-            <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
-          ) : (
-            <App key="app" />
-          )}
-        </React.StrictMode>
-      );
+    : isBadge
+      // #badge：3D 工牌独立页（本次移植验证页）。场景自带幂等 dispose，
+      // 但要避免 StrictMode 双挂载把 Rapier 世界建两遍，故不套 StrictMode
+      ? <BadgePage key="badge" />
+      : hash === '#trace'
+        ? <TraceDetailPage key="trace" />
+        : (
+          // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
+          <React.StrictMode>
+            {isFilm ? (
+              <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
+            ) : (
+              <App key="app" />
+            )}
+          </React.StrictMode>
+        );
   return (
     <>
       {page}
@@ -87,7 +93,7 @@ function Root() {
           tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断。
           BGM 开屏引导已融合进首页 boot 屏（BIOS 文字行，见 App.tsx），
           其他页面直链的首次交互由 tapeAudio 全局钩子兜底 */}
-      {!isTape && <MusicBoxDock />}
+      {!isTape && !isBadge && <MusicBoxDock />}
     </>
   );
 }
