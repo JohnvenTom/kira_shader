@@ -14,6 +14,7 @@ import { createHeroCompose, createDefaultComposeParams } from './heroCompose';
 import { createHeroScreenLoop } from './heroScreenLoop';
 import { createHeroSpillFactory } from './heroSpill';
 import { createHeroBootPass } from './heroBootPass';
+import { createHeroSlats } from './heroSlats';
 import {
   bootStore,
   clearBootAssets,
@@ -81,7 +82,8 @@ const WARMUP_TIMEOUT_SEC = 3;
  *    相机的入场与滚动**共用同一条插值**（原件没有独立入场曲线），详见下方主循环注释
  *  - boot 的撤下时机由 GPU 预热带门（compileAsync + 连续平滑帧），保证是 3D 页面**真的渲染顺畅**
  *    之后才消失，不会出现"boot 没了、画面卡一下才动"（判据见文件顶部常量）
- *  - 24 片百叶标题幕尚未接入
+ *  - 24 片百叶标题幕照原件 `pp` 实现：相机推回基础机位（进度 s ≤ 0.1）时标题显形，
+ *    24 片各自从侧立转到正对相机拼出标题；文案与字号在 `heroSlats.ts` 顶部集中定义
  */
 export default function HeroOneToOne() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -303,6 +305,13 @@ export default function HeroOneToOne() {
       scene.add(smoke.group);
       cleanups.push(smoke.dispose);
 
+      // ---------- 8b. 24 片百叶标题幕（原件 pp，1:1 照搬） ----------
+      // 相机推回基础机位（进度 s ≤ 0.1）时标题显形：24 片各自从侧立转到正对相机拼出标题
+      const slats = createHeroSlats();
+      scene.add(slats.mesh);
+      cleanups.push(slats.dispose);
+      diag.push('百叶幕 OK');
+
       // ---------- 9. 合成管线 ----------
       let compose: ReturnType<typeof createHeroCompose> | null = null;
       try {
@@ -471,6 +480,8 @@ export default function HeroOneToOne() {
             HERO_PROJECTOR.baseIntensity + a0 * Math.sin(f0 * time) + a1 * Math.sin(f1 * time) + a2 * Math.sin(f2 * time);
 
           smoke.update(dt);
+          // 百叶标题幕：原件在 `s ≤ 0.1` 时显形、`s > 0.1` 时收场（阈值见 HERO_SCROLL.textHideThreshold）
+          slats.update(dt, time, progress <= HERO_SCROLL.textHideThreshold);
           // 循环片每帧重绘；屏幕内容切换用相机同一条进度 s（原件 `smoothstep(.05,.55,progress)`）：
           // s=1 时屏幕显示开机底图，随 s 降到 0 切到循环片 —— 与镜头拉远同一进度、天然同步
           screenLoop.update(time);

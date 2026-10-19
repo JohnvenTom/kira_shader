@@ -286,11 +286,11 @@ export const HERO_BOOT = {
 /**
  * 24 片百叶标题幕（原件 `pp` 组件）
  *
- * 结构：`BoxGeometry(s, o, s, 12, 24, 12)` 的侧面按 24 段重排索引并重映射 UV，
- * 每段用弹簧从 ±90° 转到 0。弹簧参数（原件实测，按段号线性插值）：
- *  - 桌面：stiffness 130→100，damping 14→18
- *  - 窄屏（宽 ≤ 1024）：stiffness 96→54，damping 13.5→18
- *  - show 时目标角 0；hide 时目标角 窄屏 +π/2 / 桌面 -π/2
+ * 结构：`BoxGeometry(s, o, s, 12, segments, 12)` 的四个侧面保留、UV 重排成四段，
+ * 每段（片）用弹簧从 ±90° 转到 0，拼出标题。弹簧参数（原件实测，按片号线性插值）：
+ *  - 窄屏（宽 ≤ 1024，原件的默认分支）：stiffness 130→100，damping 14→18
+ *  - 宽屏（宽 > 1024，原件写在 `i>1024` 分支上）：stiffness 96→54，damping 13.5→18
+ *  - show 时目标角 0；hide 时宽屏 -π/2 / 窄屏 +π/2
  * 另有逐片呼吸：`I = sin(i*10 + t*4) * 0.007`、`y = sin(i*8 + t*3) * 0.005`
  */
 export const HERO_SLATS = {
@@ -298,20 +298,26 @@ export const HERO_SLATS = {
   segments: 24,
   /** 盒子壳尺寸（原件 `s = 2 * tan(fov/2) * cameraDistance / (1 + tan(fov/2))`，cameraDistance = 6.5） */
   cameraDistance: 6.5,
-  /** 弹簧参数（桌面） */
+  /**
+   * 弹簧参数（窄屏分支：宽度 ≤ 1024 —— 原件这里是**默认分支** `a=130, s=100, l=14`）
+   * 每片按片号 r 在 from→to 之间线性插值：stiffness 由 130 递减到 100，damping 由 14 递增到 18
+   */
   springStiffnessFrom: 130,
   springStiffnessTo: 100,
   springDampingFrom: 14,
   springDampingTo: 18,
-  /** 弹簧参数（窄屏，宽 ≤ 1024） */
-  springStiffnessFromNarrow: 96,
-  springStiffnessToNarrow: 54,
-  springDampingFromNarrow: 13.5,
-  springDampingToNarrow: 18,
+  /**
+   * 弹簧参数（宽屏分支：宽度 > 1024 —— 原件 `i>1024 && (a=96, s=54, l=13.5)`）
+   * 注意：原件这里把**宽屏**参数写在 `>1024` 分支上，与"窄屏更软"的直觉相反，照抄即可
+   */
+  springStiffnessFromWide: 96,
+  springStiffnessToWide: 54,
+  springDampingFromWide: 13.5,
+  springDampingToWide: 18,
   /** 呼吸幅度 */
   wobbleX: 0.007,
   wobbleY: 0.005,
-  /** 显示/隐藏目标角（弧度） */
+  /** 显示/隐藏目标角（弧度）：hide 时宽屏 ∓π/2（原件 `i<1024 ? +π/2 : -π/2`） */
   showAngle: 0,
   hideAngleWide: -Math.PI / 2,
   hideAngleNarrow: Math.PI / 2,
