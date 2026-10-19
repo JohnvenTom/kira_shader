@@ -42,16 +42,21 @@ export const HERO_SLAT_SUBTITLE = 'PERSONAL RENDER LAB';
 const TITLE_TEX_WIDTH = 2048;
 
 /**
- * 标题版面常量（全部照原件 `pg` 的 DOM 版面比例，源码逐项对应）
+ * 标题版面常量
  *
- * 原件 `pg` 把 DOM 文本渲进一张**视口尺寸**的 RT（`nv(L.width*dpr, L.height*dpr)`），
- * 版面结构（桌面分支 ≥1024）：
- *  - 容器：`padding 24`、`alignItems center`、`justifyContent flex-start`（内容靠上）、列方向
- *  - 标题块 `w`：`maxWidth 0.6W`、`marginLeft 0.03W`、`marginTop 100`、`height 50%`、内容在块内垂直居中
- *      → 于是标题左缘 = `(W − 0.6W)/2 + 0.03W` = **0.23W**
- *  - 主标题：`fontSize 0.075W`、`lineHeight 字号+10px`、**textAlign left**、`width 100%`（= 0.6W）
- *  - 副标题行：与主标题同宽同左缘、`flexDirection row` + `justifyContent flex-start`（左对齐）、`gap 20`
- *  - 顶部有一条 `height 50` 的蓝色占位条，但 ≥1024 时被 `lg={{height:0}}` 归零 → 桌面不可见
+ * 反编译依据：原件 `pg` 把 DOM 文本渲进一张**视口尺寸**的 RT（`nv(L.width*dpr, L.height*dpr)`），
+ * 桌面分支（≥1024）的 DOM 数值是：
+ *  容器 `padding 24` / `alignItems center` / `justifyContent flex-start`；
+ *  标题块 `maxWidth 0.6W` / `marginLeft 0.03W` / `marginTop 100` / `height 50%`（内容块内垂直居中）；
+ *  主标题 `fontSize 0.075W` / `lineHeight 字号+10px` / `textAlign left`；副标题行 `row` + `flex-start` + `gap 20`。
+ *
+ * **为什么这里不直接用原件那组数值**：原件那张视口尺寸的版面会被压进幕布（幕布只占视口的约 68%），
+ * 屏上实际几何受"幕布占比 × 版面比例"两层影响；而本页的幕布取样目前是 1:1 落到画面的
+ * （回读离屏 RT 实测：版面的 0.23 落在画面 0.23 处），所以直接把原件数值搬过来会偏大偏右。
+ * 因此下面这组按**用户视觉参照 + 本页实际几何**标定：
+ *  - 电脑机身（含边框）占画面 x ≈ 0.42~0.79，所以文字块必须收在左半区（右缘 ≤ ~0.46）；
+ *  - 字号按观感调小（用户反馈原件那档在宽屏上偏大）。
+ * 数值都集中在下面，随时可微调。
  */
 const TITLE_LAYOUT = {
   /** 容器内边距（CSS px，原件 `padding: 24`） */
@@ -60,16 +65,16 @@ const TITLE_LAYOUT = {
   leadCss: 100,
   /** 标题块总高占画布高的比例（原件 `height: '50%'`，内容在其中垂直居中） */
   blockHeightRatio: 0.5,
-  /** 标题文字左缘占画布宽的比例（原件 = 0.2W（居中块左缘）+ 0.03W（marginLeft）） */
-  textLeftRatio: 0.23,
-  /** 文字可用宽度占画布宽的比例（原件 `maxWidth: 0.6W`） */
-  textWidthRatio: 0.6,
-  /** 主标题字号占画布宽的比例（原件桌面分支 `0.075 × L.width`） */
-  titleSizeRatio: 0.075,
+  /** 标题文字左缘占画布宽的比例（原件 0.23W；本页收到左半区，见上方说明） */
+  textLeftRatio: 0.1,
+  /** 文字可用宽度占画布宽的比例（右缘 = 左缘 + 本值 ≤ 0.46，保证不压到右侧电脑） */
+  textWidthRatio: 0.36,
+  /** 主标题字号占画布宽的比例（原件 0.075；本页按宽屏观感调小） */
+  titleSizeRatio: 0.05,
   /** 主标题行高额外量（CSS px，原件 `lineHeight: 字号 + 10 + 'px'`） */
   titleLineExtraCss: 10,
   /** 副标题字号占画布宽的比例（原件取自 `ph` 样式表，未取证；按小字观感取值，可调） */
-  subtitleSizeRatio: 0.02,
+  subtitleSizeRatio: 0.014,
   /** 主/副标题间距（CSS px，原件副标题行 `gap: 20`） */
   gapCss: 20,
 } as const;
