@@ -171,7 +171,11 @@ export function createHeroBootPass(host: HTMLElement) {
 
   let renderer: THREE.WebGLRenderer | null = null;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true });
+    // preserveDrawingBuffer：这张画布除了当覆盖层，还要作为贴图喂给 WebGPU 侧的显示器屏幕
+    // （原件就是把 loading 屏的 FBO 纹理喂给屏幕材质，见 HeroOneToOne 的 makeScreenContentNode）。
+    // 不开这个开关时画布位图会在合成后被丢弃，另一侧就只能读到空白 —— 所以必须保留。
+    // 代价是 boot 期间每帧多一次整屏拷贝，boot 只持续一两秒，可以接受。
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, preserveDrawingBuffer: true });
   } catch (err) {
     // boot 屏是覆盖层，创建失败不应让 hero 整页挂掉
     // eslint-disable-next-line no-console
@@ -318,5 +322,11 @@ export function createHeroBootPass(host: HTMLElement) {
   };
   probeHost.__heroBootProbe = probe;
 
-  return { canvas, finish, dispose };
+  return {
+    canvas,
+    /** boot 覆盖层当前是否可见（调用方据此决定要不要刷新共享贴图） */
+    isVisible: () => shown,
+    finish,
+    dispose,
+  };
 }

@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import {
   HERO_CAMERA, HERO_SCROLL, HERO_SMOKE, HERO_AMBIENT, HERO_ASSETS,
-  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR,
+  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_SCREEN,
 } from './heroConfig';
 import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
@@ -32,13 +32,22 @@ import {
 const T = TSL as any;
 
 /**
- * GPU 预热时长（秒）
+ * GPU 预热与"何时撤下 boot"的判据
  *
- * 说明：等价于项目 BootController 的「渲染满 24 帧 ≈ 0.4s@60fps」预热意图 ——
- *      本页主循环不数帧而按**真实时间**计时，后台标签页 rAF 被节流时同样按墙钟走完，
- *      不会把首屏卡在进度条上。
+ * 说明：boot 必须在 3D 页面**真正渲染顺畅**之后才消失，否则撤下那一刻还在编译着色器、
+ *      上传纹理，用户看到的就是「boot 没了但画面卡一下」。判据对齐项目 BootController：
+ *      先 compileAsync 预编译 → 统计真实渲染帧数与连续平滑帧 → 满帧数且连续平滑且过最短时长才毕业，
+ *      另设超时兜底（慢机器不把用户卡在进度条上）。
  */
 const WARMUP_SECONDS = 0.4;
+/** 预热帧数下限（必须真正渲染过这么多帧才算预热开始生效） */
+const WARMUP_MIN_FRAMES = 12;
+/** 连续平滑帧下限（着色器编译 / 纹理上传都完成后才会连续出现） */
+const WARMUP_MIN_SMOOTH = 6;
+/** 单帧超过该值即视为"不平滑"（帧间隔被 clamp 到 0.05，编译卡顿必然 > 该阈值） */
+const WARMUP_FRAME_SEC = 0.04;
+/** 预热超时兜底（秒） */
+const WARMUP_TIMEOUT_SEC = 3;
 
 /**
  * hero 1:1 复刻页
@@ -64,18 +73,21 @@ const WARMUP_SECONDS = 0.4;
  *  - **不再做包围盒归一化** —— 上一版最大的偏差就来自这里。本页加载的是原件同一份 GLB，
  *    原件那组世界变换直接适用
  *  - boot 屏**复用项目原有 boot 体系**（`src/boot/` 的 bootStore + BOOT_COMMON_GLSL +
- *    5×7 点阵字体纹理），由 heroBootPass 用一台轻量 WebGLRenderer 渲染成铺满视口的
- *    覆盖画布；进度状态机与项目首页完全同一份（详见 heroBootPass.ts）
+ *    5×7 点阵字体纹理），由 heroBootPass 用一台轻量 WebGLRenderer 渲染成铺满视口的覆盖画布；
+ *    **同一张画布同时作为贴图喂给显示器屏幕材质**（原件同源做法），所以 3D 电脑屏幕上也是那块
+ *    蓝色 boot 画面而不是黑的 boot_screen.png（那张原图 93% 近黑，原件靠着色器替换成 BIOS 蓝）
  *  - **boot 是"切掉"不是"渐隐"**（原件实测）：资产一就绪 boot 立刻消失，此刻相机正停在
  *    屏幕特写位，boot 面板与显示器重合；随后 500ms 静置 + 弹簧(30/8) 才把镜头拉远。
  *    相机的入场与滚动**共用同一条插值**（原件没有独立入场曲线），详见下方主循环注释
+ *  - boot 的撤下时机由 GPU 预热带门（compileAsync + 连续平滑帧），保证是 3D 页面**真的渲染顺畅**
+ *    之后才消失，不会出现"boot 没了、画面卡一下才动"（判据见文件顶部常量）
  *  - 24 片百叶标题幕尚未接入
  */
 export default function HeroOneToOne() {
   const hostRef = useRef<HTMLDivElement>(null);
   const [hud, setHud] = useState('正在初始化 WebGPU…');
-  /** 预热是否已经开始计时（资产加载完成后进入 warmup 阶段） */
-  const warmupStartedRef = useRef(0);
+  /** 预热统计（资产就绪后进入 warmup 阶段时开始累计，见文件顶部的判据说明） */
+  const warmupRef = useRef({ startedAt: 0, frames: 0, smooth: 0, compiled: false });
   const hudRef = useRef(setHud);
   hudRef.current = setHud;
 
@@ -102,8 +114,9 @@ export default function HeroOneToOne() {
       resetBoot();
       const bootAsset = registerBootAsset('hero-init', 1);
       bootAsset.setProgress(0.12);
-      bootPass = createHeroBootPass(host);
-      cleanups.push(bootPass.dispose);
+      const bootOverlay = createHeroBootPass(host);
+      bootPass = bootOverlay;
+      cleanups.push(bootOverlay.dispose);
       diag.push('boot 屏(原有体系)');
 
       // ---------- 1. 渲染器 ----------
@@ -158,10 +171,15 @@ export default function HeroOneToOne() {
       dirt.wrapS = THREE.RepeatWrapping; dirt.wrapT = THREE.RepeatWrapping;
       const grunge = loader.load(HERO_ASSETS.grungeUrl);
       grunge.wrapS = THREE.RepeatWrapping; grunge.wrapT = THREE.RepeatWrapping;
-      const bootTex = loader.load(HERO_ASSETS.bootScreenUrl);
-      bootTex.colorSpace = THREE.SRGBColorSpace;
-      bootTex.minFilter = THREE.LinearFilter; bootTex.magFilter = THREE.LinearFilter;
-      bootTex.generateMipmaps = false;
+      // 显示器上的 boot 画面与覆盖层**必须同源**（原件就是把 loading 屏的 FBO 纹理直接喂进屏幕材质）：
+      // 这里把 boot 覆盖画布包成一张贴图，覆盖层可见期间每帧 needsUpdate 重传。
+      // 注意 boot_screen.png 本身 93% 是近黑像素，原件靠着色器把近黑替换成 BIOS 蓝 ——
+      // 直接用那张图会让显示器发黑，所以改用程序化 boot 画面本身。
+      const bootTexture = new THREE.CanvasTexture(bootOverlay.canvas);
+      bootTexture.colorSpace = THREE.SRGBColorSpace;
+      bootTexture.minFilter = THREE.LinearFilter; bootTexture.magFilter = THREE.LinearFilter;
+      bootTexture.generateMipmaps = false;
+      cleanups.push(() => bootTexture.dispose());
 
       // 屏幕循环片（程序化自制，主从同源）：contentTexture 给屏幕、lightTexture 给投射灯 gobo 与背景光溢出
       const screenLoop = createHeroScreenLoop();
@@ -229,14 +247,17 @@ export default function HeroOneToOne() {
       // ---------- 6. 屏幕平面（三层嵌套，与原件同构） ----------
       const screenMat = new THREE.MeshBasicNodeMaterial();
       screenMat.toneMapped = false;
-      // 原件：`mix(reelTexture.rgb*4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
-      // 其中 progress 在原件里是「入场进度」：入场期间为 1（显示 loading 底图），入场结束掉到 0（切到视频）。
-      // 这里用 uScreenIntro = 1 - bootProgress 等价表达，于是「开机底图 → 循环片」的切换被保留下来。
+      // 原件屏幕材质：`mix(reelTexture.rgb*4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
+      // 其中 progress 就是相机那条进度 s（见主循环）：boot 期间为 1 → 屏幕显示 boot 画面；
+      // 随 s 降到 0 切到循环片。loadingScreen 分支的取样 uv 由 makeScreenContentNode 按原件公式给出。
       const uScreenIntro = T.uniform(1);
+      // 视口宽高比做成 uniform：原件 `dimensions` 是逐帧可写的，resize 后 loadingScreen 取样映射要跟着变
+      const uViewportAspect = T.uniform(host.clientWidth / Math.max(1, host.clientHeight));
       (screenMat as unknown as { colorNode: unknown }).colorNode = makeScreenContentNode(
         screenLoop.contentTexture,
-        bootTex,
-        uScreenIntro
+        bootTexture,
+        uScreenIntro,
+        uViewportAspect
       );
 
       const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), screenMat);
@@ -316,6 +337,7 @@ export default function HeroOneToOne() {
         renderer.setSize(w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
+        uViewportAspect.value = w / h;
         compose?.setSize(w, h);
       };
       window.addEventListener('wheel', onWheel, { passive: false });
@@ -355,11 +377,14 @@ export default function HeroOneToOne() {
       camera.position.copy(endPos);
       camera.lookAt(endLookAt);
 
-      // 调试钩子：供自动化验证读取相机实时位置与 boot 弹簧（无副作用，保留；
-      // 与 PostProcessing 的 __dofU 同款做法）
+      // 调试钩子：供自动化验证读取相机实时位置、boot 弹簧，并回读离屏场景 RT 的像素
+      // （无副作用，保留；与 PostProcessing 的 __dofU 同款做法）
       (window as unknown as { __heroCamProbe?: unknown }).__heroCamProbe = {
         camera,
         store: bootStore,
+        renderer,
+        sceneRT: compose?.sceneRT ?? null,
+        screenWorldPos,
       };
 
       // ---------- 12. 主循环 ----------
@@ -375,15 +400,34 @@ export default function HeroOneToOne() {
           const dt = Math.min(clock.getDelta(), 0.05);
           const time = clock.elapsedTime;
 
-          // boot 预热阶段：资产齐备（bootAsset.markDone）后按**真实时间**推进 ——
-          // WARMUP_SECONDS 等价于项目 BootController 的 24 帧@60fps 预热意图，
-          // 进度按秒推进而非数帧，后台标签页 rAF 被节流也不会把首屏拖长
+          // === GPU 预热（它决定 boot 屏何时撤下）===
+          // boot 必须等到 3D 页面**真正渲染顺畅**之后才消失 —— 否则撤下那一刻仍在编译
+          // 着色器 / 上传纹理，用户就会看到「boot 没了、画面卡一下才动」。判据见文件顶部常量注释。
           if (bootStore.phase === 'warmup') {
-            if (warmupStartedRef.current === 0) warmupStartedRef.current = performance.now();
-            const elapsed = (performance.now() - warmupStartedRef.current) / 1000;
+            const w = warmupRef.current;
+            if (!w.compiled) {
+              w.compiled = true;
+              w.startedAt = performance.now();
+              // 预编译场景全部材质（项目 BootController 同款手法），吃掉首次 pipeline 创建卡顿
+              const compileAsync = (renderer as unknown as {
+                compileAsync?: (s: THREE.Object3D, c: THREE.Camera) => Promise<unknown>;
+              }).compileAsync;
+              if (compileAsync) {
+                Promise.resolve(compileAsync.call(renderer, scene, camera)).catch(() => {
+                  /* 预编译失败不阻塞流程：后续渲染仍会即时编译 */
+                });
+              }
+            }
+            w.frames++;
+            w.smooth = dt < WARMUP_FRAME_SEC ? w.smooth + 1 : 0;
+            const elapsed = (performance.now() - w.startedAt) / 1000;
             setBootWarmupProgress(Math.min(1, elapsed / WARMUP_SECONDS));
-            if (elapsed >= WARMUP_SECONDS) markBootWarmupDone();
+            const ready = w.frames >= WARMUP_MIN_FRAMES && w.smooth >= WARMUP_MIN_SMOOTH && elapsed >= WARMUP_SECONDS;
+            if (ready || elapsed >= WARMUP_TIMEOUT_SEC) markBootWarmupDone();
           }
+
+          // boot 覆盖层可见期间刷新共享贴图：显示器屏幕用的是同一张 boot 画面（原件同源做法）
+          if (bootOverlay.isVisible()) bootTexture.needsUpdate = true;
 
           // === 相机进度（原件 pC 原文，1:1）===
           // 滚动推进与入场**共用同一条路径**，没有独立入场曲线：
@@ -479,7 +523,7 @@ export default function HeroOneToOne() {
         });
         screenMesh.geometry.dispose();
         screenMat.dispose();
-        dirt.dispose(); grunge.dispose(); bootTex.dispose(); smokeMap.dispose();
+        dirt.dispose(); grunge.dispose(); smokeMap.dispose();
         screenLoop.dispose();
         draco.dispose?.();
         renderer.dispose?.();
@@ -744,34 +788,48 @@ function replaceModelMaterials(
 }
 
 /**
- * 生成屏幕颜色节点（照原件 `pl` 的做法：内容朴素 uv + 开机底图按入场进度切换）
+ * 生成屏幕颜色节点（照原件 `pl` 的 colorNode 原文）
  *
- * 功能：实现原件那条 `mix(reelTexture.rgb*4 min 1, loadingScreen, smoothstep(.05,.55,progress))` ——
- *      入场期间（intro→1）显示开机底图，入场结束（intro→0）切到循环片内容。
+ * 功能：实现原件那条
+ *      `mix(reelTexture.rgb * 4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
+ *      —— 开机/入场期间（progress→1）屏幕显示 boot 画面，随 progress 降到 0 切到循环片。
+ *      本页没有 projectsScene（那是 /projects 页的场景纹理），sceneBlend 恒为 0，故该内层 mix 退化为 loadingScreen。
  *
  * 参数：
- *  - content       {THREE.Texture} 循环片内容纹理（程序化自制，对应原件的视频流）
- *  - loadingScreen {THREE.Texture} 开机底图（boot_screen.png）
- *  - intro         {unknown}       TSL float uniform，取值 1 = 仍在开机、0 = 已入场
+ *  - content        {THREE.Texture} 循环片内容纹理（程序化自制，对应原件的视频流）
+ *  - loadingScreen  {THREE.Texture} boot 画面纹理（与全屏覆盖层**同一张画布**，见调用处）
+ *  - intro          {unknown}       TSL float uniform，取相机那一条进度 s（1 = 开机中，0 = 已入场）
+ *  - viewportAspect {unknown}       TSL float uniform，视口宽高比（原件用 dimensions.x/dimensions.y）
  *
  * 返回值：TSL 节点（vec3，屏幕颜色）
  *
  * 异常：无
  *
  * 注意事项：
- *  - **两个分支都用朴素 uv()**：已确认该屏幕平面（经 modelGroup rotY π 与 screenGroup rotY π−0.735
- *    两层刚性旋转后）相机位于正面，刚性旋转不会镜像贴图，朴素 uv 即正立。
- *    原件里带 `oneMinus` 纵向翻转与 contain 的 `c` / `d` 映射只服务于 loadingScreen 与
- *    projectsScene（RenderTarget 纹理朝向约定不同），这里不套用。
+ *  - loadingScreen 的取样 uv **不是朴素 uv**，而是原件 `pl` 里那段映射：
+ *      `i = (uv - 0.5) / 0.9 + 0.5`（0.9 是给桶形畸变边界留的边距）→ `n = clamp(i, 0, 1)`
+ *      横屏（视口比 > 屏幕平面比）时 `c = (n.x, 1 - n.y)`；竖屏时横向按 contain 收窄。
+ *      漏掉这个映射会让显示器上的 boot 画面上下颠倒且比例不对（boot 纹理是视口尺寸的 RT 类纹理）。
  *  - 内容亮度按原件乘 4 后截顶（`mul(4).min(1)`），让屏幕成为画面里最亮的元素
  */
 function makeScreenContentNode(
   content: THREE.Texture,
   loadingScreen: THREE.Texture,
-  intro: unknown
+  intro: any,
+  viewportAspect: any
 ): unknown {
+  // 原件 loadingScreen 分支的取样坐标（逐项照抄）
+  const i = T.uv().sub(0.5).div(0.9).add(0.5);
+  const n = T.clamp(i, 0, 1);
+  const planeAspect = HERO_SCREEN.planeAspect[0] / HERO_SCREEN.planeAspect[1];
+  const l = T.float(planeAspect).div(viewportAspect);
+  const A = viewportAspect.div(planeAspect);
+  const wide = viewportAspect.greaterThan(planeAspect);
+  const cx = T.select(wide, n.x, n.x.mul(l).sub(l.sub(1).mul(0.5)));
+  const cy = T.oneMinus(T.select(wide, n.y.mul(A).sub(A.sub(1).mul(0.5)), n.y));
+  const boot = T.texture(loadingScreen, T.vec2(cx, cy)).rgb;
+
   const reel = T.texture(content, T.uv()).rgb.mul(HERO_SCREEN_PLANE.reelBoost).min(1);
-  const boot = T.texture(loadingScreen, T.uv()).rgb;
   const [m0, m1] = HERO_SCREEN_PLANE.bootMixRange;
   return T.mix(reel, boot, T.smoothstep(m0, m1, intro));
 }
