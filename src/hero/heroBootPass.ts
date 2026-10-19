@@ -1,28 +1,31 @@
 /**
- * hero 页 boot 屏 —— 复用项目**原有 boot 体系**（不另造画法）
+ * hero 页 boot 屏 —— 复用项目**原有 boot 体系**的绘制内容，行为照原件反编译结果
  *
- * 背景：hero 复刻页的场景跑在 three/webgpu + TSL 上，而项目原有 boot 是
- * WebGL 的 GLSL（`src/boot/bootShader.ts` 里的 `BOOT_COMMON_GLSL`）。
- * 为了做到"用户看到的就是项目里那块 boot 屏"，这里不做任何重画或近似：
- * 直接用一台轻量 WebGLRenderer 跑**同一段 `BOOT_COMMON_GLSL`**、
- * **同一批字体/文本 DataTexture**（`getBootTextures()`）、**同一份布局元数据**
- * （`bootLineMetaUniform()`）与**同一个进度/弹簧状态机**（`bootStore`），
- * 把 boot 画面渲染成一张铺满视口的画布盖在 hero 场景之上。
+ * 背景：hero 复刻页的场景跑在 three/webgpu + TSL 上，而项目原有 boot 是 WebGL 的 GLSL
+ * （`src/boot/bootShader.ts` 里的 `BOOT_COMMON_GLSL`）。为了"用户看到的就是项目里那块
+ * boot 屏"，这里不做重画或近似：直接用一台轻量 WebGLRenderer 跑**同一段
+ * `BOOT_COMMON_GLSL`**、**同一批字体/文本 DataTexture**（`getBootTextures()`）、
+ * **同一份布局元数据**（`bootLineMetaUniform()`），把 boot 画面渲染成一张铺满视口的画布。
  *
- * 与项目的对应关系：
- *  - 项目的 BootPass（EffectComposer 里的 ShaderPass，见 PostProcessing.tsx）：
- *      boot 内容以 uBootAlpha 混在已渲染场景之上 → 这里换成一整张 DOM 画布，
- *      用**画布整体不透明度**承担同一个"显现期淡出"语义（视觉等价：
- *      mix(scene, boot, alpha) === boot 画布以 alpha 叠在场景上）
- *  - 项目的 BootController：GPU 预热 + 每帧 tickBoot → 这里由自带的 rAF 循环
- *      承担 tickBoot，预热帧数由 hero 主循环上报（见 HeroOneToOne.tsx）
+ * 行为则照 shader.se 原件（`04kr7kd5riobb.js` 的 `pT` / `pR` / 合成着色器）反编译：
+ *  - **boot 屏是"切掉"而不是"渐隐"**：原件合成链只在 `isReadyToRender == 0` 时用
+ *    loading 屏覆盖画面，而初始页类型映射 `{main: 0}` 不命中第二条覆盖分支 ——
+ *    所以资产一就绪，boot 立刻消失。此刻相机正停在屏幕特写位（见 HeroOneToOne 的相机段），
+ *    **boot 面板与显示器重合**，随后 500ms 静置 + 弹簧才把镜头拉远。
+ *    对应到本项目 bootStore：`loading`/`warmup` 阶段 = 还没就绪（boot 可见），
+ *    从 `countdown` 起 boot 已消失。
+ *  - boot 面板几何（原件 `pR`）：宽屏（drawingBuffer 宽 > 1024）做 k=0.2 桶形畸变
+ *    （`pw`）、圆角矩形遮罩（`pQ`，半径 0.06，圆角外为黑）、四边 ±0.002 渐隐、
+ *    径向渐隐（`pS`，`smoothstep(-0.4, 0.4, 0.6 - |uv-0.5|)`）。
+ *    这三项让 boot 面板的轮廓与显示器屏幕轮廓对齐，也是"重合"观感的来源。
+ *  - 进度值：原件 `hasLoadedContent ? 50 + warmup/2 : progress/2` 再阻尼单调 ——
+ *    与项目 bootStore 的 displayProgress 一致，直接复用。
  *
  * 注意事项：
  *  - 本模块只依赖 `three`（WebGL 构建），与 hero 的 `three/webgpu` 互不影响
- *  - 资产登记/重置由调用方负责（hero 挂载时 clearBootAssets + resetBoot，
- *    加载过程中 registerBootAsset 上报进度）
- *  - boot 屏是**铺满视口**的（BOOT_GRID 720×400 contain 适配，超出部分同为
- *    BIOS 蓝），与原项目的 BootPass 行为一致
+ *  - 资产登记/重置由调用方负责（hero 挂载时 clearBootAssets + resetBoot）
+ *  - 预热进度由 hero 主循环上报（见 HeroOneToOne.tsx）
+ *  - 每帧调用 `tickBoot` 推进状态机，因此调用方**不要**再重复 tickBoot
  */
 import * as THREE from 'three';
 import {
@@ -45,9 +48,10 @@ const BOOT_VERT = /* glsl */ `
 /**
  * boot 屏片元着色器
  *
- * 说明：与项目 `bootShader.ts` 的 BootPassShader 的唯一差别是——不再与
- * tDiffuse 做 mix（那需要一张场景纹理），只输出 boot 内容本身；
- * "盖在场景上"由整张画布的 CSS 不透明度承担。`bootContent` 原样复用。
+ * 说明：内容主体是项目原有的 `bootContent`（原样复用，不改一个字符）；
+ * 外面套的是原件 `pR` 的几何处理（桶形畸变 + 圆角遮罩 + 边缘/径向渐隐）。
+ * 与项目 `BootPassShader` 的差别只有一处：不再与 tDiffuse 做 mix（那需要一张场景纹理），
+ * 只输出 boot 内容本身；"盖在场景上"由整张画布承担。
  */
 const BOOT_FRAG = /* glsl */ `
   uniform float uProgress;
@@ -65,45 +69,101 @@ const BOOT_FRAG = /* glsl */ `
 
   ${BOOT_COMMON_GLSL}
 
+  /**
+   * 桶形畸变（原件 pw，k2 = 0 分支）
+   *
+   * 功能：按到中心的距离径向放大 UV，得到 CRT 玻璃式的桶形外凸
+   *
+   * 参数：
+   *  - uv {vec2} 原始 uv
+   *  - k  {float} 畸变强度（原件宽屏取 0.2）
+   *
+   * 返回值：vec2 畸变后的 uv
+   *
+   * 异常：无
+   *
+   * 注意事项：原件 pw 还有带 k2 的分支（用于邻页的镜头畸变），boot 屏只用 k2=0 这一支
+   */
+  vec2 bootBarrel(vec2 uv, float k) {
+    vec2 i = uv - 0.5;
+    float r2 = dot(i, i);
+    return i * (1.0 + r2 * k) + 0.5;
+  }
+
+  /**
+   * 圆角矩形 SDF（原件 pQ）
+   *
+   * 功能：求点到圆角矩形的有符号距离，供遮罩裁出圆角
+   *
+   * 参数：
+   *  - p {vec2} 归一化后的查询点（相对矩形中心）
+   *  - b {vec2} 矩形半尺寸
+   *  - r {float} 圆角半径
+   *
+   * 返回值：float 有符号距离（< 0 表示在矩形内部）
+   *
+   * 异常：无
+   *
+   * 注意事项：原件里 b 取屏幕半尺寸、r 取 0.06，所以整屏都在矩形内，
+   *          只有四个角被圆角切掉 —— 这正是 boot 面板与显示器圆角对齐的由来
+   */
+  float bootRoundBox(vec2 p, vec2 b, float r) {
+    vec2 i = abs(p) - b + r;
+    vec2 n = max(i, vec2(0.0));
+    return length(n) + min(max(i.x, i.y), 0.0) - r;
+  }
+
   void main() {
-    vec3 boot = bootContent(vUv, uResolution, uProgress);
-    gl_FragColor = vec4(boot, 1.0);
+    // === 原件 pR 的几何处理（顺序与系数照抄） ===
+    // ① 仅宽屏做 k=0.2 桶形畸变（窄屏不畸变），坐标畸变后所有后续采样都用畸变坐标
+    vec2 s = vUv;
+    if (uResolution.x > 1024.0) s = bootBarrel(s, 0.2);
+
+    // ② 四边 ±0.002 渐隐 + 圆角矩形遮罩（圆角半径 0.06，按宽高比归一）
+    const float A = 0.002;
+    float edge = smoothstep(-A, A, s.x) * smoothstep(-A, A, s.y)
+               * smoothstep(-A, A, 1.0 - s.x) * smoothstep(-A, A, 1.0 - s.y);
+    float aspect = uResolution.x / uResolution.y;
+    float sd = bootRoundBox((s - 0.5) * vec2(aspect, 1.0), vec2(aspect, 1.0) * 0.5, 0.06);
+    float mask = (1.0 - smoothstep(-A, A, sd)) * edge;
+
+    // ③ 径向渐隐（原件 pS：smoothstep(-0.4, 0.4, 0.6 - |uv-0.5|)）—— 边缘压暗
+    float falloff = smoothstep(-0.4, 0.4, 0.6 - length(s - 0.5));
+
+    vec3 boot = bootContent(s, uResolution, uProgress);
+    gl_FragColor = vec4(boot * mask * falloff, 1.0);
   }
 `;
 
 /** boot 屏渲染器 dpr 上限（与原项目 `dpr: [1, 1.5]` 一致） */
 const BOOT_MAX_DPR = 1.5;
 
-/** 显现期 alpha 低于该值即视为完全淡出（与 PostProcessing 的判据一致） */
-const ALPHA_EPS = 0.001;
-
 /**
  * 创建 hero 页的 boot 屏覆盖层
  *
  * 功能：在给定宿主元素内注入一张铺满视口的画布，用项目原有的 boot GLSL +
- *      字体纹理 + bootStore 状态机每帧绘制 boot 画面；显现期随弹簧淡出，
- *      收敛后自动隐藏画布并停掉 rAF。
+ *      字体纹理每帧绘制 boot 画面；资产一就绪（bootStore 进入 countdown）**立即撤下**，
+ *      弹簧收敛后停掉 rAF。
  *
  * 参数：
  *  - host {HTMLElement} 挂载宿主（hero 的铺满视口容器）
  *
- * 返回值：{ canvas, dispose }
- *  - canvas {HTMLCanvasElement} 注入的画布（调用方可按需置 display）
- *  - dispose {() => void} 释放渲染器/材质/几何、移除事件与画布
+ * 返回值：{ canvas, finish, dispose }
+ *  - canvas {HTMLCanvasElement} 注入的画布
+ *  - finish {() => void}  强制结束 boot 屏（异常兜底）
+ *  - dispose {() => void} 释放渲染器/材质/几何、摘事件并把画布移出 DOM
  *
  * 异常：无（WebGL 上下文创建失败时静默返回一张空画布，不阻塞 hero 主流程）
  *
  * 注意事项：
  *  - 画布 pointer-events 为 none，不拦截 hero 的滚轮/鼠标事件
- *  - 每帧调用 tickBoot 推进 bootStore（进度条阻尼 + 500ms 静置 + 显现弹簧），
- *    因此调用方**不要**再重复 tickBoot
- *  - 预热帧数（bootStore 的 warmup 阶段）由调用方在主循环里上报
+ *  - 每帧调用 tickBoot 推进 bootStore，调用方不要重复调用
  */
 export function createHeroBootPass(host: HTMLElement) {
   const canvas = document.createElement('canvas');
   // 盖在 hero 的 WebGPU 画布之上；z-index 高于 renderer.domElement
   canvas.style.cssText =
-    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3;opacity:1;';
+    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3;';
   host.appendChild(canvas);
 
   const width = Math.max(1, host.clientWidth);
@@ -140,7 +200,7 @@ export function createHeroBootPass(host: HTMLElement) {
     uniforms,
     depthTest: false,
     depthWrite: false,
-    // 整屏四边形独占输出，无需与其它绘制混合（画布整体不透明度承担淡出）
+    // 整屏四边形独占输出（显隐由画布 display 控制，原件是硬切不是混合）
     blending: THREE.NoBlending,
   });
   const geometry = new THREE.PlaneGeometry(2, 2);
@@ -168,8 +228,10 @@ export function createHeroBootPass(host: HTMLElement) {
 
   let raf = 0;
   let disposed = false;
+  /** 画布当前是否可见（原件是硬切，只需记录上一次的显隐） */
+  let shown = true;
 
-  /** 每帧：推进 bootStore → 写 uniforms → 按显现 alpha 控制画布可见度 */
+  /** 每帧：推进 bootStore → 写 uniforms → 按"是否已就绪"决定硬切 */
   const tick = () => {
     if (disposed) return;
     const now = performance.now();
@@ -188,20 +250,20 @@ export function createHeroBootPass(host: HTMLElement) {
     // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"（与 PostProcessing 同一调用）
     applyBootAudioState(uniforms);
 
-    // 显现期淡出：alpha = 1 − spring；已收敛则 0（判据与 PostProcessing 完全一致）
-    const alpha =
-      bootStore.phase === 'reveal' ? Math.max(0, 1 - bootStore.spring) : bootStore.springDone ? 0 : 1;
-
-    if (alpha > ALPHA_EPS) {
-      canvas.style.opacity = String(alpha);
+    // boot 屏显隐：原件「资产一就绪立即切掉」（不是渐隐）。
+    // loading / warmup = 还没就绪 → 显示；进入 countdown 就说明已就绪 → 立刻撤下，
+    // 此刻相机正停在屏幕特写位，boot 面板与显示器重合，随后弹簧才把镜头拉远。
+    const visible = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
+    if (visible) {
+      if (!shown) { canvas.style.display = 'block'; shown = true; }
       if (renderer) renderer.render(scene, camera);
-      raf = requestAnimationFrame(tick);
-    } else {
-      // boot 结束：隐藏画布，并在弹簧收敛（phase = done）后停掉循环
-      canvas.style.opacity = '0';
+    } else if (shown) {
       canvas.style.display = 'none';
-      if (bootStore.phase !== 'done') raf = requestAnimationFrame(tick);
+      shown = false;
     }
+
+    // 弹簧收敛（phase = done）后停掉循环：此后既不渲染也不再推进状态机
+    if (bootStore.phase !== 'done') raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
 

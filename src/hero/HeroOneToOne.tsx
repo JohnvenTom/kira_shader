@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import {
   HERO_CAMERA, HERO_SCROLL, HERO_SMOKE, HERO_AMBIENT, HERO_ASSETS,
-  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_INTRO,
+  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR,
 } from './heroConfig';
 import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
@@ -65,10 +65,10 @@ const WARMUP_SECONDS = 0.4;
  *    原件那组世界变换直接适用
  *  - boot 屏**复用项目原有 boot 体系**（`src/boot/` 的 bootStore + BOOT_COMMON_GLSL +
  *    5×7 点阵字体纹理），由 heroBootPass 用一台轻量 WebGLRenderer 渲染成铺满视口的
- *    覆盖画布；进度/弹簧状态机与项目首页完全同一份（详见 heroBootPass.ts）
- *  - **入场镜头由 boot 显现弹簧单源驱动**：boot 期间相机停在屏幕特写（推入终点），
- *    spring 启动后按 `clamp((s-0.2)/0.8)^1.4` 拉到基础机位，boot 屏在同一弹簧下
- *    同步淡出 —— 所以"加载完成"是镜头拉开，不是覆盖层凭空消失（见 HERO_INTRO）
+ *    覆盖画布；进度状态机与项目首页完全同一份（详见 heroBootPass.ts）
+ *  - **boot 是"切掉"不是"渐隐"**（原件实测）：资产一就绪 boot 立刻消失，此刻相机正停在
+ *    屏幕特写位，boot 面板与显示器重合；随后 500ms 静置 + 弹簧(30/8) 才把镜头拉远。
+ *    相机的入场与滚动**共用同一条插值**（原件没有独立入场曲线），详见下方主循环注释
  *  - 24 片百叶标题幕尚未接入
  */
 export default function HeroOneToOne() {
@@ -385,45 +385,38 @@ export default function HeroOneToOne() {
             if (elapsed >= WARMUP_SECONDS) markBootWarmupDone();
           }
 
-          // === 入场：boot 显现弹簧**单源**驱动（只播一次）===
-          // 曲线与项目原有入场完全一致：前 20% 蓄力（弹簧在 0~0.2 区间时相机停在
-          // 屏幕特写不动），随后 pow1.4 ease-out 一路拉远到基础机位。
-          // 因为 boot 屏的 alpha 也是 1 − spring，镜头拉远与 boot 屏淡出天然同步 ——
-          // 「加载完成」不再是 boot 屏凭空消失，而是镜头从贴脸特写拉开露出全景。
-          const introT = Math.min(
-            1,
-            Math.max(0, (bootStore.spring - HERO_INTRO.holdFraction) / (1 - HERO_INTRO.holdFraction))
-          );
-          const introEase = Math.pow(introT, HERO_INTRO.easePower);
-
-          // 滚动推进：原件 u = 1-(1-u)^1.4（弹簧收敛前滚动被锁，ease 恒为 0）
+          // === 相机进度（原件 pC 原文，1:1）===
+          // 滚动推进与入场**共用同一条路径**，没有独立入场曲线：
+          //   s = max(-1, scroll + (initialTransitionDone ? 0 : 1 - initialTransition))
+          //   u = 1 - (1 - clamp(s / 0.8, 0, 1)) ^ 1.4
+          // boot 期间 initialTransition = 0 → s = 1 → 相机停在屏幕特写（此时 boot 覆盖画面）；
+          // 资产就绪 boot 被切掉后，500ms 静置 + 弹簧(30/8) 把 s 从 1 拉到 0 → 镜头拉远到基础机位。
+          // bootStore 的 countdown / reveal 就是这两段（同一组弹簧参数），故此处直接读它。
           scrollSmooth += (scrollTargetRef.current - scrollSmooth) * Math.min(1, dt * 6);
-          const u = Math.min(1, Math.max(0, scrollSmooth / HERO_SCROLL.pushRange));
+          const progress = Math.max(-1, scrollSmooth + (bootStore.springDone ? 0 : 1 - bootStore.spring));
+          const u = Math.min(progress / HERO_SCROLL.pushRange, 1);
           const ease = 1 - Math.pow(1 - u, HERO_SCROLL.easeOutPower);
 
-          // 鼠标视差：阻尼 + 幅度随推入衰减，且入场期间按 introEase 渐显
-          // （与项目 ComputerScene 的 `introEase × (1 − scrollEase)` 同一式）
+          // 鼠标视差：原件 `getMouseOffset() × 0.3 × (1 - u)`，其中
+          // offset = (0.5 - mouseX, mouseY - 0.5) ∈ ±0.5（mouseY 为 1 - clientY/height）
+          // 本页 mouseRef 是 ±1 归一化坐标 → 换算：x 取负半幅、y 取正半幅，幅度因此是 0.3 × 0.5。
           mouseSmoothX += (mouseRef.current.x - mouseSmoothX) * Math.min(1, dt * 8);
           mouseSmoothY += (mouseRef.current.y - mouseSmoothY) * Math.min(1, dt * 8);
-          const parallax = HERO_SCROLL.parallaxAmount * (1 - ease) * introEase;
+          const par = HERO_SCROLL.parallaxAmount * (1 - ease) * 0.5;
+          const offX = -mouseSmoothX * par;
+          const offY = mouseSmoothY * par;
 
-          // 相机：先走入场（特写 endPos → 基础位 basePos），再由滚动推进叠加（基础位 → endPos）
-          const introPosX = endPos.x + (basePos.x - endPos.x) * introEase;
-          const introPosY = endPos.y + (basePos.y - endPos.y) * introEase;
-          const introPosZ = endPos.z + (basePos.z - endPos.z) * introEase;
+          // 相机 = lerp(基础机位, 屏幕特写位, ease)，再叠鼠标视差（原件两条都按 eased u 取值）
           camera.position.set(
-            introPosX + (endPos.x - basePos.x) * ease + mouseSmoothX * parallax,
-            introPosY + (endPos.y - basePos.y) * ease - mouseSmoothY * parallax,
-            introPosZ + (endPos.z - basePos.z) * ease
+            basePos.x + (endPos.x - basePos.x) * ease + offX,
+            basePos.y + (endPos.y - basePos.y) * ease + offY,
+            basePos.z + (endPos.z - basePos.z) * ease
           );
-          // 注视点：入场从屏幕中心 → 场景原点，推入再从原点 → 屏幕中心
-          const lookIntroX = endLookAt.x + (HERO_CAMERA.baseLookAt[0] - endLookAt.x) * introEase;
-          const lookIntroY = endLookAt.y + (HERO_CAMERA.baseLookAt[1] - endLookAt.y) * introEase;
-          const lookIntroZ = endLookAt.z + (HERO_CAMERA.baseLookAt[2] - endLookAt.z) * introEase;
+          // 注视点 = lerp(场景原点, 屏幕世界中心, ease)
           tmpLook.set(
-            lookIntroX + (endLookAt.x - lookIntroX) * ease,
-            lookIntroY + (endLookAt.y - lookIntroY) * ease,
-            lookIntroZ + (endLookAt.z - lookIntroZ) * ease
+            HERO_CAMERA.baseLookAt[0] + (endLookAt.x - HERO_CAMERA.baseLookAt[0]) * ease,
+            HERO_CAMERA.baseLookAt[1] + (endLookAt.y - HERO_CAMERA.baseLookAt[1]) * ease,
+            HERO_CAMERA.baseLookAt[2] + (endLookAt.z - HERO_CAMERA.baseLookAt[2]) * ease
           );
           camera.lookAt(tmpLook);
 
@@ -434,10 +427,10 @@ export default function HeroOneToOne() {
             HERO_PROJECTOR.baseIntensity + a0 * Math.sin(f0 * time) + a1 * Math.sin(f1 * time) + a2 * Math.sin(f2 * time);
 
           smoke.update(dt);
-          // 循环片每帧重绘；uScreenIntro = 1 − 显现弹簧（与 boot 屏同一进度源），
-          // 驱动屏幕底图 → 循环片的切换
+          // 循环片每帧重绘；屏幕内容切换用相机同一条进度 s（原件 `smoothstep(.05,.55,progress)`）：
+          // s=1 时屏幕显示开机底图，随 s 降到 0 切到循环片 —— 与镜头拉远同一进度、天然同步
           screenLoop.update(time);
-          uScreenIntro.value = Math.max(0, 1 - bootStore.spring);
+          uScreenIntro.value = progress;
 
           if (useCompose && compose) {
             const base = createDefaultComposeParams();

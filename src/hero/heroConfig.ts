@@ -36,25 +36,32 @@ export const HERO_SCROLL = {
 } as const;
 
 /**
- * 入场（boot 显现弹簧单源驱动相机）
+ * 入场过渡（原件 pagesStore + pC 的实测行为，逐条反编译所得）
  *
- * 来源：项目原有的入场实现（`ComputerScene.tsx` 的 useFrame）——boot 显现弹簧
- * 不只驱动 boot 屏淡出，**同时驱动相机从屏幕特写拉远到默认机位**，两者天然同步：
+ * 原件（`04kr7kd5riobb.js`）的真相：
+ *  - **没有独立的入场曲线**。相机全程只有一条路径 —— 滚动推入，进度取
+ *      `s = max(-1, scroll + (initialTransitionDone ? 0 : 1 − initialTransition))`
+ *      `u = 1 − (1 − clamp(s / 0.8, 0, 1)) ^ 1.4`
+ *      `相机位 = lerp(基础机位 (0,0.2,4.5), 屏幕特写位, u)`
+ *      `注视点 = lerp(原点 (0,0,0), 屏幕世界中心, u)`
+ *      入场期把 `s` 从 1 反向拉到 0（等价于"滚退"），用的是与滚轮完全相同的那条插值。
+ *  - `initialTransition` 是 spring：`stiffness 30 / damping 8`，由 `setTimeout(…, 500)` 延迟启动
+ *    （原件 pagesStore：`animate(initialTransition, 1, {damping:8, stiffness:30, type:"spring"})`）。
+ *    本项目 bootStore 的 countdown(500ms) + reveal(spring 30/8) 正是这段编排，故此处不重复定义。
+ *  - boot 屏是**切掉**而非渐隐：原件合成着色器仅在 `isReadyToRender == 0` 时用 loading 屏
+ *    覆盖画面，而初始页类型映射 `{main: 0}` 不命中第二条覆盖分支 —— 于是资产一就绪 boot 立刻消失，
+ *    此刻相机正停在屏幕特写位，**boot 面板与显示器重合**，随后弹簧才把镜头拉远。
+ *  - 弹簧收敛（initialTransitionDone）之前滚动被锁（原件 Lenis `stop()`）。
  *
- *   introT    = clamp((spring − 0.2) / 0.8, 0, 1)   // 前 20% 蓄力，相机停在特写不动
- *   introEase = introT ^ 1.4                        // ease-out 拉远
- *   相机位    = 特写位 → 基础机位 按 introEase 插值
- *   注视点    = 屏幕中心 → 场景原点 按 introEase 插值
- *   视差强度  = introEase × (1 − 推入进度)
- *
- * 于是「加载完成」不再表现为 boot 屏凭空消失，而是镜头从贴脸特写一路拉到全景，
- * boot 屏在同一个弹簧下同步淡出。
+ * 注意：下面三个常数仅作反编译留档 —— 运行期实际由 bootStore 携带（弹簧参数一致）。
  */
 export const HERO_INTRO = {
-  /** 弹簧前 20% 相机保持特写蓄力（原件曲线：`(spring - 0.2) / 0.8`） */
-  holdFraction: 0.2,
-  /** ease-out 指数（原件曲线：`pow(introT, 1.4)`） */
-  easePower: 1.4,
+  /** 过渡弹簧刚度（原件 `stiffness: 30`） */
+  springStiffness: 30,
+  /** 过渡弹簧阻尼（原件 `damping: 8`） */
+  springDamping: 8,
+  /** 弹簧启动延迟（原件 `setTimeout(…, 500)` 毫秒） */
+  delayMs: 500,
 } as const;
 
 /**
