@@ -1,0 +1,784 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useEffect, useRef, useState } from 'react';
+import * as THREE from 'three/webgpu';
+import * as TSL from 'three/tsl';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import {
+  HERO_CAMERA, HERO_SCROLL, HERO_SMOKE, HERO_AMBIENT, HERO_ASSETS,
+  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_INTRO,
+} from './heroConfig';
+import { createHeroSmoke } from './heroSmoke';
+import { createHeroEnvironment } from './heroLightRig';
+import { createHeroCompose, createDefaultComposeParams } from './heroCompose';
+import { createHeroScreenLoop } from './heroScreenLoop';
+import { createHeroSpillFactory } from './heroSpill';
+import { createHeroBootPass } from './heroBootPass';
+import {
+  bootStore,
+  clearBootAssets,
+  markBootWarmupDone,
+  registerBootAsset,
+  resetBoot,
+  setBootWarmupProgress,
+} from '../boot/bootStore';
+
+/**
+ * TSL 命名空间置为 any
+ *
+ * 说明：与 heroCompose.ts 同一取舍 —— TSL 的节点类型在 TS 下逐算子泛型化，
+ * 精确标注会让这几段材质配方充斥类型体操。语义与数值仍严格照原件。
+ */
+const T = TSL as any;
+
+/**
+ * GPU 预热时长（秒）
+ *
+ * 说明：等价于项目 BootController 的「渲染满 24 帧 ≈ 0.4s@60fps」预热意图 ——
+ *      本页主循环不数帧而按**真实时间**计时，后台标签页 rAF 被节流时同样按墙钟走完，
+ *      不会把首屏卡在进度条上。
+ */
+const WARMUP_SECONDS = 0.4;
+
+/**
+ * hero 1:1 复刻页
+ *
+ * 功能：用 three/webgpu 渲染 shader.se 首页场景。全部摆位与材质配方**照搬原件实测值**：
+ *  - 整机：`group(pos [-1.1,-1.4,0], scale 0.14, rotY π)` 内放原件那份 computer.glb
+ *  - 屏幕：整机内再套 `group(pos [-22,11,2], rotY π-0.735)` → 单位平面 `scale [10.15,7.875,1],
+ *    pos [-0.2,-0.55,0.1], rotX -0.07`（世界尺寸 1.421 × 1.1025，宽高比 1.289）
+ *  - 材质：computer(metalness .83/roughness .8/DoubleSide + 提亮幂)、keyboard(纯黑)、
+ *    logo(metalness 1/roughness 0 + 自发光 ×0.4)、background(grunge×cloud 复合配方)
+ *  - 灯光：ambientLight 1.8 + Lightformer 环境灯架 + 屏幕投射聚光灯（带抖动动画、decay 0）
+ *  - 烟层：30 片 0.04 不透明度的前景薄雾（只转不移）
+ *  - 相机：基础位 (0,0.2,4.5) 看向原点；推进终点按屏幕**世界缩放**反解取景距离 ×0.9
+ *  - 合成：离屏 HalfFloat + 10 步合成链（桶形畸变随宽高比自适应）
+ *
+ * 参数：无
+ *
+ * 返回值：React.ReactElement —— 铺满视口的容器 + 左下角诊断 HUD
+ *
+ * 异常：初始化失败或渲染循环抛错都会写进 HUD 与 console；合成链路抛错会自动退化为直渲
+ *
+ * 注意事项：
+ *  - **不再做包围盒归一化** —— 上一版最大的偏差就来自这里。本页加载的是原件同一份 GLB，
+ *    原件那组世界变换直接适用
+ *  - boot 屏**复用项目原有 boot 体系**（`src/boot/` 的 bootStore + BOOT_COMMON_GLSL +
+ *    5×7 点阵字体纹理），由 heroBootPass 用一台轻量 WebGLRenderer 渲染成铺满视口的
+ *    覆盖画布；进度/弹簧状态机与项目首页完全同一份（详见 heroBootPass.ts）
+ *  - **入场镜头由 boot 显现弹簧单源驱动**：boot 期间相机停在屏幕特写（推入终点），
+ *    spring 启动后按 `clamp((s-0.2)/0.8)^1.4` 拉到基础机位，boot 屏在同一弹簧下
+ *    同步淡出 —— 所以"加载完成"是镜头拉开，不是覆盖层凭空消失（见 HERO_INTRO）
+ *  - 24 片百叶标题幕尚未接入
+ */
+export default function HeroOneToOne() {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [hud, setHud] = useState('正在初始化 WebGPU…');
+  /** 预热是否已经开始计时（资产加载完成后进入 warmup 阶段） */
+  const warmupStartedRef = useRef(0);
+  const hudRef = useRef(setHud);
+  hudRef.current = setHud;
+
+  const scrollTargetRef = useRef(0);
+  const mouseRef = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    let disposed = false;
+    let raf = 0;
+    const cleanups: Array<() => void> = [];
+    const diag: string[] = [];
+    const pushHud = (head: string) => hudRef.current(head + (diag.length ? ' · ' + diag.join(' · ') : ''));
+    /** boot 覆盖屏实例（初始化失败时由外层 catch 兜底结束它） */
+    let bootPass: ReturnType<typeof createHeroBootPass> | null = null;
+
+    (async () => {
+      const host = hostRef.current;
+      if (!host) return;
+
+      // ---------- 0. boot 屏（复用项目原有 boot 体系） ----------
+      // 清空上一个路由登记过的资产并重置状态机，再登记本页自己的加载资产；
+      // 覆盖屏由 heroBootPass 用项目原有的 boot GLSL + 字体纹理 + bootStore 每帧绘制
+      clearBootAssets();
+      resetBoot();
+      const bootAsset = registerBootAsset('hero-init', 1);
+      bootAsset.setProgress(0.12);
+      bootPass = createHeroBootPass(host);
+      cleanups.push(bootPass.dispose);
+      diag.push('boot 屏(原有体系)');
+
+      // ---------- 1. 渲染器 ----------
+      const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
+      const renderer = new THREE.WebGPURenderer({ antialias: false, alpha: true, forceWebGL: !hasWebGPU });
+      await renderer.init();
+      if (disposed) { renderer.dispose?.(); return; }
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setSize(host.clientWidth, host.clientHeight);
+      renderer.toneMapping = THREE.NeutralToneMapping;
+      renderer.toneMappingExposure = 1;
+      host.appendChild(renderer.domElement);
+
+      const backend = (renderer as unknown as { backend?: { isWebGLBackend?: boolean } }).backend;
+      diag.push('后端 ' + (backend?.isWebGLBackend ? 'WebGL(回退)' : 'WebGPU'));
+      pushHud('正在加载模型…');
+
+      const rendererAny = renderer as unknown as {
+        renderAsync?: (s: THREE.Object3D, c: THREE.Camera) => Promise<unknown>;
+        render: (s: THREE.Object3D, c: THREE.Camera) => unknown;
+      };
+      const doRender = async (s: THREE.Object3D, c: THREE.Camera) => {
+        if (rendererAny.renderAsync) await rendererAny.renderAsync(s, c);
+        else rendererAny.render(s, c);
+      };
+
+      // ---------- 2. 场景 / 相机 / 补光 ----------
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a0b0d);
+      const camera = new THREE.PerspectiveCamera(
+        HERO_CAMERA.fov, host.clientWidth / host.clientHeight, HERO_CAMERA.near, HERO_CAMERA.far
+      );
+      camera.position.set(...HERO_CAMERA.basePosition);
+      camera.lookAt(...HERO_CAMERA.baseLookAt);
+      scene.add(new THREE.AmbientLight(new THREE.Color(HERO_AMBIENT.color), HERO_AMBIENT.intensity));
+
+      // ---------- 3. 环境灯架 ----------
+      try {
+        const env = createHeroEnvironment(renderer, scene);
+        cleanups.push(env.dispose);
+        diag.push('环境贴图 ' + (scene.environment ? 'OK' : '无'));
+      } catch (err) {
+        diag.push('环境贴图失败');
+        // eslint-disable-next-line no-console
+        console.warn('[HeroOneToOne] 环境灯架失败：', err);
+      }
+      bootAsset.setProgress(0.35);
+
+      // ---------- 4. 贴图 ----------
+      const loader = new THREE.TextureLoader();
+      const dirt = loader.load(HERO_ASSETS.dirtUrl);
+      dirt.wrapS = THREE.RepeatWrapping; dirt.wrapT = THREE.RepeatWrapping;
+      const grunge = loader.load(HERO_ASSETS.grungeUrl);
+      grunge.wrapS = THREE.RepeatWrapping; grunge.wrapT = THREE.RepeatWrapping;
+      const bootTex = loader.load(HERO_ASSETS.bootScreenUrl);
+      bootTex.colorSpace = THREE.SRGBColorSpace;
+      bootTex.minFilter = THREE.LinearFilter; bootTex.magFilter = THREE.LinearFilter;
+      bootTex.generateMipmaps = false;
+
+      // 屏幕循环片（程序化自制，主从同源）：contentTexture 给屏幕、lightTexture 给投射灯 gobo 与背景光溢出
+      const screenLoop = createHeroScreenLoop();
+      screenLoop.update(0);
+      cleanups.push(screenLoop.dispose);
+      diag.push('循环片 OK');
+      bootAsset.setProgress(0.6);
+
+      // 解析式屏幕光溅射：原件靠 spotLight.map 的 gobo，但 three 0.169 的 WebGPU 后端未实现该特性，
+      // 故改为在材质上直接做投影采样（gobo 用循环片的 lightTexture，与屏幕内容同源）。
+      // 支持 URL 开关做二分：`#hero?spill=0` 关闭溅射 —— 便于判断画面问题是它引起的还是别的。
+      const spillDisabled = (window.location.hash.split('?')[1] ?? '').includes('spill=0');
+      let spillFactory: ReturnType<typeof createHeroSpillFactory> | null = null;
+      if (spillDisabled) {
+        diag.push('溅射 OFF(?spill=0)');
+      } else {
+        try {
+          spillFactory = createHeroSpillFactory(screenLoop.lightTexture);
+          diag.push('溅射 OK');
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[HeroOneToOne] 溅射工厂创建失败，已跳过：', err);
+          diag.push('溅射创建失败');
+        }
+      }
+
+      // ---------- 5. 模型：**照搬原件世界变换，不做归一化** ----------
+      const gltfLoader = new GLTFLoader();
+      const draco = new DRACOLoader();
+      draco.setDecoderPath(HERO_ASSETS.dracoDecoderPath);
+      gltfLoader.setDRACOLoader(draco);
+
+      const gltf = await new Promise<any>((resolve, reject) =>
+        gltfLoader.load(HERO_ASSETS.modelUrl, resolve, undefined, reject)
+      ).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[HeroOneToOne] 模型加载失败：', err);
+        diag.push('模型加载失败');
+        return null;
+      });
+      if (disposed) return;
+
+      /** 整机 group：与原件 `pu` 同款变换 */
+      const modelGroup = new THREE.Group();
+      modelGroup.position.set(...HERO_MODEL.groupPosition);
+      modelGroup.scale.setScalar(HERO_MODEL.groupScale);
+      modelGroup.rotation.y = HERO_MODEL.groupRotY;
+      modelGroup.updateMatrixWorld(true);
+      scene.add(modelGroup);
+
+      if (gltf?.scene) {
+        const model = gltf.scene as THREE.Group;
+        // 材质配方（原件 pn/pa/ps/pi）——按节点名替换材质，几何与节点变换保持 glTF 原样
+        const matDiag = replaceModelMaterials(model, dirt, grunge, screenLoop.lightTexture, spillFactory);
+        diag.push('材质[' + matDiag + ']');
+        modelGroup.add(model);
+        modelGroup.updateMatrixWorld(true);
+        diag.push('模型 OK');
+      } else {
+        diag.push('无模型');
+      }
+      // 资产齐备 → boot 状态机进入 warmup（预热帧由下方主循环按真实时间上报）
+      bootAsset.markDone();
+
+      // ---------- 6. 屏幕平面（三层嵌套，与原件同构） ----------
+      const screenMat = new THREE.MeshBasicNodeMaterial();
+      screenMat.toneMapped = false;
+      // 原件：`mix(reelTexture.rgb*4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
+      // 其中 progress 在原件里是「入场进度」：入场期间为 1（显示 loading 底图），入场结束掉到 0（切到视频）。
+      // 这里用 uScreenIntro = 1 - bootProgress 等价表达，于是「开机底图 → 循环片」的切换被保留下来。
+      const uScreenIntro = T.uniform(1);
+      (screenMat as unknown as { colorNode: unknown }).colorNode = makeScreenContentNode(
+        screenLoop.contentTexture,
+        bootTex,
+        uScreenIntro
+      );
+
+      const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), screenMat);
+      screenMesh.position.set(...HERO_SCREEN_PLANE.meshPosition);
+      screenMesh.rotation.x = HERO_SCREEN_PLANE.meshRotX;
+      screenMesh.scale.set(...HERO_SCREEN_PLANE.meshScale);
+
+      const screenGroup = new THREE.Group();
+      screenGroup.position.set(...HERO_SCREEN_PLANE.groupPosition);
+      screenGroup.rotation.y = HERO_SCREEN_PLANE.groupRotY;
+      screenGroup.add(screenMesh);
+      modelGroup.add(screenGroup);
+      modelGroup.updateMatrixWorld(true);
+
+      // ---------- 7. 屏幕投射灯（原件 po） ----------
+      const projGroup = new THREE.Group();
+      projGroup.position.set(...HERO_PROJECTOR.groupPosition);
+      const projTarget = new THREE.Object3D();
+      projTarget.position.set(...HERO_PROJECTOR.targetLocal);
+      projGroup.add(projTarget);
+      const projLight = new THREE.SpotLight(
+        new THREE.Color('#ffffff'),
+        HERO_PROJECTOR.baseIntensity,
+        HERO_PROJECTOR.distance,
+        (HERO_PROJECTOR.angleDeg * Math.PI) / 180,
+        HERO_PROJECTOR.penumbra,
+        HERO_PROJECTOR.decay
+      );
+      projLight.position.set(0, 0, 0);
+      projLight.target = projTarget;
+      // 投射灯 gobo：原件用「从属视频」纹理当投影图案，这里用同一动画派生的光纹理（主从同源）
+      projLight.map = screenLoop.lightTexture;
+      projGroup.add(projLight);
+      scene.add(projGroup);
+      projGroup.updateMatrixWorld(true);
+      diag.push('投射灯 OK');
+
+      // ---------- 8. 前景烟层 ----------
+      const smokeMap = loader.load(HERO_SMOKE.textureUrl);
+      smokeMap.colorSpace = THREE.SRGBColorSpace;
+      smokeMap.minFilter = THREE.LinearFilter;
+      const smoke = createHeroSmoke(smokeMap);
+      scene.add(smoke.group);
+      cleanups.push(smoke.dispose);
+
+      // ---------- 9. 合成管线 ----------
+      let compose: ReturnType<typeof createHeroCompose> | null = null;
+      try {
+        compose = createHeroCompose(host.clientWidth, host.clientHeight);
+        cleanups.push(compose.dispose);
+        diag.push('合成管线 OK');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[HeroOneToOne] 合成管线创建失败，退化为直渲：', err);
+        diag.push('合成管线失败→直渲');
+      }
+      diag.push('场景子节点 ' + scene.children.length);
+      pushHud('已就绪');
+
+      // ---------- 10. 输入 ----------
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        // 入场期间锁滚动（与项目 bootInteractionUnlocked 同一意图）：弹簧收敛前
+        // 滚轮不得推进相机，否则会与入场拉远的插值打架
+        if (!bootStore.springDone) return;
+        let d = e.deltaY;
+        if (e.deltaMode === 1) d *= 16;
+        else if (e.deltaMode === 2) d *= host.clientHeight;
+        scrollTargetRef.current = Math.min(1, Math.max(0, scrollTargetRef.current + d / 1200));
+      };
+      const onMouseMove = (e: MouseEvent) => {
+        mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseRef.current.y = (e.clientY / window.innerHeight) * 2 - 1;
+      };
+      const onResize = () => {
+        const w = host.clientWidth, h = host.clientHeight;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        compose?.setSize(w, h);
+      };
+      window.addEventListener('wheel', onWheel, { passive: false });
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('resize', onResize);
+      cleanups.push(() => {
+        window.removeEventListener('wheel', onWheel);
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('resize', onResize);
+      });
+
+      // ---------- 11. 相机端位（原件公式：屏幕世界【缩放】反解，因屏幕几何是单位平面） ----------
+      const screenWorldPos = new THREE.Vector3();
+      const screenWorldScale = new THREE.Vector3();
+      const screenWorldQuat = new THREE.Quaternion();
+      screenMesh.getWorldPosition(screenWorldPos);
+      screenMesh.getWorldScale(screenWorldScale);
+      screenMesh.getWorldQuaternion(screenWorldQuat);
+      const screenNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(screenWorldQuat).normalize();
+
+      const halfFov = ((HERO_CAMERA.fov * Math.PI) / 180) / 2;
+      const aspect = host.clientWidth / host.clientHeight;
+      const sw = screenWorldScale.x;
+      const sh = screenWorldScale.y;
+      const frameDist =
+        (aspect < sw / sh ? sh / 2 / Math.tan(halfFov) : sw / 2 / (Math.tan(halfFov) * aspect)) *
+        HERO_CAMERA.framingFactor;
+
+      const endPos = screenWorldPos.clone().add(screenNormal.clone().multiplyScalar(frameDist));
+      const endLookAt = screenWorldPos.clone();
+      const basePos = new THREE.Vector3(...HERO_CAMERA.basePosition);
+      diag.push('屏幕世界 ' + screenWorldPos.x.toFixed(2) + ',' + screenWorldPos.y.toFixed(2) + ',' + screenWorldPos.z.toFixed(2));
+      diag.push('屏幕尺寸 ' + sw.toFixed(2) + '×' + sh.toFixed(2));
+
+      // 入场起点 = 屏幕特写位（即滚动推入的终点：屏幕中心 + 法线 × 取景距离，
+      // 此时屏幕基本占满画幅）。boot 期间相机停在这里，显现弹簧启动后一路拉远到 basePos。
+      camera.position.copy(endPos);
+      camera.lookAt(endLookAt);
+
+      // 调试钩子：供自动化验证读取相机实时位置与 boot 弹簧（无副作用，保留；
+      // 与 PostProcessing 的 __dofU 同款做法）
+      (window as unknown as { __heroCamProbe?: unknown }).__heroCamProbe = {
+        camera,
+        store: bootStore,
+      };
+
+      // ---------- 12. 主循环 ----------
+      const clock = new THREE.Clock();
+      let scrollSmooth = 0, mouseSmoothX = 0, mouseSmoothY = 0;
+      const tmpLook = new THREE.Vector3();
+      let useCompose = !!compose;
+      let frameErrored = false;
+
+      const frame = async () => {
+        if (disposed) return;
+        try {
+          const dt = Math.min(clock.getDelta(), 0.05);
+          const time = clock.elapsedTime;
+
+          // boot 预热阶段：资产齐备（bootAsset.markDone）后按**真实时间**推进 ——
+          // WARMUP_SECONDS 等价于项目 BootController 的 24 帧@60fps 预热意图，
+          // 进度按秒推进而非数帧，后台标签页 rAF 被节流也不会把首屏拖长
+          if (bootStore.phase === 'warmup') {
+            if (warmupStartedRef.current === 0) warmupStartedRef.current = performance.now();
+            const elapsed = (performance.now() - warmupStartedRef.current) / 1000;
+            setBootWarmupProgress(Math.min(1, elapsed / WARMUP_SECONDS));
+            if (elapsed >= WARMUP_SECONDS) markBootWarmupDone();
+          }
+
+          // === 入场：boot 显现弹簧**单源**驱动（只播一次）===
+          // 曲线与项目原有入场完全一致：前 20% 蓄力（弹簧在 0~0.2 区间时相机停在
+          // 屏幕特写不动），随后 pow1.4 ease-out 一路拉远到基础机位。
+          // 因为 boot 屏的 alpha 也是 1 − spring，镜头拉远与 boot 屏淡出天然同步 ——
+          // 「加载完成」不再是 boot 屏凭空消失，而是镜头从贴脸特写拉开露出全景。
+          const introT = Math.min(
+            1,
+            Math.max(0, (bootStore.spring - HERO_INTRO.holdFraction) / (1 - HERO_INTRO.holdFraction))
+          );
+          const introEase = Math.pow(introT, HERO_INTRO.easePower);
+
+          // 滚动推进：原件 u = 1-(1-u)^1.4（弹簧收敛前滚动被锁，ease 恒为 0）
+          scrollSmooth += (scrollTargetRef.current - scrollSmooth) * Math.min(1, dt * 6);
+          const u = Math.min(1, Math.max(0, scrollSmooth / HERO_SCROLL.pushRange));
+          const ease = 1 - Math.pow(1 - u, HERO_SCROLL.easeOutPower);
+
+          // 鼠标视差：阻尼 + 幅度随推入衰减，且入场期间按 introEase 渐显
+          // （与项目 ComputerScene 的 `introEase × (1 − scrollEase)` 同一式）
+          mouseSmoothX += (mouseRef.current.x - mouseSmoothX) * Math.min(1, dt * 8);
+          mouseSmoothY += (mouseRef.current.y - mouseSmoothY) * Math.min(1, dt * 8);
+          const parallax = HERO_SCROLL.parallaxAmount * (1 - ease) * introEase;
+
+          // 相机：先走入场（特写 endPos → 基础位 basePos），再由滚动推进叠加（基础位 → endPos）
+          const introPosX = endPos.x + (basePos.x - endPos.x) * introEase;
+          const introPosY = endPos.y + (basePos.y - endPos.y) * introEase;
+          const introPosZ = endPos.z + (basePos.z - endPos.z) * introEase;
+          camera.position.set(
+            introPosX + (endPos.x - basePos.x) * ease + mouseSmoothX * parallax,
+            introPosY + (endPos.y - basePos.y) * ease - mouseSmoothY * parallax,
+            introPosZ + (endPos.z - basePos.z) * ease
+          );
+          // 注视点：入场从屏幕中心 → 场景原点，推入再从原点 → 屏幕中心
+          const lookIntroX = endLookAt.x + (HERO_CAMERA.baseLookAt[0] - endLookAt.x) * introEase;
+          const lookIntroY = endLookAt.y + (HERO_CAMERA.baseLookAt[1] - endLookAt.y) * introEase;
+          const lookIntroZ = endLookAt.z + (HERO_CAMERA.baseLookAt[2] - endLookAt.z) * introEase;
+          tmpLook.set(
+            lookIntroX + (endLookAt.x - lookIntroX) * ease,
+            lookIntroY + (endLookAt.y - lookIntroY) * ease,
+            lookIntroZ + (endLookAt.z - lookIntroZ) * ease
+          );
+          camera.lookAt(tmpLook);
+
+          // 投射灯强度抖动（原件 po：5 + 0.6sin10t + 0.25sin23t + 0.15sin47t）
+          const [a0, a1, a2] = HERO_PROJECTOR.animAmplitudes;
+          const [f0, f1, f2] = HERO_PROJECTOR.animFrequencies;
+          projLight.intensity =
+            HERO_PROJECTOR.baseIntensity + a0 * Math.sin(f0 * time) + a1 * Math.sin(f1 * time) + a2 * Math.sin(f2 * time);
+
+          smoke.update(dt);
+          // 循环片每帧重绘；uScreenIntro = 1 − 显现弹簧（与 boot 屏同一进度源），
+          // 驱动屏幕底图 → 循环片的切换
+          screenLoop.update(time);
+          uScreenIntro.value = Math.max(0, 1 - bootStore.spring);
+
+          if (useCompose && compose) {
+            const base = createDefaultComposeParams();
+            // 原件 bloom 强度的三频呼吸调制
+            const breath =
+              (Math.sin(5.3 * time * 0.5) +
+                Math.sin(11.7 * time * 0.5 + 2.4 * Math.sin(2.1 * time * 0.5) * 0.5) +
+                Math.sin(23.9 * time * 0.5 + 1.3 * Math.cos(7.1 * time * 0.5) * 0.5)) * 0.03 * base.bloomIntensity;
+            base.bloomIntensity = 1.5 * base.bloomIntensity + breath;
+            base.lensDistortion = compose.lensDistortionForAspect(host.clientWidth, host.clientHeight);
+            compose.setParams(base, time);
+
+            renderer.setRenderTarget(compose.sceneRT);
+            await doRender(scene, camera);
+            renderer.setRenderTarget(null);
+            await doRender(compose.composeScene, compose.composeCamera);
+          } else {
+            renderer.setRenderTarget(null);
+            await doRender(scene, camera);
+          }
+        } catch (err) {
+          if (!frameErrored) {
+            frameErrored = true;
+            useCompose = false;
+            // eslint-disable-next-line no-console
+            console.error('[HeroOneToOne] 渲染循环抛错，已退化为直渲：', err);
+            diag.push('循环错误→直渲');
+            pushHud('已就绪');
+          }
+        }
+        raf = requestAnimationFrame(() => { void frame(); });
+      };
+      raf = requestAnimationFrame(() => { void frame(); });
+
+      // ---------- 13. 卸载 ----------
+      cleanups.push(() => {
+        cancelAnimationFrame(raf);
+        gltf?.scene?.traverse((o: THREE.Object3D) => {
+          const mesh = o as THREE.Mesh;
+          if (mesh.isMesh) {
+            mesh.geometry?.dispose();
+            const mat = mesh.material as THREE.Material | THREE.Material[];
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
+        screenMesh.geometry.dispose();
+        screenMat.dispose();
+        dirt.dispose(); grunge.dispose(); bootTex.dispose(); smokeMap.dispose();
+        screenLoop.dispose();
+        draco.dispose?.();
+        renderer.dispose?.();
+        host.removeChild(renderer.domElement);
+      });
+    })().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[HeroOneToOne] 初始化失败：', err);
+      hudRef.current('初始化失败：' + (err?.message ?? String(err)));
+      // 初始化失败 → bootStore 会永远停在 loading，必须强制结束 boot 覆盖屏，
+      // 否则一块 BIOS 蓝会永久盖住页面
+      bootPass?.finish();
+    });
+
+    return () => {
+      disposed = true;
+      cleanups.forEach((fn) => fn());
+    };
+  }, []);
+
+  return (
+    <div ref={hostRef} style={{ position: 'fixed', inset: 0, background: '#0a0b0d', overflow: 'hidden' }}>
+      {/* boot 覆盖屏由 createHeroBootPass 以画布注入（见 effect），此处只留 HUD */}
+      <div
+        style={{
+          position: 'absolute', left: 16, bottom: 16, right: 16, color: 'rgba(255,255,255,.6)',
+          font: '12px/1.6 ui-monospace, Consolas, monospace', pointerEvents: 'none',
+        }}
+      >
+        {hud}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 按原件配方替换模型材质（原件 `pn` / `pa` / `ps` / `pi`）
+ *
+ * 功能：遍历加载好的 glTF，按节点名 computer / keyboard / logo / background 分别套上
+ *      原件那四套 MeshStandardNodeMaterial 配方，几何与节点自身变换保持 glTF 原样。
+ *
+ * 参数：
+ *  - root     {THREE.Object3D} glTF 场景根
+ *  - dirt     {THREE.Texture}  机身污渍贴图（原件 cloudTexture = dirt.jpg）
+ *  - grunge   {THREE.Texture}  机身材质磨损贴图（原件 grungeTexture = grunge.webp）
+ *
+ * 返回值：无
+ *
+ * 异常：无（节点名缺失时跳过该节点，保留原材质）
+ *
+ * 注意事项：
+ *  - computer：metalness .83 / roughness .8 / DoubleSide，colorNode 走「提亮 + 幂曲线」
+ *    `((rgb * vec3(.9,1,1)) * 1.5 + 0.25)^1.2`（原件 mix 的混合系数是 0，等价于不混亮度）
+ *  - keyboard：纯黑 + metalness 0 / roughness .2
+ *  - logo：自带贴图 + metalness 1 / roughness 0 + emissiveNode = 贴图 × 0.4
+ *  - background：原件是一段复合配方（grunge(uv×50) 与 cloud(uv×7) 参与提亮/压暗、
+ *    再按局部 Y 与两个距离场做渐隐、最后叠加「屏幕光溢出」）。这里**完整实现**：
+ *    光溢出由循环片的 lightTexture 驱动（原件里对应「从属视频」），4 点环绕采样后按
+ *    距离渐隐乘 0.1
+ */
+function replaceModelMaterials(
+  root: THREE.Object3D,
+  dirt: THREE.Texture,
+  grunge: THREE.Texture,
+  lightTexture: THREE.Texture,
+  spillFactory: ReturnType<typeof createHeroSpillFactory> | null
+): string {
+  const lum = T.vec3(0.299, 0.587, 0.114);
+  const NODE_NAMES = ['computer', 'keyboard', 'logo', 'background'];
+  /** 逐节点材质诊断（贴图是否可用），拼成字符串返回给 HUD */
+  const nodeDiag: string[] = [];
+
+  /**
+   * 安全取一份溅射节点
+   *
+   * 功能：从工厂构建一份**独立**的溅射节点（每个材质各一份，不跨材质共享实例），
+   *      并把构建失败也吞掉 —— 溅射是本页的加法装饰项，绝不能因为它让整机消失。
+   *
+   * 参数：
+   *  - factory {ReturnType<typeof createHeroSpillFactory> | null} 溅射工厂（可能为 null）
+   *
+   * 返回值：TSL 节点或 null（null 表示不使用溅射）
+   *
+   * 异常：无（内部 try/catch）
+   *
+   * 注意事项：`positionWorld` 等节点依赖材质上下文，所以必须每材质各建一份
+   */
+  const safeSpillNode = (): unknown | null => {
+    if (!spillFactory) return null;
+    try {
+      return spillFactory.makeNode();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[HeroOneToOne] 溅射节点构建失败，该材质跳过溅射：', err);
+      return null;
+    }
+  };
+
+  /**
+   * 把 glTF 贴图转成本实例的贴图（关键修复）
+   *
+   * 功能：`three/addons/loaders/GLTFLoader.js` 内部 `import … from 'three'`，
+   *      所以它解出的贴图属于**另一份 three 实例**。把这种贴图丢给 `three/webgpu` 的
+   *      TSL `texture()` 会被拒（`TextureNode: Need a three.js texture.`）并让整块材质编译失败。
+   *      本函数用同一张图像数据在本实例重新包一层 Texture，并提供空值兜底。
+   *
+   * 参数：
+   *  - tex {THREE.Texture | null | undefined} 可能来自另一份 three 实例的贴图
+   *
+   * 返回值：本实例的 THREE.Texture；无法转换或为空时返回 null
+   *
+   * 异常：无
+   *
+   * 注意事项：用 `instanceof THREE.Texture` 判定是否同实例 —— 跨实例时该判定为 false，
+   *          正好用来识别「外来贴图」。复制 colorSpace / wrapping / repeat / flipY 等关键属性，
+   *          避免重新包一层后外观变化。
+   */
+  const toOwnTexture = (tex: unknown): THREE.Texture | null => {
+    if (!tex) return null;
+    if (tex instanceof THREE.Texture) return tex;
+    // 外来实例：类型体系不同但结构一致，按结构访问其属性
+    const src = tex as THREE.Texture;
+    try {
+      const t = new THREE.Texture(src.image as HTMLImageElement | undefined);
+      t.colorSpace = src.colorSpace;
+      t.wrapS = src.wrapS;
+      t.wrapT = src.wrapT;
+      t.repeat.copy(src.repeat);
+      t.offset.copy(src.offset);
+      t.flipY = src.flipY;
+      t.generateMipmaps = src.generateMipmaps;
+      t.needsUpdate = true;
+      return t;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[HeroOneToOne] 外来贴图转换失败：', err);
+      return null;
+    }
+  };
+
+  /**
+   * 解析 mesh 归属的原件节点名
+   *
+   * 说明：glTF 在不同导入路径下可能把节点名挂在 Group 上、mesh 自己叫几何名，
+   * 所以先看自身名，再看祖先链，保证四套配方都能命中。
+   */
+  const resolveNodeName = (mesh: THREE.Mesh): string => {
+    if (NODE_NAMES.includes(mesh.name)) return mesh.name;
+    let p: THREE.Object3D | null = mesh.parent;
+    while (p) {
+      if (NODE_NAMES.includes(p.name)) return p.name;
+      p = p.parent;
+    }
+    return '';
+  };
+
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const srcMat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial;
+    const srcMap = srcMat?.map ?? null;
+    const nodeName = resolveNodeName(mesh);
+
+    if (nodeName === 'computer') {
+      const ownMap = toOwnTexture(srcMap);
+      nodeDiag.push('computer:map=' + (ownMap ? 'ok' : 'none') + (srcMap && !(srcMap instanceof THREE.Texture) ? '(外来)' : ''));
+      const m = new THREE.MeshStandardNodeMaterial();
+      if (ownMap) m.map = ownMap;
+      m.metalness = 0.83;
+      m.roughness = 0.8;
+      m.side = THREE.DoubleSide;
+      const rgb = ownMap ? T.vec3(T.texture(ownMap, T.uv()).rgb) : T.vec3(T.float(0.55));
+      (m as any).colorNode = rgb.mul(T.vec3(0.9, 1, 1)).mul(1.5).add(0.25).pow(T.vec3(1.2));
+      // 屏幕光溅射走 emissiveNode（加法项）：不受 metalness 0.83 的金属吸收影响，才能看得见
+      const spillNode = safeSpillNode();
+      if (spillNode) (m as any).emissiveNode = spillNode;
+      mesh.material = m;
+      return;
+    }
+
+    if (nodeName === 'keyboard') {
+      nodeDiag.push('keyboard:black');
+      const m = new THREE.MeshStandardNodeMaterial();
+      m.color.set('black');
+      m.metalness = 0;
+      m.roughness = 0.2;
+      // 键盘基材 albedo 是纯黑，若把溅射加进 colorNode 会永远看不见 —— 所以必须走 emissiveNode
+      const kbSpill = safeSpillNode();
+      if (kbSpill) (m as any).emissiveNode = kbSpill;
+      mesh.material = m;
+      return;
+    }
+
+    if (nodeName === 'logo') {
+      const ownMap = toOwnTexture(srcMap);
+      nodeDiag.push('logo:map=' + (ownMap ? 'ok' : 'none'));
+      const m = new THREE.MeshStandardNodeMaterial();
+      if (ownMap) m.map = ownMap;
+      m.metalness = 1;
+      m.roughness = 0;
+      const logoSpill = safeSpillNode();
+      const logoEmissive = ownMap ? T.texture(ownMap).rgb.mul(0.4) : T.vec3(1, 1, 1);
+      (m as any).emissiveNode = logoSpill ? logoEmissive.add(logoSpill) : logoEmissive;
+      mesh.material = m;
+      return;
+    }
+
+    if (nodeName === 'background') {
+      const ownMap = toOwnTexture(srcMap);
+      nodeDiag.push('background:map=' + (ownMap ? 'ok' : 'none'));
+      const m = new THREE.MeshStandardNodeMaterial();
+      if (ownMap) m.map = ownMap;
+      m.roughness = 0.8;
+      m.metalness = 0;
+
+      const pl = T.positionLocal;
+      // grunge 与 cloud 的提亮项
+      const gTex = T.texture(grunge, T.uv().mul(50)).rgb;
+      const gLum = T.dot(gTex, lum).sqrt();
+      const cTex = T.texture(dirt, T.uv().mul(7)).rgb;
+      const cLum = T.clamp(T.dot(cTex, lum).mul(2), 0, 2).pow(3);
+      const base = ownMap ? T.texture(ownMap, T.uv()).rgb : T.vec3(T.float(0.35));
+      const A = T.clamp(base.mul(cLum).mul(0.7).add(base).add(base.mul(gLum).mul(0.1)), 0, 1);
+
+      // 两个距离场：一个高处的「暗点」（原件 d 的 y 分量桌面端取 4）与一个暖点
+      const cY = T.smoothstep(5, 20, pl.y);
+      const d = T.vec3(-47, 4, 30);
+      const h = T.length(pl.sub(d));
+      const g = T.smoothstep(15, 45, h);
+      const f = T.vec3(-16, 0, -7);
+      const p = T.length(pl.sub(f));
+      const mFac = T.float(0.7).add(T.float(0.3).mul(T.smoothstep(0, 10, p)));
+
+      // 屏幕光溢出：原件用「从属视频」纹理做 4 点环绕采样，按到暗点的距离渐隐后乘 0.1
+      // 这里用循环片的 lightTexture（与内容同源），机制一致
+      const dxy = pl.sub(d).xy.div(42).mul(0.5).add(0.5);
+      const E = T.float(1).sub(T.smoothstep(10, 30, h));
+      const lightTap = (ox: number, oy: number) =>
+        T.texture(lightTexture, dxy.add(T.vec2(ox, oy))).rgb;
+      const spill = lightTap(0, 0)
+        .mul(0.5)
+        .add(lightTap(0.5, 0.5))
+        .add(lightTap(-0.5, 0.5))
+        .add(lightTap(0.5, -0.5))
+        .add(lightTap(-0.5, -0.5))
+        .div(4.5)
+        .mul(E)
+        .mul(0.1);
+
+      (m as any).colorNode = T.mix(A, T.vec3(0), g)
+        .add(T.mix(A, T.vec3(0), cY).mul(g))
+        .mul(1.5)
+        .pow(T.vec3(1.5))
+        .mul(mFac)
+        .add(spill);
+      mesh.material = m;
+    }
+  });
+
+  // 返回逐节点贴图诊断，交由 HUD 展示（贴图缺失/跨实例是此前整机不可见的根因）
+  return nodeDiag.length ? nodeDiag.join(' ') : '未命中任何节点';
+}
+
+/**
+ * 生成屏幕颜色节点（照原件 `pl` 的做法：内容朴素 uv + 开机底图按入场进度切换）
+ *
+ * 功能：实现原件那条 `mix(reelTexture.rgb*4 min 1, loadingScreen, smoothstep(.05,.55,progress))` ——
+ *      入场期间（intro→1）显示开机底图，入场结束（intro→0）切到循环片内容。
+ *
+ * 参数：
+ *  - content       {THREE.Texture} 循环片内容纹理（程序化自制，对应原件的视频流）
+ *  - loadingScreen {THREE.Texture} 开机底图（boot_screen.png）
+ *  - intro         {unknown}       TSL float uniform，取值 1 = 仍在开机、0 = 已入场
+ *
+ * 返回值：TSL 节点（vec3，屏幕颜色）
+ *
+ * 异常：无
+ *
+ * 注意事项：
+ *  - **两个分支都用朴素 uv()**：已确认该屏幕平面（经 modelGroup rotY π 与 screenGroup rotY π−0.735
+ *    两层刚性旋转后）相机位于正面，刚性旋转不会镜像贴图，朴素 uv 即正立。
+ *    原件里带 `oneMinus` 纵向翻转与 contain 的 `c` / `d` 映射只服务于 loadingScreen 与
+ *    projectsScene（RenderTarget 纹理朝向约定不同），这里不套用。
+ *  - 内容亮度按原件乘 4 后截顶（`mul(4).min(1)`），让屏幕成为画面里最亮的元素
+ */
+function makeScreenContentNode(
+  content: THREE.Texture,
+  loadingScreen: THREE.Texture,
+  intro: unknown
+): unknown {
+  const reel = T.texture(content, T.uv()).rgb.mul(HERO_SCREEN_PLANE.reelBoost).min(1);
+  const boot = T.texture(loadingScreen, T.uv()).rgb;
+  const [m0, m1] = HERO_SCREEN_PLANE.bootMixRange;
+  return T.mix(reel, boot, T.smoothstep(m0, m1, intro));
+}

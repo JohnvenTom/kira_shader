@@ -1,0 +1,356 @@
+/**
+ * shader.se 首页 hero 场景的复刻常量
+ *
+ * 来源：对 shader.se 生产包静态反编译（04kr7kd5riobb.js 中的 `pC` / `cC` / `pp` / `pu` / `cS` / `pA` / `pX` 等组件）
+ * 说明：除特别标注外，所有数值均为原件实测值，不是估计值。
+ */
+
+/** 相机基础参数（原件 `pC` 内 v.current / b.current / nZ 的 perspective 配置） */
+export const HERO_CAMERA = {
+  /** 基础机位（世界坐标）—— 原件 keep 的 `v.current = new Vector3(0, 0.2, 4.5)` */
+  basePosition: [0, 0.2, 4.5] as [number, number, number],
+  /** 基础注视点 —— 原件 `b.current = new Vector3(0, 0, 0)` */
+  baseLookAt: [0, 0, 0] as [number, number, number],
+  /** 场景相机视角 —— 原件反解取景距离时用 `Math.PI / 180 * 50` */
+  fov: 50,
+  near: 0.1,
+  far: 100,
+  /**
+   * 推进终点取景系数
+   * 原件用屏幕 mesh 的世界尺寸与 fov 反解「刚好框住屏幕」的距离，再乘 0.9
+   * （`e = (a < i / n ? n / 2 / tan(r / 2) : i / 2 / (tan(r / 2) * a)) * 0.9`）
+   */
+  framingFactor: 0.9,
+} as const;
+
+/** 滚动推进与入场缓动 */
+export const HERO_SCROLL = {
+  /** 推进进度归一化区间：原件 `u = min(max(n / 0.15, 0), 1)` 用的是 0.15，但主缓动用 `s / 0.8` */
+  pushRange: 0.8,
+  /** 主缓动指数：原件 `u = 1 - (1 - u) ** 1.4` */
+  easeOutPower: 1.4,
+  /** hero 文字显隐阈值：原件 `s <= 0.1 ? 显示 : 隐藏` */
+  textHideThreshold: 0.1,
+  /** 鼠标视差总幅度（世界单位）：原件 `w().x * 0.3 * (1 - u)` */
+  parallaxAmount: 0.3,
+} as const;
+
+/**
+ * 入场（boot 显现弹簧单源驱动相机）
+ *
+ * 来源：项目原有的入场实现（`ComputerScene.tsx` 的 useFrame）——boot 显现弹簧
+ * 不只驱动 boot 屏淡出，**同时驱动相机从屏幕特写拉远到默认机位**，两者天然同步：
+ *
+ *   introT    = clamp((spring − 0.2) / 0.8, 0, 1)   // 前 20% 蓄力，相机停在特写不动
+ *   introEase = introT ^ 1.4                        // ease-out 拉远
+ *   相机位    = 特写位 → 基础机位 按 introEase 插值
+ *   注视点    = 屏幕中心 → 场景原点 按 introEase 插值
+ *   视差强度  = introEase × (1 − 推入进度)
+ *
+ * 于是「加载完成」不再表现为 boot 屏凭空消失，而是镜头从贴脸特写一路拉到全景，
+ * boot 屏在同一个弹簧下同步淡出。
+ */
+export const HERO_INTRO = {
+  /** 弹簧前 20% 相机保持特写蓄力（原件曲线：`(spring - 0.2) / 0.8`） */
+  holdFraction: 0.2,
+  /** ease-out 指数（原件曲线：`pow(introT, 1.4)`） */
+  easePower: 1.4,
+} as const;
+
+/**
+ * 前景烟层（原件里唯一真正承担「雾」职责的东西）
+ *
+ * 原件 `pC` 里的调用（照抄）：
+ *   <group position={[0, -0.2, 2]}>
+ *     <Smoke density={30} enableRotation rotation={[0,0,0.2]}
+ *            size={[2,2,2]} color="white" opacity={0.04}
+ *            minBounds={[-2,-0.5,-1.5]} maxBounds={[2,1.5,1.5]} />
+ *   </group>
+ */
+export const HERO_SMOKE = {
+  /** 片数 */
+  count: 30,
+  /** 单张平面边长（世界单位），对应 `size: [2,2,2]` 里的 x/y */
+  planeSize: 2,
+  /** 单层不透明度 —— 关键：0.04，靠 30 层叠加而不是单层浓度 */
+  opacity: 0.04,
+  /** 颜色（纯白：白烟板 × 低 alpha = 冷灰蓝的错觉） */
+  color: '#ffffff',
+  /** 所在 group 的世界位置 —— z=+2 表示挡在电脑与相机之间 */
+  groupPosition: [0, -0.2, 2] as [number, number, number],
+  /** 分布盒下界（对应 minBounds） */
+  minBounds: [-2, -0.5, -1.5] as [number, number, number],
+  /** 分布盒上界（对应 maxBounds） */
+  maxBounds: [2, 1.5, 1.5] as [number, number, number],
+  /** 每帧自转角速度（弧度/秒），原件 `rotation: [0,0,0.2]` 且更新为 `rot += rotation * dt` */
+  rotationSpeed: [0, 0, 0.2] as [number, number, number],
+  /** 贴图路径（原件 `/textures/smoke.webp`，已本地化） */
+  textureUrl: '/asset/hero/textures/smoke.webp',
+} as const;
+
+/**
+ * 整机（原件 `pu` 组件的变换，实测值，**必须原样照搬**）
+ *
+ * 关键认识：本页加载的就是原件那份 `/models/computer.glb`（78,300 字节，逐字节一致），
+ * 所以原件这组世界变换直接适用，**不需要**再做「包围盒归一化」——
+ * 归一化是上一版最大的偏差来源（它把整机挪到了原点并把尺寸改成了 4）。
+ *
+ * 模型自然尺寸（从 GLB accessor min/max + 节点变换算出，纯数学、无需 GPU）：
+ *  - computer   26.395 × 15.405 × 26.685
+ *  - keyboard   14.309 × 1.179  × 12.583
+ *  - logo       11.584 × 1.100  × 10.119
+ *  - background 346.530 × 100.682 × 125.409（影棚背景板，不参与整机尺寸认知）
+ * 经 scale 0.14 后：显示器约 3.70 × 2.16 × 3.74 世界单位，中心约 (1.91, -0.31, -0.28)。
+ */
+export const HERO_MODEL = {
+  /** 整机 group 的世界位置（原件 `position: [-1.1, -1.4, 0]`） */
+  groupPosition: [-1.1, -1.4, 0] as [number, number, number],
+  /** 整机 group 的缩放（原件 `scale: 0.14`） */
+  groupScale: 0.14,
+  /** 整机 group 绕 Y 的旋转（原件 `rotation-y: Math.PI`，即把模型转过来面向相机） */
+  groupRotY: Math.PI,
+} as const;
+
+/**
+ * 屏幕平面（原件 `pl` 组件的变换，实测值）
+ *
+ * 结构（照抄原件）：屏幕平面是**单位平面 × 缩放**，且挂在一个中间 group 里，
+ * 该中间 group 又挂在整机 group 里 —— 所以世界变换由三层叠加而来，
+ * 本页直接按同样层级摆放，不手算世界坐标：
+ *   modelGroup(scale .14, rotY π, pos [-1.1,-1.4,0])
+ *     └ screenGroup(pos [-22,11,2], rotY π-0.735)
+ *         └ screenMesh(pos [-0.2,-0.55,0.1], rotX -0.07, scale [10.15,7.875,1], geometry 1×1)
+ *
+ * 由此得到的屏幕世界尺寸 = 10.15×0.14 = 1.421 宽、7.875×0.14 = 1.1025 高（宽高比 1.289，
+ * 与 `planeAspect 4.06×3.15` 一致），世界中心约 (1.950, 0.063, -0.289)。
+ */
+export const HERO_SCREEN_PLANE = {
+  groupPosition: [-22, 11, 2] as [number, number, number],
+  groupRotY: Math.PI - 0.735,
+  meshPosition: [-0.2, -0.55, 0.1] as [number, number, number],
+  meshRotX: -0.07,
+  meshScale: [10.15, 7.875, 1] as [number, number, number],
+  /** 屏幕贴图亮度增益（原件 `texture(reelTexture, uv()).rgb.mul(4).min(1)`） */
+  reelBoost: 4,
+  /** boot 画面 → 视频的切换区间（原件 `smoothstep(0.05, 0.55, progress)`） */
+  bootMixRange: [0.05, 0.55] as [number, number],
+} as const;
+
+/**
+ * 屏幕投射灯（原件 `po` 组件，实测值）
+ *
+ * 作用：一盏带 gobo 的聚光灯从右后方投向屏幕前方，让屏幕的光真的「洒」进场景。
+ * 灯本身挂在 (2.2,-1,-1) 的 group 里，目标点在 group 局部 (-3.6,1,5)。
+ *
+ * 强度原件是逐帧动画的：`intensity = 5 + (0.6·sin(10t) + 0.25·sin(23t) + 0.15·sin(47t))`
+ */
+export const HERO_PROJECTOR = {
+  groupPosition: [2.2, -1, -1] as [number, number, number],
+  targetLocal: [-3.6, 1, 5] as [number, number, number],
+  /** 基础强度（原件静态 8，动画时用 baseIntensity + 抖动） */
+  intensity: 8,
+  baseIntensity: 5,
+  animAmplitudes: [0.6, 0.25, 0.15] as [number, number, number],
+  animFrequencies: [10, 23, 47] as [number, number, number],
+  distance: 20,
+  /** 原件 `decay: 0` —— 无距离衰减 */
+  decay: 0,
+  /** 原件写的是 `angle: 20`；three 的 angle 是弧度，这里按「原件单位是度」换算 */
+  angleDeg: 20,
+  penumbra: 0.4,
+  /**
+   * 解析式溅射的半锥角（°）
+   *
+   * 说明：three 0.169 的 WebGPU 构建未实现 `SpotLight.map`（gobo 投影）——
+   *      已核实 `build/three.webgpu.js` 里 `spotLightMap` 出现 0 次，而 WebGL 后端有。
+   *      原件因为 three 版本更新、后端支持该特性，才能看到「图案在动的溢出」。
+   *      本页因此改为在材质上做解析式投影采样（见 heroSpill.ts）。
+   *      这里把原件的 `angle: 20` 解释为「圆锥全角」，半角取 10°。
+   */
+  halfAngleDeg: 10,
+  /**
+   * 解析式溅射强度
+   *
+   * 注意事项：**该值不是原件实测值**，是自定系数 —— 原件那一项由 spotLight.map 承担、
+   *          本页无法照搬其内部标度，故给一个保守初值，需按观感校准。
+   */
+  spillStrength: 0.35,
+} as const;
+
+/** 补光（原件 `pC` 里的 ambientLight） */
+export const HERO_AMBIENT = {
+  intensity: 1.8,
+  color: '#ffffff',
+} as const;
+
+/**
+ * 环境灯架（原件 `pA` 组件 + `<Environment background={false} blur={0.8} resolution={1024}>`）
+ *
+ * `intensity` 为原件的原始值；原件还会整体乘一个 F = 0.4 × lightsIntensity（首页 lightsIntensity = 1）
+ */
+export const HERO_ENV = {
+  /** 环境贴图分辨率（原件 `<Environment resolution={1024}>`） */
+  resolution: 1024,
+  /** 环境模糊（原件 `blur={0.8}`，走 PMREM 预过滤） */
+  blur: 0.8,
+  /** 灯架整体强度系数（原件 F = 0.4 * lightsIntensity，lightsIntensity=1） */
+  rigScale: 0.4,
+  /**
+   * 灯位表（逐条对应原件 `pA`，坐标/缩放/颜色/强度均为实测值）
+   *  - circle 组：8 个白色圆盘构成顶部灯带（原件用 `[2,0,2,0,2,0,2,0].map(v => 10*v)` 生成 x）
+   */
+  lights: [
+    { form: 'rect', color: '#ffffff', intensity: 5, position: [0, 10, -20], rotation: [Math.PI / 2, 0, 0], scale: [10, 2, 1] },
+    ...Array.from({ length: 8 }, (_, i) => ({
+      form: 'circle' as const,
+      color: '#ffffff',
+      intensity: 5,
+      position: [(i % 2 === 0 ? 20 : 0), 10, i * 4] as [number, number, number],
+      rotation: [Math.PI / 2, 0, 0] as [number, number, number],
+      scale: [6, 2, 2] as [number, number, number],
+    })),
+    { form: 'rect', color: '#0000ff', intensity: 4, position: [-5, 1, -1], rotation: [0, Math.PI / 2, 0], scale: [20, 0.1, 1] },
+    { form: 'ring', color: '#334455', intensity: 50, position: [-15, 40, -18], rotation: [0, 0, 0], scale: [100, 100, 100] },
+    { form: 'ring', color: '#774520', intensity: 20, position: [-24, 15, -26], rotation: [0, 0, 0], scale: [100, 100, 100] },
+    { form: 'ring', color: '#aaaaaa', intensity: 1.5, position: [-10, 10, -20], rotation: [0, 0, 0], scale: [50, 50, 50] },
+    { form: 'ring', color: '#ffffff', intensity: 0.75, position: [0, 20, -20], rotation: [0, 0, 0], scale: [50, 50, 50] },
+  ],
+} as const;
+
+/**
+ * 屏幕（原件 `pu` 里的屏幕平面 + 视频纹理）
+ *
+ * 注意：屏幕平面不是模型的一部分，是代码另加的 mesh；原件用 `screenMeshRef` 指向的
+ * 模型节点世界变换来反解机位，所以屏幕位置由模型驱动，不是硬编码世界坐标。
+ */
+export const HERO_SCREEN = {
+  /** 屏幕平面宽高比（原件 `planeAspect: new Vector2(4.06, 3.15)`） */
+  planeAspect: [4.06, 3.15] as [number, number],
+  /** 视频纹理宽高比（原件 `reelTextureAspect: new Vector2(1026, 770)`） */
+  reelAspect: [1026, 770] as [number, number],
+  /** 平面宽度（世界单位）—— 原件按屏幕节点的世界缩放推算，此处给一个可调基准值 */
+  planeWidth: 2.2,
+  /** 视频路径（本地循环片；原件是两条 Mux HLS 流，主 + 从属做光溢出） */
+  videoUrl: '/asset/hero/showreel_loop.mp4',
+} as const;
+
+/** 模型与贴图（原件路径已本地化到 public/asset/hero/） */
+export const HERO_ASSETS = {
+  modelUrl: '/asset/hero/models/computer.glb',
+  /** Draco 解码器目录（沿用项目已有的本地 vendor 目录） */
+  dracoDecoderPath: '/asset/vendor/draco/',
+  /** 机身污渍（原件 `cloudTexture = /textures/dirt.jpg`，RepeatWrapping） */
+  dirtUrl: '/asset/hero/textures/dirt.jpg',
+  /** 机身材质磨损（原件 `grungeTexture = /textures/grunge.webp`，RepeatWrapping） */
+  grungeUrl: '/asset/hero/textures/grunge.webp',
+  /** 合成 pass 的颗粒噪点图（原件 `/textures/rgba_noise.png`，96×96） */
+  noiseUrl: '/asset/hero/textures/rgba_noise.png',
+  /** boot 屏底图（原件 720×400 / 移动端 360×260） */
+  bootScreenUrl: '/asset/hero/textures/boot_screen.png',
+  bootScreenMobileUrl: '/asset/hero/textures/boot_screen_mobile.png',
+} as const;
+
+/**
+ * boot 屏（原件 `pT` 组件）
+ *
+ * 原件在着色器里画：4px 粗白外框 + 内部 21 段进度条（每段 10px + 4px 间隙），
+ * 并按分辨率做桶形畸变（`resolution.x > 1024` 时启用，畸变系数 0.2）。
+ * 底图 720×400，contain 进显示器；移动端 360×260。
+ */
+export const HERO_BOOT = {
+  /** 虚拟分辨率（原件 `pX` 里的 `vec2(720, 400)` / 窄屏 `vec2(360, 260)`） */
+  virtualSize: [720, 400] as [number, number],
+  /** 进度条段数（原件 `float(21)`） */
+  segments: 21,
+  /** 每段宽度（原件 `float(10)`） */
+  segmentWidth: 10,
+  /** 段间隙（原件 `float(4)`） */
+  segmentGap: 4,
+  /** 外框粗细（原件 `float(4)`） */
+  borderWidth: 4,
+  /** 进度条距中心的下移量（原件 `C.y -= f.y * 0.18`） */
+  barOffsetY: -0.18,
+  /** 进度条整体宽度（原件 `vec2(298, 30)`，窄屏乘 1） */
+  barSize: [298, 30] as [number, number],
+  /** 桶形畸变强度（原件 `float(0.2)`，仅 `resolution.x > 1024` 时启用） */
+  barrel: 0.2,
+} as const;
+
+/**
+ * 24 片百叶标题幕（原件 `pp` 组件）
+ *
+ * 结构：`BoxGeometry(s, o, s, 12, 24, 12)` 的侧面按 24 段重排索引并重映射 UV，
+ * 每段用弹簧从 ±90° 转到 0。弹簧参数（原件实测，按段号线性插值）：
+ *  - 桌面：stiffness 130→100，damping 14→18
+ *  - 窄屏（宽 ≤ 1024）：stiffness 96→54，damping 13.5→18
+ *  - show 时目标角 0；hide 时目标角 窄屏 +π/2 / 桌面 -π/2
+ * 另有逐片呼吸：`I = sin(i*10 + t*4) * 0.007`、`y = sin(i*8 + t*3) * 0.005`
+ */
+export const HERO_SLATS = {
+  /** 段数（原件 `BoxGeometry(..., 12, 24, 12)` 的 heightSegments = 24） */
+  segments: 24,
+  /** 盒子壳尺寸（原件 `s = 2 * tan(fov/2) * cameraDistance / (1 + tan(fov/2))`，cameraDistance = 6.5） */
+  cameraDistance: 6.5,
+  /** 弹簧参数（桌面） */
+  springStiffnessFrom: 130,
+  springStiffnessTo: 100,
+  springDampingFrom: 14,
+  springDampingTo: 18,
+  /** 弹簧参数（窄屏，宽 ≤ 1024） */
+  springStiffnessFromNarrow: 96,
+  springStiffnessToNarrow: 54,
+  springDampingFromNarrow: 13.5,
+  springDampingToNarrow: 18,
+  /** 呼吸幅度 */
+  wobbleX: 0.007,
+  wobbleY: 0.005,
+  /** 显示/隐藏目标角（弧度） */
+  showAngle: 0,
+  hideAngleWide: -Math.PI / 2,
+  hideAngleNarrow: Math.PI / 2,
+} as const;
+
+/**
+ * 合成 pass（原件 `A5` 组件的 TSL 节点链，顺序与默认值均为实测）
+ *
+ * 完整链路（照抄原件顺序）：
+ *  1. bloom：mip 链（levels 7）先按 luminanceThreshold + smoothing 做亮度阈值提取，再乘 intensity
+ *  2. `p = min(bloom, 1)`
+ *  3. `m = blendScreen(p, src) + p * vec3(1, 0.8, 0) * 0.1`   ← 屏幕混合 + 暖色泛光加色
+ *  4. 有 motionBlur 时先过 motionBlur 节点
+ *  5. `.pow(vec4(pow))`
+ *  6. sepia 矩阵（0.393/0.769/0.189 …），`mix(E.rgb, sepia, sepiaIntensity)`
+ *  7. `clamp(rgb * brightness, 0, 1)`
+ *  8. contrast
+ *  9. 噪点（time / intensity / velocity）
+ * 10. UI 合成：`mix(lightUi, darkUi, uiModeTransition)` 再按 uiTransition 混合
+ *
+ * bloomIntensity 还被三频正弦做呼吸调制（原件实测）：
+ *   `R = (sin(5.3t·0.5) + sin(11.7t·0.5 + 2.4·sin(2.1t·0.5)·0.5) + sin(23.9t·0.5 + 1.3·cos(7.1t·0.5)·0.5)) * 0.03 * t`
+ *   `bloomIntensity = 1.5 * t + R + bloomBoost`
+ *
+ * 重要：原件首页那份**逐页效果数值来自运行时 CMS 拉取**（不在生产包里），
+ *      所以下面这组默认值取的是原件的 uniform 默认值，属「算法一致、数值待按观感校准」。
+ */
+export const HERO_COMPOSE = {
+  bloomIntensity: 1,
+  bloomThreshold: 0.1,
+  bloomRadius: 0.5,
+  bloomSmoothing: 0.2,
+  bloomLevels: 7,
+  pow: 1,
+  sepiaIntensity: 0.3,
+  brightness: 1,
+  contrast: 1,
+  chromaticAberration: 1,
+  motionBlur: 0,
+  noiseIntensity: 0,
+  noiseVelocity: 1,
+  vignetteRadius: 0,
+  vignetteSmoothness: 0,
+  vignetteIntensity: 0,
+  /** 桶形畸变按宽高比自适应：原件 `clamp(map(aspect, 9/16→4/3, 0.2→1.2), 0.25, 1)` */
+  lensDistortionFrom: [9 / 16, 4 / 3] as [number, number],
+  lensDistortionTo: [0.2, 1.2] as [number, number],
+  lensDistortionClamp: [0.25, 1] as [number, number],
+} as const;

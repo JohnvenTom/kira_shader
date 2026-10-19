@@ -93,13 +93,13 @@ export interface PianoSceneProps {
   /** 交互模式变化回调（镜头旅程结束 = true，面板淡入） */
   onInteractiveChange?: (v: boolean) => void;
   /** 音符显示元素（弹奏时更新文字与透明度） */
-  noteElRef: React.RefObject<HTMLDivElement>;
+  noteElRef: React.RefObject<HTMLDivElement | null>;
   /** FPS/三角面统计元素 */
-  statElRef: React.RefObject<HTMLDivElement>;
+  statElRef: React.RefObject<HTMLDivElement | null>;
   /** 操作提示元素（首次弹奏后淡出） */
-  hintElRef: React.RefObject<HTMLDivElement>;
+  hintElRef: React.RefObject<HTMLDivElement | null>;
   /** toast 提示元素（八度切换等） */
-  toastElRef: React.RefObject<HTMLDivElement>;
+  toastElRef: React.RefObject<HTMLDivElement | null>;
   /** 风格名（影棚/暗房/动画）：雾/地面/灯光/曝光逐帧阻尼过渡 */
   styleName?: PianoStyleName;
   /** DOF 焦点目标（鼠标指向的模型命中点，每帧写入；PianoPostProcessing 读取） */

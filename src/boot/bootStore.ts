@@ -239,3 +239,26 @@ export function bootInteractionUnlocked(): boolean {
 export function assetsRegistered(): boolean {
   return assets.size > 0;
 }
+
+/**
+ * 清空全部已登记资产（供独立页面复用本状态机的场景）
+ *
+ * 功能：把资产表整体清空，让"是否还有资产未完成"的判定只反映**当前页面**
+ *      重新登记的那批资产。
+ *
+ * 参数：无
+ *
+ * 返回值：无
+ *
+ * 异常：无
+ *
+ * 注意事项：本模块是模块级单例，跨路由不会重置。像 hero 复刻页这种
+ *          不使用常规 App boot 流程的独立页面，挂载时必须先调用本函数
+ *          （再 resetBoot），否则前一个页面登记过的资产会一直停在
+ *          done=false 被 resetBoot 重新武装，导致 allAssetsDone() 永远为假、
+ *          boot 卡死在 loading 阶段。
+ */
+export function clearBootAssets() {
+  assets.clear();
+  notify();
+}

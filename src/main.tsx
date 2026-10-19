@@ -6,6 +6,7 @@ import TraceDetailPage from './components/trace/TraceDetailPage';
 import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import BadgePage from './components/badge/BadgePage';
+import HeroOneToOne from './hero/HeroOneToOne';
 import './styles.css';
 
 /**
@@ -62,10 +63,16 @@ function Root() {
   const hash = useHashRoute();
   const isTape = hash.split('?')[0] === '#tape';
   const isBadge = hash.split('?')[0] === '#badge';
+  // #hero：shader.se 首页 1:1 复刻页（three/webgpu + TSL 合成管线）
+  const isHero = hash.split('?')[0] === '#hero';
   const isFilm =
     hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
-  // 页面本体：四者互斥
-  const page = isTape
+  // 页面本体：五者互斥
+  const page = isHero
+    // #hero：不套 StrictMode —— 它会手动创建 WebGPURenderer 并在 effect 里 await init()，
+    // 双挂载会并发建两个设备；资源释放由组件自身的 cleanup 负责
+    ? <HeroOneToOne key="hero" />
+    : isTape
     // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
     // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
     ? <TapePage key="tape" />
@@ -93,7 +100,7 @@ function Root() {
           tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断。
           BGM 开屏引导已融合进首页 boot 屏（BIOS 文字行，见 App.tsx），
           其他页面直链的首次交互由 tapeAudio 全局钩子兜底 */}
-      {!isTape && !isBadge && <MusicBoxDock />}
+      {!isTape && !isBadge && !isHero && <MusicBoxDock />}
     </>
   );
 }
