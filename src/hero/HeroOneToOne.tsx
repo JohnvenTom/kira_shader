@@ -438,8 +438,10 @@ export default function HeroOneToOne() {
             if (ready || elapsed >= WARMUP_TIMEOUT_SEC) markBootWarmupDone();
           }
 
-          // boot 覆盖层可见期间刷新共享贴图：显示器屏幕用的是同一张 boot 画面（原件同源做法）
-          if (bootOverlay.isVisible()) bootTexture.needsUpdate = true;
+          // boot 画布仍在绘制期间刷新共享贴图：显示器屏幕用的是同一张 boot 画面（原件同源做法）。
+          // 注意这里问的是「是否仍在绘制」而非「是否显示在 DOM 上」—— countdown / reveal 期间
+          // 画布已隐藏（画面交给合成链），但它仍在绘制，屏上的 boot 画面要保持是活的。
+          if (bootOverlay.isLive()) bootTexture.needsUpdate = true;
 
           // === 相机进度（原件 pC 原文，1:1）===
           // 滚动推进与入场**共用同一条路径**，没有独立入场曲线：

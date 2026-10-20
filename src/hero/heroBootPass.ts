@@ -161,9 +161,9 @@ const BOOT_MAX_DPR = 1.5;
  */
 export function createHeroBootPass(host: HTMLElement) {
   const canvas = document.createElement('canvas');
-  // 只绘制、不直接显示：这块画布的画面改由合成链承载（原件那块 BIOS 蓝屏本身就是 3D 管线渲染
-  // 出来的纹理，进合成链一起过热降级/泛光/暗角）。画布藏在 WebGPU 画布之下（renderer.domElement
-  // 是后插入的兄弟节点，同 z-index 下 DOM 顺序决定绘制次序），避免同一块蓝屏被叠加两次。
+  // 定位元素（position:absolute）会绘制在**静态流内**的 WebGPU 画布之上，与 z-index 数值无关。
+  // 因此这张画布的 `display` 是「能不能盖住合成链输出」的唯一开关：只在 loading / warmup
+  // （即还没就绪）时显示，进入 countdown 立刻隐藏，把画面交给合成链。
   canvas.style.cssText =
     'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;';
   host.appendChild(canvas);
@@ -256,18 +256,23 @@ export function createHeroBootPass(host: HTMLElement) {
     // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"（与 PostProcessing 同一调用）
     applyBootAudioState(uniforms);
 
-    // 是否继续绘制：boot 编排走完（phase = done）即停绘。
-    // 注意这里**不再按「就绪」切显示** —— 画布本身不显示（见文件头 z-index 说明），
-    // 它的画面由 heroCompose 的 loading 屏覆盖分支承载；原件也是「资产一就绪硬切」，
-    // 合成链侧的硬切由 HeroOneToOne 的 loadingActive 门给出（phase 进入 countdown 即关）。
-    const alive = bootStore.phase !== 'done';
-    if (alive) {
+    // ---- 渲染与显示必须拆成两个独立条件（这里踩过坑，务必保持） ----
+    //  shouldRender：boot 编排走完（phase = done）才停绘 —— 显示器屏幕材质仍需要这张画布纹理，
+    //                所以 countdown / reveal 期间必须**继续绘制**（屏上 boot 画面才是活的）。
+    //  shouldShow  ：只在「还没就绪」时把画布显示到 DOM。**这一条是硬要求**：
+    //                本画布是 position:absolute（定位元素），而 WebGPU 画布是静态流内元素 ——
+    //                按 CSS 绘制顺序，定位元素绘制在静态元素之上，所以只要它 display 不为 none，
+    //                它就会盖住合成链的输出。进入 countdown 必须立刻隐藏，否则 500ms 静置 + 弹簧
+    //                拉远整段都被它挡住，观感就是「加载完没有镜头拉远」。
+    const shouldRender = bootStore.phase !== 'done';
+    const shouldShow = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
+    if (shouldShow) {
       if (!shown) { canvas.style.display = 'block'; shown = true; }
-      if (renderer) renderer.render(scene, camera);
     } else if (shown) {
       canvas.style.display = 'none';
       shown = false;
     }
+    if (shouldRender && renderer) renderer.render(scene, camera);
 
     // 弹簧收敛（phase = done）后停掉循环：此后既不渲染也不再推进状态机
     if (bootStore.phase !== 'done') raf = requestAnimationFrame(tick);
@@ -327,8 +332,10 @@ export function createHeroBootPass(host: HTMLElement) {
 
   return {
     canvas,
-    /** boot 覆盖层当前是否可见（调用方据此决定要不要刷新共享贴图） */
-    isVisible: () => shown,
+    /** boot 画布是否仍在绘制（**不等于**是否显示在 DOM 上）：调用方据此决定要不要刷新共享贴图。
+     *  注意 countdown / reveal 期间画布已 display:none（画面交给合成链），但它仍在绘制，
+     *  因为显示器屏幕材质读的就是这张画布纹理 —— 这段时间它是「活的」。 */
+    isLive: () => bootStore.phase !== 'done',
     finish,
     dispose,
   };
