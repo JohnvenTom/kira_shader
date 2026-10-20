@@ -1,341 +1,797 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
-import { HERO_COMPOSE, HERO_ASSETS } from './heroConfig';
+import { HERO_EFFECTS, HERO_LOADING_EFFECTS, HERO_SETTINGS, type HeroEffects } from './heroConfig';
 
 /**
- * 说明：TSL 的节点类型在 TypeScript 下类型极重（每个算子都会产生新的泛型节点类型），
- * 逐算子精确标注会让这一百多行着色器代码充斥类型体操、可读性崩塌。
- * 因此本文件把 TSL 命名空间整体取成 `any`（只在此文件、只用于构建节点图），
- * 数值与语义仍严格按原件实现 —— 这是刻意取舍，不是偷懒。
+ * shader.se 首页合成链的 1:1 复刻（原件 `A5` 最终 pass + 场景合成 pass）
+ *
+ * 反编译来源（原件生产包 `04kr7kd5riobb.js` 字符偏移）：
+ *  - 场景合成组件（uniforms / 逐帧赋值 / 节点图）：715,300 ~ 734,300（内部类名记为 ComposeScene）
+ *  - 最终合成组件 `A5`（节点链）：707,800 ~ 715,100
+ *  - 工具函数：`AH` 694,600 / `Aj`(桶形) 695,486 / `Az`(圆角 SDF) 695,900 /
+ *             `AV`(四边渐隐) 695,924 / `AW`(桶形+渐隐) 696,513
+ *  - `A$`(MipMapBlurNode，7 级 bloom) 696,700 / `AZ`(色散) 703,632 /
+ *             `A0`(高斯) 705,236 / `A3`(运动模糊 ping-pong) 705,446
+ *
+ * —— 关于「uv 翻转」——
+ * 原件的场景合成 pass 读各 section RT 时用 `vec2(uv.x, 1 - uv.y)`（翻转），最终 pass `A5` 读合
+ * 成 RT 时用 `uv()`（不翻转）。本文件统一采用「读离屏 RT 一律翻 V」这一条规则（与本项目此前
+ * 已验证可用的做法一致），差异只可能出现在最终 pass 的读取方向上 —— 该点已用离屏 RT 回读比对
+ * 参考帧验证（见 `RT_READ_FLIP` 常量）。
+ *
+ * 本文件把 TSL 命名空间整体取成 `any`：TSL 的节点类型在 TS 下逐算子泛型化，精确标注会让这
+ * 三百多行着色器逻辑崩塌为类型体操。数值与语义严格照原件 —— 这是刻意取舍，不是偷懒。
  */
 const N = TSL as any;
 
-/** 合成 pass 的可调参数（对应原件 `p({texture, bloomIntensity, ...})` 的入参） */
-export interface HeroComposeParams {
-  bloomIntensity: number;
-  bloomThreshold: number;
-  bloomRadius: number;
-  pow: number;
-  sepiaIntensity: number;
-  brightness: number;
-  contrast: number;
-  chromaticAberration: number;
-  motionBlur: number;
-  noiseIntensity: number;
-  noiseVelocity: number;
-  vignetteRadius: number;
-  vignetteSmoothness: number;
-  vignetteIntensity: number;
-  lensDistortion: number;
-}
+/** mip 金字塔级数（原件 `levels: 7`） */
+const MIP_LEVELS = HERO_SETTINGS.bloomLevels;
+/** 上采样 RT 张数 = levels - 1（原件 up[0] 是输出，另有 levels-2 张中间） */
+const UP_LEVELS = MIP_LEVELS - 1;
 
 /**
- * 生成默认合成参数
+ * 每帧运行时输入
  *
- * 功能：以 HERO_COMPOSE（原件 uniform 默认值）为基准给出一份可直接使用的参数对象
- *
- * 参数：无
- *
- * 返回值：HeroComposeParams
- *
- * 异常：无
- *
- * 注意事项：原件首页那份逐页效果数值来自运行时 CMS，不在生产包里，
- *          所以这里是「算法一致、数值待按观感校准」的起点。
+ * 说明：与原件合成组件 `useImperativeHandle` 里每帧写入的那批状态一一对应
  */
-export function createDefaultComposeParams(): HeroComposeParams {
-  return {
-    bloomIntensity: HERO_COMPOSE.bloomIntensity,
-    bloomThreshold: HERO_COMPOSE.bloomThreshold,
-    bloomRadius: HERO_COMPOSE.bloomRadius,
-    pow: HERO_COMPOSE.pow,
-    sepiaIntensity: HERO_COMPOSE.sepiaIntensity,
-    brightness: HERO_COMPOSE.brightness,
-    contrast: HERO_COMPOSE.contrast,
-    chromaticAberration: HERO_COMPOSE.chromaticAberration,
-    motionBlur: HERO_COMPOSE.motionBlur,
-    noiseIntensity: HERO_COMPOSE.noiseIntensity,
-    noiseVelocity: HERO_COMPOSE.noiseVelocity,
-    vignetteRadius: HERO_COMPOSE.vignetteRadius,
-    vignetteSmoothness: HERO_COMPOSE.vignetteSmoothness,
-    vignetteIntensity: HERO_COMPOSE.vignetteIntensity,
-    lensDistortion: 0.3,
+export interface HeroComposeFrame {
+  /** 当前时间（秒），驱动 bloom 呼吸、噪点流动、运动模糊帧率归一化 */
+  time: number;
+  /** 距上一帧的秒数（原件用 `x - o.current` 做运动模糊的帧率归一化） */
+  dt: number;
+  /** 竖屏（原件 `isPortraitDisplay`：竖屏时场景桶形畸变换算前先减半） */
+  portrait: boolean;
+  /** loading 期（原件 `isReadyToRender == 0`）：用 loading 屏纹理覆盖场景色 */
+  loadingActive: boolean;
+  /** loading 参数渐出权重（原件 `e$ = smoothstep(0,1, 1 - initialTransition)`：
+   *  1 = 完全是 loading 效果，0 = 完全是 hero 效果） */
+  loadingMix: number;
+}
+
+/** 合成管线句柄 */
+export interface HeroComposeHandle {
+  /** 场景（3D）渲染目标 —— 主渲染循环先把场景渲到这里 */
+  sceneRT: THREE.RenderTarget;
+  /** 按 CSS 尺寸重设全部 RT 与纹理尺寸类 uniform */
+  setSize: (cssWidth: number, cssHeight: number) => void;
+  /** 执行整条合成链并把最终结果上屏 */
+  render: (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => Promise<void>;
+  /** 释放全部 RT / 材质 / 几何 */
+  dispose: () => void;
+  /**
+   * 调试用中间渲染目标（只读，供自动化回读逐级像素定位问题）
+   *
+   * 说明：与项目其它页的 `__xxxProbe` 同款做法 —— 无副作用、不参与逻辑，仅在调试时读取
+   */
+  debugRTs: {
+    compose: THREE.RenderTarget;
+    bloom: THREE.RenderTarget;
+    motionBlend: [THREE.RenderTarget, THREE.RenderTarget];
+    graded: THREE.RenderTarget;
   };
 }
 
-/** 单次 bloom 模糊的采样圈数 × 每圈采样数（12 个 tap，够出柔和光晕且开销可控） */
-const BLOOM_TAPS = 12;
+/**
+ * 取「基准 uv」
+ *
+ * 功能：把屏幕 uv 翻 V。离屏 RT 在 WebGPU 侧是逆序存放的，读纹理必须翻 V，否则整幅上下颠倒。
+ *
+ * 参数：
+ *  - screenUv {any} TSL 的屏幕 uv 节点
+ *
+ * 返回值：TSL 节点，基准 uv
+ *
+ * 异常：无
+ *
+ * 注意事项：本文件所有离屏纹理采样都基于这个基准 uv，不要在别处再混用未翻转的 uv
+ */
+const baseUv = (screenUv: any) => N.vec2(screenUv.x, N.oneMinus(screenUv.y));
 
 /**
- * 创建 hero 的离屏合成管线
+ * 桶形畸变（原件 `Aj`，内含 `AH` 的径向缩放）
  *
- * 功能：
- *  - 建一张 HalfFloat 的离屏渲染目标（sceneRT），主场景先渲到这里，再由合成 pass 上屏
- *  - 按原件顺序构造合成节点图：
- *      ① 桶形畸变（按宽高比自适应的 lensDistortion，border 控制边缘缩放）
- *      ② 采样场景纹理 + RGB 色散（垂直方向分离）
- *      ③ 饱和度（原件 `ApplySaturation`：mix(亮度, 原色, saturation)）
- *      ④ 暗角（radius / smoothness / intensity）
- *      ⑤ bloom：亮度阈值提取（threshold + smoothing 的 smoothstep）+ 径向 12 tap 模糊 + 强度
- *      ⑥ `min(bloom, 1)` → 屏幕混合 → 暖色加色 `vec3(1, .8, 0) * .1`
- *      ⑦ `pow`
- *      ⑧ sepia 矩阵混合
- *      ⑨ `clamp(rgb * brightness, 0, 1)` → contrast
- *      ⑩ 噪点（rgba_noise 平铺 + time × velocity 偏移，只加不减）
- *  - 全部参数走 uniform，因此逐帧变化（含原件 bloom 的三频呼吸调制）都能直接生效
+ * 功能：按 `warp = (1 - d·n) · (p·(1 + d·|p|^1.5)) + d·n·0.5` 把 uv 向中心收拢，
+ *      `n = mix(0.3655, 0, border)` —— border 越大畸变被拉回得越多
+ *
+ * 参数：
+ *  - uvBase      {any} 基准 uv
+ *  - distortion  {any} 畸变强度（原件场景合成 pass 用的是 `0.2*d+0.1` 换算后的值）
+ *  - border      {any} 边框系数（原件换算为 `0.5+0.2*b`）
+ *
+ * 返回值：TSL 节点（vec2），畸变后的 uv
+ *
+ * 异常：无
+ *
+ * 注意事项：与原件一致，核心项是 |p| 的 1.5 次方（不是常见实现的 |p|²）
+ */
+const barrel = (uvBase: any, distortion: any, border: any) => {
+  const n = N.mix(N.float(0.3655), N.float(0), border);
+  const k = distortion.mul(n);
+  const shrink = N.vec2(N.float(1).sub(k), N.float(1).sub(k));
+  const shift = N.vec2(k.mul(0.5), k.mul(0.5));
+  const p = uvBase.sub(0.5);
+  const r2 = p.x.mul(p.x).add(p.y.mul(p.y));
+  // AH(uv, 0, d) = p · (1 + d · r2^1.5) + 0.5
+  const radial = N.float(1).add(distortion.mul(r2).mul(N.pow(r2, 0.5)));
+  const warped = N.vec2(p.x.mul(radial), p.y.mul(radial)).add(0.5);
+  return shrink.mul(warped).add(shift);
+};
+
+/**
+ * 圆角矩形 SDF（原件 `Az`）
+ *
+ * 功能：返回点 p 到「中心在原点、半尺寸 b、圆角半径 r」的圆角矩形边界的有符号距离
+ *
+ * 参数：
+ *  - p {any} 相对中心的坐标（vec2）
+ *  - b {any} 半尺寸（vec2）
+ *  - r {any} 圆角半径（标量）
+ *
+ * 返回值：TSL 节点（标量），内部为负、外部为正
+ *
+ * 异常：无
+ *
+ * 注意事项：原件 `AV` 用它构造四角圆角遮罩；半径是 `mix(0, 0.04, border)`
+ */
+const sdRoundBox = (p: any, b: any, r: any) => {
+  const d = N.abs(p).sub(b).add(r);
+  const dm = N.max(d, N.vec2(0, 0));
+  return N.length(dm).add(N.min(N.max(d.x, d.y), N.float(0))).sub(r);
+};
+
+/**
+ * 四边渐隐 + 圆角遮罩（原件 `AV`）
+ *
+ * 功能：输出颜色乘以一行遮罩 —— 圆角矩形内为 1，边缘按 `inset` 宽度渐隐，圆角外侧为 0。
+ *      这就是参考帧里画面四角那圈「圆角暗边 + 边缘渐隐」的来源。
+ *
+ * 参数：
+ *  - color      {any} 待遮罩的颜色（vec4）
+ *  - uvBase     {any} 基准 uv（原件用的是**畸变后**的 uv，所以圆角会随畸变一起被拉伸）
+ *  - border     {any} 边框系数：圆角半径 `mix(0,0.04,border)`、边宽 `mix(0,0.005,border)`
+ *  - dimensions {any} 像素尺寸（vec2），用于按宽高比做各向同性圆角
+ *
+ * 返回值：TSL 节点（vec4），遮罩后的颜色
+ *
+ * 异常：无
+ *
+ * 注意事项：本页不做 UI 贴图合成，但这条遮罩必须保留 —— 它是画面轮廓的一部分
+ */
+const edgeFade = (color: any, uvBase: any, border: any, dimensions: any) => {
+  const radius = N.mix(N.float(0), N.float(0.04), border);
+  const aa = N.mix(N.float(0), N.float(0.005), border);
+  const perimeter = N.smoothstep(aa.negate(), aa, uvBase.x)
+    .mul(N.smoothstep(aa.negate(), aa, uvBase.y))
+    .mul(N.smoothstep(aa.negate(), aa, N.float(1).sub(uvBase.x)))
+    .mul(N.smoothstep(aa.negate(), aa, N.float(1).sub(uvBase.y)));
+  const aspect = N.vec2(dimensions.x.div(dimensions.y), N.float(1));
+  const sdf = sdRoundBox(uvBase.sub(0.5).mul(aspect), aspect.mul(0.5), radius);
+  const mask = N.float(1).sub(N.smoothstep(aa.negate(), aa, sdf)).mul(perimeter);
+  return N.vec4(color.rgb.mul(mask), color.a);
+};
+
+/**
+ * 高斯核（原件 `A0`）
+ *
+ * 功能：`exp(-(x-mu)² / (2σ²)) / (σ√(2π))`
+ *
+ * 参数：
+ *  - x     {any} 输入
+ *  - mu    {any} 均值
+ *  - sigma {any} 标准差
+ *
+ * 返回值：TSL 节点
+ *
+ * 异常：无
+ *
+ * 注意事项：原件噪点用 `A0(hash, 0, 0.7 * 0.7)` —— σ = 0.49
+ */
+const gaussian = (x: any, mu: any, sigma: any) => {
+  const d = x.sub(mu);
+  const norm = N.float(1).div(sigma.mul(N.float(Math.sqrt(2 * Math.PI))));
+  return norm.mul(N.exp(d.mul(d).div(N.float(-2).mul(sigma.mul(sigma)))));
+};
+
+/**
+ * 饱和度（原件 `ApplySaturation`）
+ *
+ * 功能：`mix(luminance(color), color, saturation)`，亮度权重 0.299/0.587/0.114
+ *
+ * 参数：
+ *  - color      {any} 颜色（vec4）
+ *  - saturation {any} 饱和度（1 为原样）
+ *
+ * 返回值：TSL 节点（vec4）
+ *
+ * 异常：无
+ *
+ * 注意事项：原件只在场景合成 pass 里对每个 section 采样后调用一次
+ */
+const applySaturation = (color: any, saturation: any) => {
+  const lum = N.dot(color.rgb, N.vec3(0.299, 0.587, 0.114));
+  return N.vec4(N.mix(N.vec3(lum), color.rgb, saturation), color.a);
+};
+
+/**
+ * bloom 的亮度阈值提取（原件 `A$` 的 `preFilter`）
+ *
+ * 功能：按 `smoothstep(threshold, threshold + smoothing, luminance)` 给整枚颜色加权，
+ *      阈值以下的像素被压掉，只有亮部参与后续 mip 模糊
+ *
+ * 参数：
+ *  - color     {any} 颜色（vec4）
+ *  - threshold {any} 阈值
+ *  - smoothing {any} 平滑宽度
+ *
+ * 返回值：TSL 节点（vec4）
+ *
+ * 异常：无
+ *
+ * 注意事项：原件把整枚 vec4（含 alpha）都乘上权重，照抄
+ */
+const preFilter = (color: any, threshold: any, smoothing: any) =>
+  color.mul(N.smoothstep(threshold, threshold.add(smoothing), N.dot(color.rgb, N.vec3(0.299, 0.587, 0.114))));
+
+/**
+ * 四抽盒式模糊（原件 mip 降/升采样用的 `n()`）
+ *
+ * 功能：在 `uv ± texel/2` 四个对角点各采一次并平均
+ *
+ * 参数：
+ *  - tex    {any} 源纹理
+ *  - uvBase {any} 基准 uv
+ *  - texel  {any} 源纹理的 texel 尺寸（vec2，1/源分辨率）
+ *
+ * 返回值：TSL 节点（vec4）
+ *
+ * 异常：无
+ *
+ * 注意事项：偏移是对角方向的 ±half-texel，不是上下左右
+ */
+const blur4 = (tex: any, uvBase: any, texel: any) => {
+  const o = texel.mul(0.5);
+  const a = N.texture(tex, uvBase.add(N.vec2(o.x.negate(), o.y)));
+  const b = N.texture(tex, uvBase.add(N.vec2(o.x, o.y)));
+  const c = N.texture(tex, uvBase.add(N.vec2(o.x.negate(), o.y.negate())));
+  const d = N.texture(tex, uvBase.add(N.vec2(o.x, o.y.negate())));
+  return a.add(b).add(c).add(d).mul(0.25);
+};
+
+/**
+ * 创建 hero 的 1:1 合成管线
+ *
+ * 功能：按原件两段式架构建整条链：
+ *  ① 场景合成 pass：读 3D 场景 RT → 桶形畸变 + 圆角四边渐隐 + 饱和度 + loading 屏覆盖 + 暗角 → composeRT
+ *  ② mip 金字塔：7 级下采样（首级带阈值提取 + 两级模拟）+ 6 级上采样（`mix(支撑层, 模糊, radius)`）
+ *  ③ 泛光混合 + 运动模糊：`m = blendScreen(min(bloom·I, 1), scene) + bloom·(1,0.8,0)·0.1`，
+ *     再与上一帧做 ping-pong 混合 `mix(m, prev, 1.3·Q)`
+ *  ④ 调色：`pow` → sepia 矩阵 → `clamp(rgb·brightness)` → 绕 0.5 轴的 contrast
+ *  ⑤ 最终 pass：纵向 RGB 色散（带边缘内缩遮罩）+ 高斯哈希噪点（乘 `1 - color`，亮部不出噪）
  *
  * 参数：
  *  - width / height {number} 初始 CSS 画布尺寸（像素）
+ *  - bootCanvas     {HTMLCanvasElement | undefined} boot 覆盖屏画布；原件把 loading 屏纹理喂进合成链，
+ *                   所以这张画布**同时在合成链里当 loading 屏**（不是只当显示器贴图）
  *
- * 返回值：{ sceneRT, composeScene, composeCamera, params, setParams, setBloomBreathing, setSize, dispose }
- *  - setParams(p, time)      每帧写 uniform（time 驱动噪点流动）
- *  - setSize(w, h)           画布尺寸变化时重设 RT 与 aspect
+ * 返回值：HeroComposeHandle —— { sceneRT, setSize, render, dispose }
  *
- * 异常：噪点贴图加载失败时该项退化（noiseIntensity 保持 0 时几乎无感），不影响其余效果
+ * 异常：无（贴图缺失时退化，不影响其余效果）
  *
  * 注意事项：
- *  - **与原件的已知差异（唯一一处）**：原件 bloom 是自研 7 级 mip 模糊链（带 luminanceSmoothing），
- *    这里改为「阈值提取 + 径向 12 tap」的等效近似。理由是 TSL 的节点图在编译期一次成形，
- *    而原件的 bloomIntensity 是逐帧变化的，用固定 bloom 节点无法承载这种变化；
- *    改为全 uniform 驱动后，呼吸调制才能真的动起来。
- *  - 原件把「桶形畸变/暗角/饱和度」放在场景合成 pass、「bloom 及之后」放在最终 compose pass；
- *    这里合并为一次 pass，顺序保持与原件一致。
- *  - dpr 上限 1.5，与原件 `dpr: [1, 1.5]` 一致。
+ *  - **原件是「每 section 一张 RT → 场景合成」的多 section 架构**；本页只有一个 section，
+ *    因此 `sceneMode` 恒为 1（单 section），跨 section 过渡、子页（project/not-found）分支、
+ *    UI 贴图合成分支按已确认范围**不实现**（本页无对应 DOM UI，跨 section 过渡不在首页成立）
+ *  - 运动模糊用两张全分辨率 HalfFloat RT 交替（原件 `A3` 的 ping-pong）
+ *  - 每帧约 18 趟全屏/半屏绘制 —— 与原件同量级
  */
-export function createHeroCompose(width: number, height: number) {
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-  let pxW = Math.max(1, Math.floor(width * dpr));
-  let pxH = Math.max(1, Math.floor(height * dpr));
+export function createHeroCompose(width: number, height: number, bootCanvas?: HTMLCanvasElement): HeroComposeHandle {
+  const dpr = Math.min(window.devicePixelRatio || 1, HERO_SETTINGS.dprMax);
+  let cssW = Math.max(1, width);
+  let cssH = Math.max(1, height);
+  let pxW = Math.max(1, Math.floor(cssW * dpr));
+  let pxH = Math.max(1, Math.floor(cssH * dpr));
 
+  // ---------- 渲染目标 ----------
+  // 注意：**所有 pass RT 都必须 depthBuffer: true**，哪怕全屏 pass 根本不用深度。
+  // three 0.169 的 WebGPU 后端会无条件给渲染通道挂一个 depthStencilAttachment 视图，
+  // 却只在 `renderContext.depth` 为真时才写 `depthLoadOp`；depthBuffer:false 的 RT 因此
+  // 通不过 Dawn 校验，整趟 CommandBuffer 被丢弃 —— 表现为「pass 静默不绘制、目标 RT 全 0」，
+  // 而控制台只有一条 depthLoadOp 的 warn，极难定位（本项目实测踩过）。
   const sceneRT = new THREE.RenderTarget(pxW, pxH, {
     type: THREE.HalfFloatType,
     depthBuffer: true,
     samples: 0,
   });
-
-  const noiseTexture = new THREE.TextureLoader().load(
-    HERO_ASSETS.noiseUrl,
-    undefined,
-    undefined,
-    () => { /* 加载失败静默忽略 */ }
+  const composeRT = new THREE.RenderTarget(pxW, pxH, { type: THREE.HalfFloatType, depthBuffer: true });
+  const bRT = new THREE.RenderTarget(pxW, pxH, { type: THREE.HalfFloatType, depthBuffer: true });
+  /** 运动模糊 ping-pong 双缓冲（原件 `A3` 的 `_renderTarget1/2`） */
+  const mbRT: [THREE.RenderTarget, THREE.RenderTarget] = [
+    new THREE.RenderTarget(pxW, pxH, { type: THREE.HalfFloatType, depthBuffer: true }),
+    new THREE.RenderTarget(pxW, pxH, { type: THREE.HalfFloatType, depthBuffer: true }),
+  ];
+  /** mip 下采样链（原件 `_downsamplingRenderTargets`，长度 = levels） */
+  const downRT = Array.from({ length: MIP_LEVELS }, () =>
+    new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true })
   );
-  noiseTexture.wrapS = THREE.RepeatWrapping;
-  noiseTexture.wrapT = THREE.RepeatWrapping;
-  noiseTexture.colorSpace = THREE.NoColorSpace;
-
-  // ---- uniforms（全部为逐帧可写的动态量） ----
-  // 注意：贴图**不**包成 uniform —— TSL 的 `texture()` 要求第一参是 `.isTexture === true` 的真贴图
-  //      （普通 uniform 的 isTexture 是 undefined，会抛 "TextureNode: Need a three.js texture."）。
-  //      RenderTarget.setSize 只改 image 尺寸、不替换 texture 对象，所以直接引用是安全的。
-  const uAspect = N.uniform(width / height);
-  const uLensDistortion = N.uniform(0.3);
-  const uLensDistortionBorder = N.uniform(0.5);
-  const uSaturation = N.uniform(1);
-  const uVignetteRadius = N.uniform(0);
-  const uVignetteSmoothness = N.uniform(0.3);
-  const uVignetteIntensity = N.uniform(0);
-  const uBloomIntensity = N.uniform(HERO_COMPOSE.bloomIntensity);
-  const uBloomThreshold = N.uniform(HERO_COMPOSE.bloomThreshold);
-  const uBloomRadius = N.uniform(HERO_COMPOSE.bloomRadius);
-  const uPow = N.uniform(HERO_COMPOSE.pow);
-  const uSepia = N.uniform(HERO_COMPOSE.sepiaIntensity);
-  const uBrightness = N.uniform(HERO_COMPOSE.brightness);
-  const uContrast = N.uniform(HERO_COMPOSE.contrast);
-  const uChromatic = N.uniform(HERO_COMPOSE.chromaticAberration);
-  const uNoiseIntensity = N.uniform(HERO_COMPOSE.noiseIntensity);
-  const uNoiseVelocity = N.uniform(HERO_COMPOSE.noiseVelocity);
-  const uTime = N.uniform(0);
-  const uResolution = N.uniform(new THREE.Vector2(pxW, pxH));
-
-  /**
-   * 桶形畸变（原件 DH/DV 同款）
-   *
-   * 功能：把 UV 向中心收拢，scale = 1 + r² × distortion；border 控制边缘整体缩放
-   *
-   * 参数：
-   *  - uvIn  TSL 节点，输入 UV
-   *
-   * 返回值：TSL 节点，畸变后的 UV
-   *
-   * 异常：无
-   *
-   * 注意事项：border=0 时边缘被拉伸（n=0.3655），border=1 时不额外缩放（n=0）
-   */
-  const barrel = (uvIn: any) => {
-    const c = uvIn.sub(0.5);
-    const r2 = N.dot(c, c);
-    const n = N.mix(N.float(0.3655), N.float(0), uLensDistortionBorder);
-    const a = N.float(1).sub(uLensDistortion.mul(n));
-    const s = uLensDistortion.mul(n).mul(0.5);
-    const scale = N.float(1).add(r2.mul(uLensDistortion));
-    return N.vec2(c.x.mul(scale), c.y.mul(scale)).add(0.5).mul(a).add(s);
-  };
-
-  /**
-   * 单点 bloom 亮度阈值提取
-   *
-   * 功能：原件 bloom 节点的核心 —— 按 threshold + smoothing 的 smoothstep 给亮度加权，
-   *      低于阈值的像素被压掉，只有亮部参与模糊
-   *
-   * 参数：
-   *  - uvT  TSL 节点，采样 UV
-   *
-   * 返回值：TSL 节点，阈值后的 RGB（vec3）
-   *
-   * 异常：无
-   *
-   * 注意事项：亮度权重用 0.299/0.587/0.114 的标准亮度公式（与原件 `luminance` 一致）
-   */
-  const thresholdAt = (uvT: any) => {
-    const c = N.texture(sceneRT.texture, uvT);
-    const lum = N.dot(c.rgb, N.vec3(0.299, 0.587, 0.114));
-    const hi = uBloomThreshold.add(N.float(HERO_COMPOSE.bloomSmoothing));
-    const w = N.smoothstep(uBloomThreshold, hi, lum);
-    return c.rgb.mul(w);
-  };
-
-  const material = new THREE.MeshBasicNodeMaterial();
-  material.depthTest = false;
-  material.depthWrite = false;
-  material.toneMapped = false;
-
-  // ---- 合成节点图（一次性构建；所有变化量都是 uniform） ----
-  // 关键：采样离屏纹理时 V 必须翻转。原件 A5 合成材质的基 UV 就是
-  // `vec2(uv().x, oneMinus(uv().y))` —— 离屏 RT 的存储朝向与普通贴图相反，
-  // 少这一步整幅画面会上下颠倒。此前合成链路编译失败退回直渲，所以这个差异没暴露。
-  const uv0 = N.vec2(N.uv().x, N.oneMinus(N.uv().y));
-  const warped = barrel(uv0);
-
-  // ① + ② 畸变后采样 + 色散（垂直分离，偏移随到中心距离增长）
-  const aspectCorrect = N.vec2(uAspect, 1).div(N.max(uAspect, 1));
-  const chromaDist = N.length(uv0.sub(0.5).mul(aspectCorrect).mul(2));
-  const chromaOffset = N.float(0.006).mul(chromaDist).mul(uChromatic);
-  const chR = N.texture(sceneRT.texture, warped.add(N.vec2(0, chromaOffset.negate()))).r;
-  const chG = N.texture(sceneRT.texture, warped).g;
-  const chB = N.texture(sceneRT.texture, warped.add(N.vec2(0, chromaOffset))).b;
-  const outAlpha = N.texture(sceneRT.texture, warped).a;
-  const sampled = N.vec3(chR, chG, chB);
-
-  // ③ 饱和度
-  const lum = N.dot(sampled, N.vec3(0.299, 0.587, 0.114));
-  const saturated = N.mix(N.vec3(lum), sampled, uSaturation);
-
-  // ④ 暗角
-  const vDist = N.length(uv0.sub(0.5));
-  const vig = N.smoothstep(uVignetteRadius, uVignetteRadius.add(uVignetteSmoothness), vDist);
-  const vignetted = saturated.mul(N.float(1).sub(vig.mul(uVignetteIntensity)));
-
-  // ⑤ bloom：阈值提取 + 径向 12 tap（半径由 uBloomRadius 控制，强度由 uBloomIntensity 控制）
-  const bloomRadiusPx = uBloomRadius.mul(0.018);
-  const tapSum = (() => {
-    let acc: any = thresholdAt(warped).mul(N.float(1 / BLOOM_TAPS));
-    for (let i = 1; i < BLOOM_TAPS; i++) {
-      const ang = (i / (BLOOM_TAPS - 1)) * Math.PI * 2;
-      const rr = bloomRadiusPx.mul(0.35 + 0.65 * (i / (BLOOM_TAPS - 1)));
-      const off = N.vec2(Math.cos(ang), Math.sin(ang)).mul(rr);
-      acc = acc.add(thresholdAt(warped.add(off)).mul(N.float(1 / BLOOM_TAPS)));
-    }
-    return acc;
-  })();
-  const bloomClamped = N.min(tapSum.mul(uBloomIntensity), N.vec3(1, 1, 1));
-
-  // ⑥ 屏幕混合 + 暖色加色（原件 `blendScreen(p, h) + p * vec3(1, .8, 0) * .1`）
-  const screened = bloomClamped.add(vignetted).sub(bloomClamped.mul(vignetted));
-  const graded = screened.add(bloomClamped.mul(N.vec3(1, 0.8, 0).mul(0.1)));
-
-  // ⑦ pow（原件 `.pow(vec4(pow))`）
-  const powed = graded.pow(N.vec3(uPow, uPow, uPow));
-
-  // ⑧ sepia 矩阵
-  const sepia = N.vec3(
-    N.dot(powed, N.vec3(0.393, 0.769, 0.189)),
-    N.dot(powed, N.vec3(0.349, 0.686, 0.168)),
-    N.dot(powed, N.vec3(0.272, 0.534, 0.131))
+  /** mip 上采样链（原件 `_upsamplingRenderTargets`，[0] 即 bloom 输出，长度 = levels - 1） */
+  const upRT = Array.from({ length: UP_LEVELS }, () =>
+    new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true })
   );
-  const sepiaMixed = N.mix(powed, sepia, uSepia);
+  const allRT = [sceneRT, composeRT, bRT, ...mbRT, ...downRT, ...upRT];
 
-  // ⑨ clamp × brightness → contrast
-  const bright = N.clamp(sepiaMixed.mul(uBrightness), 0, 1);
-  const contrasted = bright.sub(0.5).mul(uContrast).add(0.5);
+  // ---------- loading 屏纹理 ----------
+  // 原件把 loading 屏的 FBO 纹理（`loadingScreenTexture`）直接拼进场景合成 pass。
+  // 这里同理：boot 覆盖屏画布既当显示器贴图，也当 loading 屏纹理。
+  const bootTexture = bootCanvas
+    ? new THREE.CanvasTexture(bootCanvas)
+    : new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  bootTexture.colorSpace = THREE.NoColorSpace;
+  if (bootCanvas) bootTexture.needsUpdate = true;
 
-  // ⑩ 噪点：96×96 贴图按分辨率平铺 + 时间 × 速度滚动
-  const noiseUv = uv0.mul(N.vec2(uResolution.x.div(96), uResolution.y.div(96))).add(N.vec2(uTime.mul(uNoiseVelocity)));
-  const noiseSample = N.texture(noiseTexture, noiseUv).r;
-  const noisy = contrasted.add(noiseSample.sub(0.5).mul(uNoiseIntensity));
-
-  material.colorNode = N.vec4(noisy, outAlpha);
-
-  const composeScene = new THREE.Scene();
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  // ---------- 全屏 quad ----------
+  const quadScene = new THREE.Scene();
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicNodeMaterial());
   quad.frustumCulled = false;
-  composeScene.add(quad);
-  const composeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-  const params = createDefaultComposeParams();
+  quadScene.add(quad);
+  // 相机照原件 `nZ({... near:.1, far:100, basePosition:[0,0,1]})` 摆：**必须把相机放在 z=1**。
+  // 若相机与 quad 同在 z=0 且 near=0，quad 正好落在近平面边界上，会被整趟裁掉 ——
+  // 表现就是「pass 静默不绘制、目标 RT 全 0」，非常隐蔽。
+  const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
+  quadCamera.position.z = 1;
 
   /**
-   * 写入每帧参数
+   * 建一枚全屏 pass 材质
    *
-   * 功能：把 HeroComposeParams 同步到 uniforms（含暗角三项、桶形畸变与噪点流动时间）
+   * 功能：统一关闭深度、色调映射，返回可直接挂到 quad 上的 NodeMaterial
    *
    * 参数：
-   *  - p    {HeroComposeParams} 目标参数
-   *  - time {number} 当前时间（秒）
+   *  - name {string} 材质名（便于 WebGPU 调试面板识别）
+   *
+   * 返回值：THREE.MeshBasicNodeMaterial
+   *
+   * 异常：无
+   *
+   * 注意事项：与原件一致 —— 合成链全程绕过色调映射（HDR→LDR 已由链内 `pow`/clamp 完成）
+   */
+  const makeMat = (name: string) => {
+    const m = new THREE.MeshBasicNodeMaterial();
+    m.depthTest = false;
+    m.depthWrite = false;
+    m.toneMapped = false;
+    m.name = name;
+    return m;
+  };
+
+  // ---------- uniforms ----------
+  const u = {
+    // 场景合成 pass
+    lensDistortion: N.uniform(0.1),
+    lensBorder: N.uniform(0.5),
+    saturation: N.uniform(1),
+    vigRadius: N.uniform(0),
+    vigSmooth: N.uniform(0.3),
+    vigIntensity: N.uniform(0),
+    loadingActive: N.uniform(0),
+    dimensions: N.uniform(new THREE.Vector2(pxW, pxH)),
+    // mip
+    bloomThreshold: N.uniform(HERO_EFFECTS.bloomThreshold),
+    bloomSmoothing: N.uniform(HERO_EFFECTS.bloomSmoothing),
+    bloomRadius: N.uniform(HERO_EFFECTS.bloomRadius),
+    bloomIntensity: N.uniform(HERO_EFFECTS.bloomIntensity),
+    srcTexel: N.uniform(new THREE.Vector2(1 / pxW, 1 / pxH)),
+    halfTexelCount: N.uniform(new THREE.Vector2(Math.floor(pxW / 2), Math.floor(pxH / 2))),
+    maxTexelIndex: N.uniform(new THREE.Vector2(Math.max(0, Math.floor(pxW / 2) - 1), Math.max(0, Math.floor(pxH / 2) - 1))),
+    /** 各 mip 级源纹理的 texel 尺寸（下标 k 对应 down[k] / up[k] 的源） */
+    levelTexel: Array.from({ length: MIP_LEVELS }, () => N.uniform(new THREE.Vector2(1, 1))),
+    // 运动模糊 / 调色
+    motionBlur: N.uniform(0),
+    pow: N.uniform(HERO_EFFECTS.pow),
+    sepia: N.uniform(HERO_EFFECTS.sepiaIntensity),
+    brightness: N.uniform(HERO_EFFECTS.brightness),
+    contrast: N.uniform(HERO_EFFECTS.contrast),
+    // 最终 pass
+    chromatic: N.uniform(HERO_EFFECTS.chromaticAbberationStrength),
+    aspect: N.uniform(cssW / cssH),
+    noiseIntensity: N.uniform(0),
+    noiseVelocity: N.uniform(HERO_EFFECTS.noiseVelocity),
+    time: N.uniform(0),
+  };
+
+  // ---------- ① 场景合成 pass ----------
+  const sceneComposeMat = makeMat('HeroSceneCompose');
+  {
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    const warped = barrel(uvB, u.lensDistortion, u.lensBorder);
+    const active = N.step(N.float(0.01), u.lensDistortion); // 原件 `A = l > 0.01`
+    const inRange = N.step(N.float(0), warped.x)
+      .mul(N.step(warped.x, N.float(1)))
+      .mul(N.step(N.float(0), warped.y))
+      .mul(N.step(warped.y, N.float(1)));
+    const inside = active.mul(inRange);
+    const sampleUv = N.mix(uvB, warped, inside);
+    const raw = N.texture(sceneRT.texture, sampleUv);
+    // 原件：`!A || inRange` 才出图，否则该像素为 0（此处用乘法实现同样的门）
+    const gated = raw.mul(N.float(1).sub(active.mul(N.float(1).sub(inRange))));
+    const masked = N.mix(gated, edgeFade(gated, warped, u.lensBorder, u.dimensions), inside);
+    const saturated = applySaturation(masked, u.saturation);
+    // loading 屏覆盖（原件 `isReadyToRender == 0` 分支）：按基准 uv 直采，**不吃畸变**
+    const withLoading = N.mix(saturated, N.texture(bootTexture, uvB), u.loadingActive);
+    // 暗角：`smoothstep(-s, s, radius - length(uv - 0.5))`
+    const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
+    const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
+    const vignetted = N.mix(withLoading.rgb, N.clamp(withLoading.rgb.mul(vf), 0, 1), u.vigIntensity);
+    sceneComposeMat.colorNode = N.vec4(vignetted, N.float(1));
+  }
+
+  // ---------- ② mip 金字塔 ----------
+  const down0Mat = makeMat('HeroBloomDown0');
+  {
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    const half = u.srcTexel.mul(0.5);
+    const s0 = uvB.sub(half).mul(u.halfTexelCount).sub(0.5);
+    const s1 = uvB.add(half).mul(u.halfTexelCount).sub(0.5);
+    const lo = N.floor(s0);
+    const hi = N.floor(s1);
+    const fA = s0.sub(lo);
+    const fC = s1.sub(hi);
+    const fD = hi.sub(lo);
+    /** 3×3 抽取（原件 `h[e][i]`，e 为 y 向、i 为 x 向） */
+    const rows = [0, 1, 2].map((yy) =>
+      [0, 1, 2].map((xx) =>
+        N.texture(
+          composeRT.texture,
+          N.clamp(lo.add(N.vec2(xx, yy)), N.vec2(0, 0), u.maxTexelIndex).add(0.5).div(u.halfTexelCount)
+        )
+      )
+    );
+    /** 双线性合成（原件 `g(e, t, r)`） */
+    const g = (x: any, y: any, r2: any) => {
+      const pick = (ti: number) => {
+        const row = rows[ti];
+        return N.mix(N.mix(row[0], row[1], x), N.mix(row[1], row[2], x), r2.x);
+      };
+      return N.mix(N.mix(pick(0), pick(1), y), N.mix(pick(1), pick(2), y), r2.y);
+    };
+    const tl = g(N.float(0), fD.y, N.vec2(fA.x, fC.y));
+    const tr = g(fD.x, fD.y, N.vec2(fC.x, fC.y));
+    const bl = g(N.float(0), N.float(0), N.vec2(fA.x, fA.y));
+    const br = g(fD.x, N.float(0), N.vec2(fC.x, fA.y));
+    // 原件在两级模拟之后才套阈值提取，再四路平均 —— 顺序不能换
+    const filtered = preFilter(tl, u.bloomThreshold, u.bloomSmoothing)
+      .add(preFilter(tr, u.bloomThreshold, u.bloomSmoothing))
+      .add(preFilter(bl, u.bloomThreshold, u.bloomSmoothing))
+      .add(preFilter(br, u.bloomThreshold, u.bloomSmoothing));
+    down0Mat.colorNode = filtered.mul(0.25);
+  }
+
+  /** 下采样材质：k = 1..levels-1，各自读上一级；texel 用上一级的源尺寸 */
+  const downMats = Array.from({ length: MIP_LEVELS - 1 }, (_, k) => {
+    const m = makeMat(`HeroBloomDown${k + 1}`);
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    m.colorNode = blur4(downRT[k].texture, uvB, u.levelTexel[k]);
+    return m;
+  });
+
+  /** 上采样材质：k = 0..levels-2，input 为更粗一级（k=levels-2 时是 down[levels-1]），support 为 down[k] */
+  const upMats = Array.from({ length: UP_LEVELS }, (_, k) => {
+    const m = makeMat(`HeroBloomUp${k}`);
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    const inputTex = k === UP_LEVELS - 1 ? downRT[MIP_LEVELS - 1].texture : upRT[k + 1].texture;
+    const blurred = blur4(inputTex, uvB, u.levelTexel[k === UP_LEVELS - 1 ? MIP_LEVELS - 1 : k + 1]);
+    m.colorNode = N.mix(N.texture(downRT[k].texture, uvB), blurred, u.bloomRadius);
+    return m;
+  });
+
+  // ---------- ③ 泛光混合 + 运动模糊（ping-pong） ----------
+  /**
+   * 建泛光混合材质
+   *
+   * 功能：`m = blendScreen(min(bloom·I, 1), scene) + bloom·vec3(1,0.8,0)·0.1`，再与上一帧输出
+   *      `mix(m, prev, 1.3·Q)` 做 ping-pong 累积（原件 `A3` 的 blend 材质）
+   *
+   * 参数：
+   *  - prevTex {any} 上一帧所在的 RT 纹理
+   *  - name    {string} 材质名
+   *
+   * 返回值：THREE.MeshBasicNodeMaterial
+   *
+   * 异常：无
+   *
+   * 注意事项：原件把 `m` 内联进 blend 材质的片元（不是先渲一张 m 的 RT），这里同样内联
+   */
+  const makeBloomBlendMat = (prevTex: any, name: string) => {
+    const m = makeMat(name);
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    const bloom = N.texture(upRT[0].texture, uvB).mul(u.bloomIntensity);
+    const clamped = N.min(bloom, N.vec4(1, 1, 1, 1));
+    const scene = N.texture(composeRT.texture, uvB);
+    const screened = clamped.add(scene).sub(clamped.mul(scene));
+    const warmed = screened.add(clamped.mul(N.vec3(1, 0.8, 0).mul(0.1)));
+    m.colorNode = N.mix(warmed, N.texture(prevTex, uvB), u.motionBlur);
+    return m;
+  };
+  const bloomBlendMatA = makeBloomBlendMat(mbRT[1].texture, 'HeroBloomBlendA'); // 读 mbRT[1] → 写 mbRT[0]
+  const bloomBlendMatB = makeBloomBlendMat(mbRT[0].texture, 'HeroBloomBlendB'); // 读 mbRT[0] → 写 mbRT[1]
+
+  // ---------- ④ 调色 ----------
+  /**
+   * 建调色材质
+   *
+   * 功能：`pow` → sepia 矩阵混合 → `clamp(rgb·brightness, 0, 1)` → 绕 0.5 轴对比度 → 写入 bRT
+   *
+   * 参数：
+   *  - srcTex {any} 运动模糊输出纹理
+   *  - name   {string} 材质名
+   *
+   * 返回值：THREE.MeshBasicNodeMaterial
+   *
+   * 异常：无
+   *
+   * 注意事项：contrast 是 `(c - 0.5)·k + 0.5`（**绕 0.5 轴**，不是直接乘）—— 这是与常见实现
+   *          最容易出错的一处；此处必须写成 RTT pass，因为最终 pass 的色散要把调色结果当纹理采样
+   */
+  const makeGradeMat = (srcTex: any, name: string) => {
+    const m = makeMat(name);
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    const src = N.texture(srcTex, uvB);
+    const powed = src.pow(N.vec4(u.pow, u.pow, u.pow, N.float(1)));
+    const sepia = N.vec3(
+      N.dot(powed.rgb, N.vec3(0.393, 0.769, 0.189)),
+      N.dot(powed.rgb, N.vec3(0.349, 0.686, 0.168)),
+      N.dot(powed.rgb, N.vec3(0.272, 0.534, 0.131))
+    );
+    const mixed = N.mix(powed.rgb, sepia, u.sepia);
+    const bright = N.clamp(mixed.mul(u.brightness), 0, 1);
+    const contrasted = N.clamp(bright.sub(0.5).mul(u.contrast).add(0.5), 0, 1);
+    m.colorNode = N.vec4(contrasted, N.float(1));
+    return m;
+  };
+  const gradeMatA = makeGradeMat(mbRT[0].texture, 'HeroGradeA'); // A 帧写 mbRT[0] → 读 mbRT[0]
+  const gradeMatB = makeGradeMat(mbRT[1].texture, 'HeroGradeB'); // B 帧写 mbRT[1] → 读 mbRT[1]
+
+  // ---------- ⑤ 最终 pass：色散 + 噪点 ----------
+  const finalMat = makeMat('HeroFinal');
+  {
+    const uvS = N.uv();
+    const uvB = baseUv(uvS);
+    // 色散：偏移 `a = 0.001 · (radial·2) · strength`，R 向 -a、G 居中、B 向 +a
+    const aspectVec = N.vec2(u.aspect, N.float(1)).div(N.max(u.aspect, N.float(1)));
+    const radial = N.length(uvB.sub(0.5).mul(aspectVec).mul(2));
+    const offset = N.float(HERO_SETTINGS.chromaticScale).mul(radial.mul(2)).mul(u.chromatic);
+    const ca = N.vec4(
+      N.texture(bRT.texture, uvB.add(N.vec2(0, offset.negate()))).r,
+      N.texture(bRT.texture, uvB).g,
+      N.texture(bRT.texture, uvB.add(N.vec2(0, offset))).b,
+      N.texture(bRT.texture, uvB).a
+    );
+    // 边缘内缩：色散只在画面内圈生效（原件 `p = 0.005`）
+    const inset = N.float(HERO_SETTINGS.edgeInset);
+    const mx = N.min(N.smoothstep(N.float(0), inset, uvS.x), N.smoothstep(N.float(0), inset, N.float(1).sub(uvS.x)));
+    const my = N.min(N.smoothstep(N.float(0), inset, uvS.y), N.smoothstep(N.float(0), inset, N.float(1).sub(uvS.y)));
+    const colored = N.mix(N.texture(bRT.texture, uvB), ca, mx.mul(my));
+    // 噪点：哈希 → 高斯核 → 乘以 (1 - color)，即亮部不出噪、暗部出噪（原件写法）
+    const hash = N.fract(
+      N.sin(N.dot(uvS, N.vec2(12.9898, 78.233))).mul(43758.5453).add(u.time.mul(u.noiseVelocity))
+    );
+    const grain = N.vec3(gaussian(hash, N.float(0), N.float(HERO_SETTINGS.noiseGaussianSigma))).mul(
+      N.vec3(1, 1, 1).sub(colored.rgb)
+    );
+    finalMat.colorNode = N.vec4(colored.rgb.add(grain.mul(u.noiseIntensity)), colored.a);
+  }
+
+  // ---------- 内部状态 ----------
+  /** 运动模糊 ping-pong 奇偶（偶数帧写 mbRT[0]） */
+  let parity = 0;
+  /** 上次尺寸（避免每帧重算 mip 尺寸） */
+  let lastPxW = pxW;
+  let lastPxH = pxH;
+
+  /**
+   * 按当前像素尺寸重算全部 RT 与 texel 类 uniform
+   *
+   * 功能：等价原件 `A$.setSize` —— 逐级 `round(0.5 * size)` 得到 mip 各级尺寸；
+   *      up[k] 与 down[k] 同尺寸；再刷新所有 texel uniform
+   *
+   * 参数：无（读模块内的 pxW / pxH）
    *
    * 返回值：无
    *
    * 异常：无
    *
-   * 注意事项：bloomIntensity 支持逐帧变化，用于还原原件那套三频正弦呼吸调制
+   * 注意事项：mip 尺寸用「逐级取半再取整」而非一次算幂，与原件完全一致（避免累积偏差）
    */
-  const setParams = (p: HeroComposeParams, time: number) => {
-    uLensDistortion.value = p.lensDistortion;
-    uVignetteRadius.value = p.vignetteRadius;
-    uVignetteSmoothness.value = p.vignetteSmoothness || 0.3;
-    uVignetteIntensity.value = p.vignetteIntensity;
-    uChromatic.value = p.chromaticAberration;
-    uPow.value = p.pow;
-    uSepia.value = p.sepiaIntensity;
-    uBrightness.value = p.brightness;
-    uContrast.value = p.contrast;
-    uNoiseIntensity.value = p.noiseIntensity;
-    uNoiseVelocity.value = p.noiseVelocity;
-    uBloomIntensity.value = p.bloomIntensity;
-    uBloomThreshold.value = p.bloomThreshold;
-    uBloomRadius.value = p.bloomRadius;
-    uTime.value = time;
+  const applySizes = () => {
+    sceneRT.setSize(pxW, pxH);
+    composeRT.setSize(pxW, pxH);
+    bRT.setSize(pxW, pxH);
+    mbRT[0].setSize(pxW, pxH);
+    mbRT[1].setSize(pxW, pxH);
+
+    let w = pxW;
+    let h = pxH;
+    for (let k = 0; k < MIP_LEVELS; k++) {
+      w = Math.round(0.5 * w);
+      h = Math.round(0.5 * h);
+      downRT[k].setSize(w, h);
+      if (k < UP_LEVELS) upRT[k].setSize(w, h);
+      // levelTexel[k] = down[k] 的 texel 尺寸。用它的地方有三处，均已核对：
+      //  - downMats[k] 读 down[k]（k = 0..5）
+      //  - upMats[k]  输入读 up[k+1]，与 down[k+1] 同尺寸（k = 0..4）
+      //  - upMats[last] 输入读 down[last]（k = 6）
+      u.levelTexel[k].value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+    }
+    // down0 的 9 抽两级模拟以「源（合成 RT）」尺寸为基准
+    u.srcTexel.value.set(1 / pxW, 1 / pxH);
+    u.halfTexelCount.value.set(Math.floor(pxW / 2), Math.floor(pxH / 2));
+    u.maxTexelIndex.value.set(Math.max(0, Math.floor(pxW / 2) - 1), Math.max(0, Math.floor(pxH / 2) - 1));
+    u.dimensions.value.set(pxW, pxH);
+    lastPxW = pxW;
+    lastPxH = pxH;
   };
+  applySizes();
 
   /**
-   * 按画布宽高比重算桶形畸变强度
+   * 把效果表的静态项写进 uniforms（含 loading 期与 hero 期的混合）
    *
-   * 功能：还原原件 `lensDistortionFactor = clamp(map(aspect, 9/16→4/3, 0.2→1.2), 0.25, 1)`
-   *      再 `lensDistortion = 0.2 * factor + 0.1` 的自适应规则
+   * 功能：按 `loadingMix` 的 smoothstep 权重在 loading / hero 两套效果之间插值，并完成原件的
+   *      换算：场景畸变 `0.2·d+0.1`（竖屏再减半）、边框 `0.5+0.2·b`、单帧 bloom 强度
+   *      `1.5·I + R + boost`、运动模糊 `1.3·Q`、噪点 `0.037·N·dprFactor`
    *
    * 参数：
-   *  - w / h {number} 画布 CSS 宽高
+   *  - frame {HeroComposeFrame} 每帧输入
    *
-   * 返回值：number 适配后的桶形畸变强度
+   * 返回值：无
    *
    * 异常：无
    *
-   * 注意事项：竖屏（窄宽高比）畸变更强，横屏更弱 —— 这是原件「CRT 玻璃感」随屏幕变化的原因
+   * 注意事项：bloom 的三频呼吸调制与运动模糊的帧率归一化都是**逐帧推导量**，必须每帧重算
    */
-  const lensDistortionForAspect = (w: number, h: number) => {
-    const aspect = w / h;
-    const [a0, a1] = HERO_COMPOSE.lensDistortionFrom;
-    const [v0, v1] = HERO_COMPOSE.lensDistortionTo;
-    const t = Math.min(1, Math.max(0, (aspect - a0) / (a1 - a0)));
-    const [c0, c1] = HERO_COMPOSE.lensDistortionClamp;
-    const factor = Math.min(c1, Math.max(c0, v0 + (v1 - v0) * t));
-    return 0.2 * factor + 0.1;
+  const writeUniforms = (frame: HeroComposeFrame) => {
+    const { time, dt, portrait, loadingMix, loadingActive } = frame;
+    // 原件：`e$ = eg*eg*(3-2*eg)`，eg = 1 - initialTransition
+    const mixT = loadingMix <= 0 ? 0 : loadingMix >= 1 ? 1 : loadingMix * loadingMix * (3 - 2 * loadingMix);
+    const L = HERO_LOADING_EFFECTS;
+    const H = HERO_EFFECTS;
+    /** 按原件 `e = e*(1-e$) + loading*e$` 在 hero 值与 loading 值之间插值 */
+    const eff = (k: keyof HeroEffects) => H[k] + (L[k] - H[k]) * mixT;
+
+    // ---- 场景合成 pass ----
+    const rawDistortion = eff('lensDistortion') * (portrait ? HERO_SETTINGS.portraitDistortionFactor : 1);
+    const sceneDistortion =
+      (HERO_SETTINGS.lensDistortionScale * rawDistortion + HERO_SETTINGS.lensDistortionBias) *
+      HERO_SETTINGS.lensDistortionFactor;
+    const sceneBorder =
+      (HERO_SETTINGS.lensBorderBias + HERO_SETTINGS.lensBorderScale * eff('lensDistortionBorders')) *
+      HERO_SETTINGS.lensDistortionFactor;
+    u.lensDistortion.value = sceneDistortion;
+    u.lensBorder.value = sceneBorder;
+    u.saturation.value = eff('saturation');
+    u.vigRadius.value = eff('vignetteRadius');
+    u.vigSmooth.value = eff('vignetteSmoothness');
+    u.vigIntensity.value = eff('vignetteIntensity');
+    u.loadingActive.value = loadingActive ? 1 : 0;
+
+    // ---- bloom ----
+    u.bloomThreshold.value = eff('bloomThreshold');
+    u.bloomSmoothing.value = eff('bloomSmoothing');
+    u.bloomRadius.value = eff('bloomRadius');
+    const breath =
+      (Math.sin(5.3 * time * 0.5) +
+        Math.sin(11.7 * time * 0.5 + 2.4 * Math.sin(2.1 * time * 0.5) * 0.5) +
+        Math.sin(23.9 * time * 0.5 + 1.3 * Math.cos(7.1 * time * 0.5) * 0.5)) *
+      HERO_SETTINGS.bloomBreathAmp *
+      eff('bloomIntensity');
+    u.bloomIntensity.value =
+      HERO_SETTINGS.bloomIntensityBase * eff('bloomIntensity') + breath + HERO_SETTINGS.bloomBoost;
+
+    // ---- 运动模糊（原件 A5 的逐帧归一化） ----
+    // 关键：原件每帧都**从配置值重新播种** `Q`（`let Q = m; Q *= ...`），它不是跨帧累积的衰减器。
+    // 若写成跨帧累积（每帧再乘一次 (1/120)/dt），强度会指数衰减到 0，且帧长一抖动画面就忽明忽暗
+    // —— 这正是「奇怪闪烁」的来源，照原件必须每帧重播种。
+    let q = eff('motionBlur');
+    const frameNorm = 1 / 120;
+    q = dt > frameNorm ? q * (frameNorm / dt) : Math.pow(q, dt / frameNorm);
+    u.motionBlur.value = HERO_SETTINGS.motionBlurGain * q;
+
+    // ---- 调色 ----
+    u.pow.value = eff('pow');
+    u.sepia.value = eff('sepiaIntensity');
+    u.brightness.value = eff('brightness');
+    u.contrast.value = eff('contrast');
+
+    // ---- 最终 pass ----
+    u.chromatic.value = eff('chromaticAbberationStrength');
+    const dpr0 = window.devicePixelRatio;
+    const dprFactor = dpr0 === 2 || dpr0 === 3 ? 1 : dpr0 === 1 ? 0.7 : 0;
+    u.noiseIntensity.value = HERO_SETTINGS.noiseAmp * eff('noiseIntensity') * dprFactor * HERO_SETTINGS.noiseFactor;
+    u.noiseVelocity.value = eff('noiseVelocity');
+    u.time.value = time;
+  };
+
+  /**
+   * 执行整条合成链并把最终结果上屏
+   *
+   * 功能：按 ①→⑤ 顺序逐趟绘制；运动模糊用 ping-pong 交替、调色 pass 按奇偶读对应 RT
+   *
+   * 参数：
+   *  - renderer {any} WebGPURenderer（需要 renderAsync 才能等 GPU 端完成）
+   *  - scene    {THREE.Object3D} 3D 场景
+   *  - camera   {THREE.Camera} 场景相机
+   *  - frame    {HeroComposeFrame} 每帧输入
+   *
+   * 返回值：Promise<void>
+   *
+   * 异常：无（单趟失败会向上抛给主循环的兜底，主循环会退化为直渲）
+   *
+   * 注意事项：
+   *  - 全屏 pass 期间 `autoClear = false`（每趟 quad 都写满整屏，无需清屏，可省带宽）
+   *  - boot 画布纹理每帧要标 `needsUpdate`，否则 WebGPU 侧读到的是旧帧
+   */
+  const render = async (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => {
+    if (pxW !== lastPxW || pxH !== lastPxH) applySizes();
+    writeUniforms(frame);
+    if (bootCanvas) bootTexture.needsUpdate = true;
+
+    // ① 3D 场景 → sceneRT
+    renderer.setRenderTarget(sceneRT);
+    await renderer.renderAsync(scene, camera);
+
+    // 注意：**不要**关 autoClear。three 0.169 的 WebGPU 后端在 `autoClear === false` 时不会给
+    // 渲染通道写 depthLoadOp，Dawn 校验会直接判这个 CommandBuffer 非法并整个丢弃
+    // （表现为画面若干趟静默不执行）。代价是每帧多几次清屏，带宽换正确性，值得。
+
+    // ② 场景合成 → composeRT
+    quad.material = sceneComposeMat;
+    renderer.setRenderTarget(composeRT);
+    await renderer.renderAsync(quadScene, quadCamera);
+
+    // ③ mip 下采样
+    quad.material = down0Mat;
+    renderer.setRenderTarget(downRT[0]);
+    await renderer.renderAsync(quadScene, quadCamera);
+    for (let k = 0; k < downMats.length; k++) {
+      quad.material = downMats[k];
+      renderer.setRenderTarget(downRT[k + 1]);
+      await renderer.renderAsync(quadScene, quadCamera);
+    }
+
+    // ④ mip 上采样（从最粗一级回到 up[0]，up[0] 即 bloom 输出）
+    for (let k = UP_LEVELS - 1; k >= 0; k--) {
+      quad.material = upMats[k];
+      renderer.setRenderTarget(upRT[k]);
+      await renderer.renderAsync(quadScene, quadCamera);
+    }
+
+    // ⑤ 泛光混合 + 运动模糊（偶数帧：读 mbRT[1] 写 mbRT[0]）
+    const writeIdx = parity === 0 ? 0 : 1;
+    quad.material = parity === 0 ? bloomBlendMatA : bloomBlendMatB;
+    renderer.setRenderTarget(mbRT[writeIdx]);
+    await renderer.renderAsync(quadScene, quadCamera);
+
+    // ⑥ 调色 → bRT
+    quad.material = parity === 0 ? gradeMatA : gradeMatB;
+    renderer.setRenderTarget(bRT);
+    await renderer.renderAsync(quadScene, quadCamera);
+
+    // ⑦ 色散 + 噪点 → 屏幕
+    quad.material = finalMat;
+    renderer.setRenderTarget(null);
+    await renderer.renderAsync(quadScene, quadCamera);
+
+    parity = writeIdx === 0 ? 1 : 0;
   };
 
   /**
    * 适配画布尺寸
    *
-   * 功能：按新的 CSS 尺寸 × dpr 重设 RT，并更新 uResolution / uAspect
+   * 功能：按新的 CSS 尺寸 × dpr 重算像素尺寸，并在下一帧重新分配全部 RT（避免拖动窗口时每帧重建）
    *
    * 参数：
    *  - w / h {number} 新的 CSS 宽高
@@ -344,32 +800,55 @@ export function createHeroCompose(width: number, height: number) {
    *
    * 异常：无
    *
-   * 注意事项：dpr 上限 1.5（与原件一致）
+   * 注意事项：dpr 上限 1.5（与原件 `dpr: [1, 1.5]` 一致）
    */
   const setSize = (w: number, h: number) => {
-    pxW = Math.max(1, Math.floor(w * dpr));
-    pxH = Math.max(1, Math.floor(h * dpr));
-    sceneRT.setSize(pxW, pxH);
-    uResolution.value.set(pxW, pxH);
-    uAspect.value = w / h;
+    cssW = Math.max(1, w);
+    cssH = Math.max(1, h);
+    pxW = Math.max(1, Math.floor(cssW * dpr));
+    pxH = Math.max(1, Math.floor(cssH * dpr));
+    u.aspect.value = cssW / cssH;
+    applySizes();
   };
 
   /**
    * 释放 GPU 资源
    *
-   * 功能：dispose 掉 RT、材质、几何与噪点贴图
+   * 功能：dispose 掉全部 RT、材质、几何与 loading 纹理
    *
    * 参数：无
    * 返回值：无
    * 异常：无
-   * 注意事项：先释放材质再释放 RT，避免材质仍持有 RT 纹理引用
+   * 注意事项：先放材质再放 RT，避免材质仍持有 RT 纹理引用
    */
   const dispose = () => {
-    material.dispose();
     quad.geometry.dispose();
-    sceneRT.dispose();
-    noiseTexture.dispose();
+    quad.material.dispose();
+    [
+      sceneComposeMat,
+      down0Mat,
+      ...downMats,
+      ...upMats,
+      bloomBlendMatA,
+      bloomBlendMatB,
+      gradeMatA,
+      gradeMatB,
+      finalMat,
+    ].forEach((m) => m.dispose());
+    allRT.forEach((rt) => rt.dispose());
+    bootTexture.dispose();
   };
 
-  return { sceneRT, composeScene, composeCamera, params, setParams, setSize, lensDistortionForAspect, dispose };
+  return {
+    sceneRT,
+    setSize,
+    render,
+    dispose,
+    debugRTs: {
+      compose: composeRT,
+      bloom: upRT[0],
+      motionBlend: mbRT,
+      graded: bRT,
+    },
+  };
 }

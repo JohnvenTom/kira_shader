@@ -161,9 +161,11 @@ const BOOT_MAX_DPR = 1.5;
  */
 export function createHeroBootPass(host: HTMLElement) {
   const canvas = document.createElement('canvas');
-  // 盖在 hero 的 WebGPU 画布之上；z-index 高于 renderer.domElement
+  // 只绘制、不直接显示：这块画布的画面改由合成链承载（原件那块 BIOS 蓝屏本身就是 3D 管线渲染
+  // 出来的纹理，进合成链一起过热降级/泛光/暗角）。画布藏在 WebGPU 画布之下（renderer.domElement
+  // 是后插入的兄弟节点，同 z-index 下 DOM 顺序决定绘制次序），避免同一块蓝屏被叠加两次。
   canvas.style.cssText =
-    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;';
   host.appendChild(canvas);
 
   const width = Math.max(1, host.clientWidth);
@@ -254,11 +256,12 @@ export function createHeroBootPass(host: HTMLElement) {
     // BGM 解锁态：文本行 "PRESS ANYWHERE…" ↔ "AUDIO: ON"（与 PostProcessing 同一调用）
     applyBootAudioState(uniforms);
 
-    // boot 屏显隐：原件「资产一就绪立即切掉」（不是渐隐）。
-    // loading / warmup = 还没就绪 → 显示；进入 countdown 就说明已就绪 → 立刻撤下，
-    // 此刻相机正停在屏幕特写位，boot 面板与显示器重合，随后弹簧才把镜头拉远。
-    const visible = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
-    if (visible) {
+    // 是否继续绘制：boot 编排走完（phase = done）即停绘。
+    // 注意这里**不再按「就绪」切显示** —— 画布本身不显示（见文件头 z-index 说明），
+    // 它的画面由 heroCompose 的 loading 屏覆盖分支承载；原件也是「资产一就绪硬切」，
+    // 合成链侧的硬切由 HeroOneToOne 的 loadingActive 门给出（phase 进入 countdown 即关）。
+    const alive = bootStore.phase !== 'done';
+    if (alive) {
       if (!shown) { canvas.style.display = 'block'; shown = true; }
       if (renderer) renderer.render(scene, camera);
     } else if (shown) {

@@ -324,46 +324,149 @@ export const HERO_SLATS = {
 } as const;
 
 /**
- * 合成 pass（原件 `A5` 组件的 TSL 节点链，顺序与默认值均为实测）
+ * 单页效果参数（原件 `pagesConfig[].effects` 的逐字段同构）
  *
- * 完整链路（照抄原件顺序）：
- *  1. bloom：mip 链（levels 7）先按 luminanceThreshold + smoothing 做亮度阈值提取，再乘 intensity
- *  2. `p = min(bloom, 1)`
- *  3. `m = blendScreen(p, src) + p * vec3(1, 0.8, 0) * 0.1`   ← 屏幕混合 + 暖色泛光加色
- *  4. 有 motionBlur 时先过 motionBlur 节点
- *  5. `.pow(vec4(pow))`
- *  6. sepia 矩阵（0.393/0.769/0.189 …），`mix(E.rgb, sepia, sepiaIntensity)`
- *  7. `clamp(rgb * brightness, 0, 1)`
- *  8. contrast
- *  9. 噪点（time / intensity / velocity）
- * 10. UI 合成：`mix(lightUi, darkUi, uiModeTransition)` 再按 uiTransition 混合
- *
- * bloomIntensity 还被三频正弦做呼吸调制（原件实测）：
- *   `R = (sin(5.3t·0.5) + sin(11.7t·0.5 + 2.4·sin(2.1t·0.5)·0.5) + sin(23.9t·0.5 + 1.3·cos(7.1t·0.5)·0.5)) * 0.03 * t`
- *   `bloomIntensity = 1.5 * t + R + bloomBoost`
- *
- * 重要：原件首页那份**逐页效果数值来自运行时 CMS 拉取**（不在生产包里），
- *      所以下面这组默认值取的是原件的 uniform 默认值，属「算法一致、数值待按观感校准」。
+ * 注意：字段名照抄原件，包含原件的拼写 `chromaticAbberationStrength`（少一个 r）。
+ *      `lensDistortionBorders` 也是原件原样（复数 s 是原件笔误，照抄以免对不上号）。
  */
-export const HERO_COMPOSE = {
-  bloomIntensity: 1,
-  bloomThreshold: 0.1,
-  bloomRadius: 0.5,
-  bloomSmoothing: 0.2,
-  bloomLevels: 7,
-  pow: 1,
-  sepiaIntensity: 0.3,
-  brightness: 1,
-  contrast: 1,
-  chromaticAberration: 1,
-  motionBlur: 0,
-  noiseIntensity: 0,
+export interface HeroEffects {
+  /** 噪点滚动速度（原件 `noiseVelocity`） */
+  noiseVelocity: number;
+  /** 噪点强度基准（原件 `noiseIntensity`，实际幅度还要乘 `0.037 * dprFactor`） */
+  noiseIntensity: number;
+  /** 褪色调强度（原件 `sepiaIntensity`） */
+  sepiaIntensity: number;
+  /** bloom 亮度阈值（原件 `bloomThreshold`） */
+  bloomThreshold: number;
+  /** bloom 强度基准（原件 `bloomIntensity`，单帧实际值见 `HERO_SETTINGS.bloomIntensityBase`） */
+  bloomIntensity: number;
+  /** bloom mip 模糊半径（原件 `bloomRadius`） */
+  bloomRadius: number;
+  /** bloom 阈值平滑（原件 `bloomSmoothing`，与阈值构成 smoothstep 的上下边界） */
+  bloomSmoothing: number;
+  /** 对比度（原件 `contrast`，绕 0.5 轴：`(c-0.5)*k+0.5`） */
+  contrast: number;
+  /** 亮度（原件 `brightness`，先 `clamp(rgb*k,0,1)`） */
+  brightness: number;
+  /** 饱和度（原件 `saturation`，在场景合成 pass 生效） */
+  saturation: number;
+  /** 运动模糊基准（原件 `motionBlur`，单帧实际值 = `1.3 * Q`，见 `HERO_SETTINGS.motionBlurGain`） */
+  motionBlur: number;
+  /** 桶形畸变（原件 `lensDistortion`，场景合成 pass 会换算成 `0.2*d+0.1`） */
+  lensDistortion: number;
+  /** 桶形畸变的边框系数（原件 `lensDistortionBorders`，换算成 `0.5+0.2*b`） */
+  lensDistortionBorders: number;
+  /** 幂次（原件 `pow`） */
+  pow: number;
+  /** 最终 pass 的 RGB 纵向色散强度（原件 `chromaticAbberationStrength`） */
+  chromaticAbberationStrength: number;
+  /** 暗角半径（原件 `vignetteRadius`） */
+  vignetteRadius: number;
+  /** 暗角平滑（原件 `vignetteSmoothness`） */
+  vignetteSmoothness: number;
+  /** 暗角强度（原件 `vignetteIntensity`） */
+  vignetteIntensity: number;
+}
+
+/**
+ * hero 节（首页 section 0）的**真实效果值**
+ *
+ * 来源：原件生产包 `0wb~eqgmow_3x.js` 里静态写死的 `pagesConfig` 中 `{ id:"hero", uiMode:"light" }` 那条。
+ *
+ * 重要更正：此前以为「首页逐页数值来自运行时 CMS、不在生产包里」——**这个判断是错的**。
+ *          逐页效果表（7 节：hero / projects / office / about-us / golden-tie-reveal / golden-tie / contact）
+ *          连同 loading / project / notFound / a11y 四张表一起，全部静态躺在包内，已逐字节取出。
+ */
+export const HERO_EFFECTS: HeroEffects = {
   noiseVelocity: 1,
-  vignetteRadius: 0,
-  vignetteSmoothness: 0,
-  vignetteIntensity: 0,
-  /** 桶形畸变按宽高比自适应：原件 `clamp(map(aspect, 9/16→4/3, 0.2→1.2), 0.25, 1)` */
-  lensDistortionFrom: [9 / 16, 4 / 3] as [number, number],
-  lensDistortionTo: [0.2, 1.2] as [number, number],
-  lensDistortionClamp: [0.25, 1] as [number, number],
+  noiseIntensity: 1.12,
+  sepiaIntensity: 0.22,
+  bloomThreshold: 0.54,
+  bloomIntensity: 2,
+  bloomRadius: 0.78,
+  bloomSmoothing: 0.24,
+  contrast: 0.97,
+  brightness: 1.2,
+  saturation: 1,
+  motionBlur: 0.3,
+  lensDistortion: 0,
+  lensDistortionBorders: 0,
+  pow: 1.92,
+  chromaticAbberationStrength: 1.04,
+  vignetteRadius: 0.5,
+  vignetteSmoothness: 0.3,
+  vignetteIntensity: 0.1,
+};
+
+/**
+ * loading 屏效果（原件 `loadingPageEffectsConfig`）
+ *
+ * 生效区间：boot / loading 期间（原件 `isReadyToRender == 0`，且参数按 `1 - initialTransition`
+ * 的 smoothstep 权重渐出到 hero 值）。原件里这块蓝屏**本身就过这条链**：
+ * 所以它带褪色、带 bloom、带暗角、带色散 —— 不是一张原样贴上去的图。
+ */
+export const HERO_LOADING_EFFECTS: HeroEffects = {
+  noiseVelocity: 1,
+  noiseIntensity: 1.4,
+  sepiaIntensity: 0.55,
+  bloomThreshold: 0,
+  bloomIntensity: 0.24,
+  bloomRadius: 0.83,
+  bloomSmoothing: 0.5,
+  contrast: 1,
+  brightness: 0.65,
+  saturation: 0.6,
+  lensDistortion: 0.25,
+  lensDistortionBorders: 0,
+  motionBlur: 0.3,
+  pow: 1.05,
+  chromaticAbberationStrength: 1.5,
+  vignetteRadius: 0.52,
+  vignetteSmoothness: 0.27,
+  vignetteIntensity: 0.3,
+};
+
+/**
+ * 设置 store 的默认值（原件 `useSettingsStore`）与合成链的换算常数
+ *
+ * 全部为原件实测：`dpr [1,1.5]`、`lensDistortionFactor 1`、`bloomBoost 0`、`noiseFactor 1`；
+ * 换算常数来自原件合成组件里的逐帧公式（见各字段注释）。
+ */
+export const HERO_SETTINGS = {
+  /** 渲染 dpr 下限（原件 `dpr: [1, 1.5]`） */
+  dprMin: 1,
+  /** 渲染 dpr 上限（原件 `dpr: [1, 1.5]`） */
+  dprMax: 1.5,
+  /** 畸变总系数（原件 `lensDistortionFactor: 1`） */
+  lensDistortionFactor: 1,
+  /** bloom 额外增益（原件 `bloomBoost: 0`） */
+  bloomBoost: 0,
+  /** 噪点系数（原件 `noiseFactor: 1`） */
+  noiseFactor: 1,
+  /** bloom mip 级数（原件 `levels: 7`） */
+  bloomLevels: 7,
+  /** 场景合成 pass：畸变换算 `d' = 0.2 * d + 0.1`（原件实测） */
+  lensDistortionScale: 0.2,
+  lensDistortionBias: 0.1,
+  /** 场景合成 pass：边框换算 `b' = 0.5 + 0.2 * b`（原件实测） */
+  lensBorderScale: 0.2,
+  lensBorderBias: 0.5,
+  /** 竖屏时畸变打折（原件 `isPortraitDisplay && (e6 *= .5)`） */
+  portraitDistortionFactor: 0.5,
+  /** 单帧 bloom 强度 `1.5 * I + R + boost` 的基准倍数（原件实测） */
+  bloomIntensityBase: 1.5,
+  /** bloom 呼吸调制幅度（原件 `* 0.03 * I`） */
+  bloomBreathAmp: 0.03,
+  /** 运动模糊成帧倍数（原件 `1.3 * Q`） */
+  motionBlurGain: 1.3,
+  /** 噪点基准幅度（原件 `0.037 * noiseIntensity * dprFactor * mobileDiscount`） */
+  noiseAmp: 0.037,
+  /** 移动端噪点折扣（原件 `isMobileDevice ? 0.65 : 1`） */
+  noiseMobileFactor: 0.65,
+  /** 色散基准系数（原件 `0.001 * length(uv-0.5) * 2 * strength`） */
+  chromaticScale: 0.001,
+  /** 色散/噪点的边缘内缩（原件 `p = 0.005`） */
+  edgeInset: 0.005,
+  /** 噪点高斯核的标准差（原件 `A0(x, 0, 0.7*0.7)`） */
+  noiseGaussianSigma: 0.49,
 } as const;

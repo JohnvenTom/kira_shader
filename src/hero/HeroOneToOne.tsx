@@ -10,7 +10,7 @@ import {
 } from './heroConfig';
 import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
-import { createHeroCompose, createDefaultComposeParams } from './heroCompose';
+import { createHeroCompose } from './heroCompose';
 import { createHeroScreenLoop } from './heroScreenLoop';
 import { createHeroSpillFactory } from './heroSpill';
 import { createHeroBootPass } from './heroBootPass';
@@ -183,9 +183,10 @@ export default function HeroOneToOne() {
       bootTexture.generateMipmaps = false;
       cleanups.push(() => bootTexture.dispose());
 
-      // 屏幕循环片（程序化自制，主从同源）：contentTexture 给屏幕、lightTexture 给投射灯 gobo 与背景光溢出
+      // 屏幕循环片（原件那条 Mux 主片已本地化，同帧派生光）：contentTexture 给屏幕、
+      // lightTexture 给投射灯 gobo 与背景光溢出
       const screenLoop = createHeroScreenLoop();
-      screenLoop.update(0);
+      screenLoop.update();
       cleanups.push(screenLoop.dispose);
       diag.push('循环片 OK');
       bootAsset.setProgress(0.6);
@@ -315,7 +316,7 @@ export default function HeroOneToOne() {
       // ---------- 9. 合成管线 ----------
       let compose: ReturnType<typeof createHeroCompose> | null = null;
       try {
-        compose = createHeroCompose(host.clientWidth, host.clientHeight);
+        compose = createHeroCompose(host.clientWidth, host.clientHeight, bootOverlay.canvas);
         cleanups.push(compose.dispose);
         diag.push('合成管线 OK');
       } catch (err) {
@@ -390,9 +391,11 @@ export default function HeroOneToOne() {
       // （无副作用，保留；与 PostProcessing 的 __dofU 同款做法）
       (window as unknown as { __heroCamProbe?: unknown }).__heroCamProbe = {
         camera,
+        scene,
         store: bootStore,
         renderer,
         sceneRT: compose?.sceneRT ?? null,
+        composeRTs: compose?.debugRTs ?? null,
         screenWorldPos,
       };
 
@@ -484,24 +487,25 @@ export default function HeroOneToOne() {
           slats.update(dt, time, progress <= HERO_SCROLL.textHideThreshold);
           // 循环片每帧重绘；屏幕内容切换用相机同一条进度 s（原件 `smoothstep(.05,.55,progress)`）：
           // s=1 时屏幕显示开机底图，随 s 降到 0 切到循环片 —— 与镜头拉远同一进度、天然同步
-          screenLoop.update(time);
+          screenLoop.update();
           uScreenIntro.value = progress;
 
           if (useCompose && compose) {
-            const base = createDefaultComposeParams();
-            // 原件 bloom 强度的三频呼吸调制
-            const breath =
-              (Math.sin(5.3 * time * 0.5) +
-                Math.sin(11.7 * time * 0.5 + 2.4 * Math.sin(2.1 * time * 0.5) * 0.5) +
-                Math.sin(23.9 * time * 0.5 + 1.3 * Math.cos(7.1 * time * 0.5) * 0.5)) * 0.03 * base.bloomIntensity;
-            base.bloomIntensity = 1.5 * base.bloomIntensity + breath;
-            base.lensDistortion = compose.lensDistortionForAspect(host.clientWidth, host.clientHeight);
-            compose.setParams(base, time);
-
-            renderer.setRenderTarget(compose.sceneRT);
-            await doRender(scene, camera);
-            renderer.setRenderTarget(null);
-            await doRender(compose.composeScene, compose.composeCamera);
+            // boot 期的两条门（对应原件 `isReadyToRender == 0` 与 `e$ = smoothstep(0,1,1-initialTransition)`）：
+            //  - loadingActive：**只覆盖到「还没就绪」为止**（loading / warmup）—— 原件是资产一就绪就硬切，
+            //    切掉那一刻相机正停在屏幕特写位，随后 500ms 静置 + 弹簧才把镜头拉远。
+            //    注意不要写成 `phase !== 'done'`：那会把 loading 屏一路盖到弹簧收敛，
+            //    镜头拉远整段被挡在 boot 画面后面，观感就是「加载完的推进没了」。
+            //  - loadingMix：效果参数的渐出权重，随显现弹簧 0→1 从 loading 值过渡到 hero 值
+            //    （原件就是按 initialTransition 渐出的，与上面的纹理门是两个不同的门）
+            const bootActive = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
+            await compose.render(renderer, scene, camera, {
+              time,
+              dt,
+              portrait: window.innerHeight > window.innerWidth,
+              loadingActive: bootActive,
+              loadingMix: 1 - Math.min(1, Math.max(0, bootStore.spring)),
+            });
           } else {
             renderer.setRenderTarget(null);
             await doRender(scene, camera);
