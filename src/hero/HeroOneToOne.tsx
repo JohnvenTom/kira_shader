@@ -6,15 +6,17 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import {
   HERO_CAMERA, HERO_SCROLL, HERO_SMOKE, HERO_AMBIENT, HERO_ASSETS,
-  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_SCREEN,
+  HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_SCREEN, HERO_TIMELINE,
 } from './heroConfig';
 import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
-import { createHeroCompose } from './heroCompose';
+import { createHeroCompose, sampleScreenProjects } from './heroCompose';
+import { createHeroProjects, REEL_FRAME_WIDTH } from './heroProjects';
 import { createHeroScreenLoop } from './heroScreenLoop';
 import { createHeroSpillFactory } from './heroSpill';
 import { createHeroBootPass } from './heroBootPass';
 import { createHeroSlats } from './heroSlats';
+import { SECTIONS } from '../components/FilmScene';
 import {
   bootStore,
   clearBootAssets,
@@ -49,6 +51,20 @@ const WARMUP_MIN_SMOOTH = 6;
 const WARMUP_FRAME_SEC = 0.04;
 /** 预热超时兜底（秒） */
 const WARMUP_TIMEOUT_SEC = 3;
+
+/** 胶片拖拽窥视折算（原件 `dragPx / (0.05·width)`，与 FilmReelScene 同值） */
+const REEL_DRAG_UNIT = 0.05;
+/** 拖动像素钳制（原件 ±0.2·width） */
+const REEL_DRAG_CLAMP_RATIO = 0.2;
+/** 释放翻帧阈值（原件 |drag| > 0.1·width） */
+const REEL_DRAG_SNAP_RATIO = 0.1;
+/** 横向滚轮翻帧累计阈值（原件 0.1·width） */
+const REEL_WHEEL_STEP_RATIO = 0.1;
+/** 横向滚轮翻帧锁（原件 700ms） */
+const REEL_WHEEL_LOCK_MS = 700;
+
+/** 穿越后覆盖在 projects 场景上的 section 文案（与胶片页 SELECTED WORK 同源） */
+const PROJECTS_SECTION = SECTIONS[1];
 
 /**
  * hero 1:1 复刻页
@@ -88,6 +104,9 @@ const WARMUP_TIMEOUT_SEC = 3;
 export default function HeroOneToOne() {
   const hostRef = useRef<HTMLDivElement>(null);
   const [hud, setHud] = useState('正在初始化 WebGPU…');
+  /** 诊断 HUD 默认隐藏（1:1 页面不该出现调试行）；`#hero?debug=1` 打开 */
+  const showHud =
+    typeof window !== 'undefined' && (window.location.hash.split('?')[1] ?? '').includes('debug=1');
   /** 预热统计（资产就绪后进入 warmup 阶段时开始累计，见文件顶部的判据说明） */
   const warmupRef = useRef({ startedAt: 0, frames: 0, smooth: 0, compiled: false });
   const hudRef = useRef(setHud);
@@ -95,6 +114,11 @@ export default function HeroOneToOne() {
 
   const scrollTargetRef = useRef(0);
   const mouseRef = useRef({ x: 0, y: 0 });
+  /** 整条时间轴（hero 页 0~1、projects 页 1~2，单位 vh）；帧循环写入，输入回调读取 */
+  const pageScrollRef = useRef(0);
+  /** 胶片连续 section 指针（idle 为整数；拖动时带小数窥视，与 FilmReelScene 同语义） */
+  const reelOffsetRef = useRef(1);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -181,6 +205,10 @@ export default function HeroOneToOne() {
       bootTexture.colorSpace = THREE.SRGBColorSpace;
       bootTexture.minFilter = THREE.LinearFilter; bootTexture.magFilter = THREE.LinearFilter;
       bootTexture.generateMipmaps = false;
+      // 原件 loadingScreen 是 FBO 纹理（flipY=false 语义），makeScreenContentNode 里的
+      // `1 - n.y` 是按这个语义写的。CanvasTexture 默认 flipY=true，WebGPU 上传时会再翻
+      // 一次 → 显示器上的 boot 上下颠倒。这里恢复 FBO 语义（同时省掉逐帧上传的翻转 pass）。
+      bootTexture.flipY = false;
       cleanups.push(() => bootTexture.dispose());
 
       // 屏幕循环片（原件那条 Mux 主片已本地化，同帧派生光）：contentTexture 给屏幕、
@@ -247,20 +275,42 @@ export default function HeroOneToOne() {
       // 资产齐备 → boot 状态机进入 warmup（预热帧由下方主循环按真实时间上报）
       bootAsset.markDone();
 
-      // ---------- 6. 屏幕平面（三层嵌套，与原件同构） ----------
+      // ---------- 6. projects 场景（显示器传送门 + 穿越后的第二场景） ----------
+      // 原件里这是 /projects 页自己的场景 RT：同一张纹理既被显示器屏幕材质采样，
+      // 又在最后 0.2vh 被合成链整屏交叉淡入。这里用 TSL 版胶片卷场景 + 离屏 RT 复刻。
+      const projects = createHeroProjects(host.clientWidth, host.clientHeight);
+      cleanups.push(projects.dispose);
+      const renderDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const projectsPxW = Math.max(1, Math.floor(host.clientWidth * renderDpr));
+      const projectsPxH = Math.max(1, Math.floor(host.clientHeight * renderDpr));
+      // 真实场景 RT 开 4x MSAA：胶片画格与齿孔是 alphaTest 硬边，FXAA 不在链里
+      const projectsRT = new THREE.RenderTarget(projectsPxW, projectsPxH, {
+        type: THREE.HalfFloatType,
+        depthBuffer: true,
+        samples: 4,
+      });
+      cleanups.push(() => projectsRT.dispose());
+      diag.push('传送门场景 OK');
+
+      // ---------- 6b. 屏幕平面（三层嵌套，与原件同构） ----------
       const screenMat = new THREE.MeshBasicNodeMaterial();
       screenMat.toneMapped = false;
       // 原件屏幕材质：`mix(reelTexture.rgb*4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
       // 其中 progress 就是相机那条进度 s（见主循环）：boot 期间为 1 → 屏幕显示 boot 画面；
-      // 随 s 降到 0 切到循环片。loadingScreen 分支的取样 uv 由 makeScreenContentNode 按原件公式给出。
+      // 随 s 降到 0 切到循环片。sceneBlend 在入场结束后恒为 1 → 内层显示 projects 场景。
       const uScreenIntro = T.uniform(1);
-      // 视口宽高比做成 uniform：原件 `dimensions` 是逐帧可写的，resize 后 loadingScreen 取样映射要跟着变
+      const uScreenBlend = T.uniform(0);
+      // 视口宽高比 / 像素尺寸做成 uniform：原件 `dimensions` 逐帧可写，resize 后映射要跟着变
       const uViewportAspect = T.uniform(host.clientWidth / Math.max(1, host.clientHeight));
+      const uViewportDimensions = T.uniform(new THREE.Vector2(projectsPxW, projectsPxH));
       (screenMat as unknown as { colorNode: unknown }).colorNode = makeScreenContentNode(
         screenLoop.contentTexture,
         bootTexture,
+        projectsRT.texture,
         uScreenIntro,
-        uViewportAspect
+        uScreenBlend,
+        uViewportAspect,
+        uViewportDimensions
       );
 
       const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), screenMat);
@@ -316,7 +366,7 @@ export default function HeroOneToOne() {
       // ---------- 9. 合成管线 ----------
       let compose: ReturnType<typeof createHeroCompose> | null = null;
       try {
-        compose = createHeroCompose(host.clientWidth, host.clientHeight, bootOverlay.canvas);
+        compose = createHeroCompose(host.clientWidth, host.clientHeight, bootOverlay.canvas, projectsRT.texture);
         cleanups.push(compose.dispose);
         diag.push('合成管线 OK');
       } catch (err) {
@@ -327,36 +377,131 @@ export default function HeroOneToOne() {
       diag.push('场景子节点 ' + scene.children.length);
       pushHud('已就绪');
 
-      // ---------- 10. 输入 ----------
+      // ---------- 10. 输入（整条时间轴 + 胶片拖拽/横向滚轮） ----------
+      let wheelAcc = 0;
+      let wheelLockUntil = 0;
+      let wheelResetTimer: number | null = null;
+      let dragging = false;
+      let pending = false;
+      let startX = 0;
+      let startY = 0;
+      let pointerStart = 0;
+      let lastD = 0;
+
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         // 入场期间锁滚动（与项目 bootInteractionUnlocked 同一意图）：弹簧收敛前
         // 滚轮不得推进相机，否则会与入场拉远的插值打架
         if (!bootStore.springDone) return;
-        let d = e.deltaY;
-        if (e.deltaMode === 1) d *= 16;
-        else if (e.deltaMode === 2) d *= host.clientHeight;
-        scrollTargetRef.current = Math.min(1, Math.max(0, scrollTargetRef.current + d / 1200));
+        let dx = e.deltaX;
+        let dy = e.deltaY;
+        if (e.deltaMode === 1) { dx *= 16; dy *= 16; }
+        else if (e.deltaMode === 2) { dx *= host.clientWidth; dy *= host.clientHeight; }
+
+        // projects 页：横向滚轮翻胶片帧（原件 mh 拖拽层：累计 0.1w 翻一帧，700ms 锁）
+        const onProjects = pageScrollRef.current > HERO_TIMELINE.heroLength - 0.1;
+        if (onProjects && Math.abs(dx) > Math.abs(dy)) {
+          if (dragging || pending) return;
+          const now = performance.now();
+          if (now < wheelLockUntil) return;
+          if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
+          wheelResetTimer = window.setTimeout(() => { wheelAcc = 0; }, 150);
+          wheelAcc -= dx;
+          const step = REEL_WHEEL_STEP_RATIO * window.innerWidth;
+          if (Math.abs(wheelAcc) > step) {
+            const cur = Math.round(reelOffsetRef.current);
+            // 无限循环：与拖拽同理，只做整数步进、不夹取
+            reelOffsetRef.current = cur - Math.sign(wheelAcc);
+            wheelAcc = 0;
+            wheelLockUntil = now + REEL_WHEEL_LOCK_MS;
+          }
+          return;
+        }
+
+        // 纵向滚轮推进整条时间轴（单位 vh：hero 0~1、projects 1~2）
+        scrollTargetRef.current = Math.min(
+          HERO_TIMELINE.total,
+          Math.max(0, scrollTargetRef.current + dy / Math.max(1, host.clientHeight))
+        );
       };
       const onMouseMove = (e: MouseEvent) => {
         mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
         mouseRef.current.y = (e.clientY / window.innerHeight) * 2 - 1;
+      };
+      const onPointerDown = (e: PointerEvent) => {
+        if (!bootStore.springDone) return;
+        if (pageScrollRef.current < HERO_TIMELINE.heroLength - 0.1) return;
+        if (e.button !== 0) return;
+        const yRatio = e.clientY / window.innerHeight;
+        if (yRatio < 0.15 || yRatio > 0.85) return;
+        pending = true;
+        dragging = false;
+        startX = e.clientX;
+        startY = e.clientY;
+        pointerStart = reelOffsetRef.current;
+        lastD = 0;
+      };
+      const onPointerMove = (e: PointerEvent) => {
+        if (!pending) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (!dragging) {
+          if (Math.abs(dx) + Math.abs(dy) <= 10) return;
+          if (Math.abs(dx) <= Math.abs(dy)) {
+            pending = false; // 垂直意图，放弃
+            return;
+          }
+          dragging = true;
+          document.body.style.cursor = 'grabbing';
+        }
+        const lim = REEL_DRAG_CLAMP_RATIO * window.innerWidth;
+        const d = Math.max(-lim, Math.min(lim, dx));
+        lastD = d;
+        reelOffsetRef.current = pointerStart - d / (REEL_DRAG_UNIT * window.innerWidth * REEL_FRAME_WIDTH);
+      };
+      const onPointerUp = () => {
+        if (!pending) return;
+        pending = false;
+        document.body.style.cursor = '';
+        if (!dragging) return;
+        dragging = false;
+        let target = Math.round(pointerStart);
+        if (Math.abs(lastD) > REEL_DRAG_SNAP_RATIO * window.innerWidth) {
+          target = Math.round(pointerStart) - Math.sign(lastD);
+        }
+        reelOffsetRef.current = target;
       };
       const onResize = () => {
         const w = host.clientWidth, h = host.clientHeight;
         renderer.setSize(w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
+        projects.setSize(w, h);
+        const dprNow = renderer.getPixelRatio();
+        const pw = Math.max(1, Math.floor(w * dprNow));
+        const ph = Math.max(1, Math.floor(h * dprNow));
+        projectsRT.setSize(pw, ph);
         uViewportAspect.value = w / h;
+        uViewportDimensions.value.set(pw, ph);
         compose?.setSize(w, h);
       };
       window.addEventListener('wheel', onWheel, { passive: false });
       window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('pointerdown', onPointerDown);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
       window.addEventListener('resize', onResize);
       cleanups.push(() => {
         window.removeEventListener('wheel', onWheel);
         window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('pointerdown', onPointerDown);
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
         window.removeEventListener('resize', onResize);
+        document.body.style.cursor = '';
+        if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
       });
 
       // ---------- 11. 相机端位（原件公式：屏幕世界【缩放】反解，因屏幕几何是单位平面） ----------
@@ -397,6 +542,10 @@ export default function HeroOneToOne() {
         sceneRT: compose?.sceneRT ?? null,
         composeRTs: compose?.debugRTs ?? null,
         screenWorldPos,
+        projects,
+        projectsRT,
+        pageScroll: () => pageScrollRef.current,
+        reelOffset: () => reelOffsetRef.current,
       };
 
       // ---------- 12. 主循环 ----------
@@ -405,6 +554,8 @@ export default function HeroOneToOne() {
       const tmpLook = new THREE.Vector3();
       let useCompose = !!compose;
       let frameErrored = false;
+      /** 覆盖层当前展示的胶片 section（拖动/横向滚轮后同步文案与圆点） */
+      let overlaySection = 1;
 
       const frame = async () => {
         if (disposed) return;
@@ -451,7 +602,10 @@ export default function HeroOneToOne() {
           // 资产就绪 boot 被切掉后，500ms 静置 + 弹簧(30/8) 把 s 从 1 拉到 0 → 镜头拉远到基础机位。
           // bootStore 的 countdown / reveal 就是这两段（同一组弹簧参数），故此处直接读它。
           scrollSmooth += (scrollTargetRef.current - scrollSmooth) * Math.min(1, dt * 6);
-          const progress = Math.max(-1, scrollSmooth + (bootStore.springDone ? 0 : 1 - bootStore.spring));
+          pageScrollRef.current = scrollSmooth;
+          // hero 相机只消费时间轴的前 1vh；进入 projects 页后停在穿越终点（画面已整屏交给 projects）
+          const heroScroll = Math.min(scrollSmooth, HERO_TIMELINE.heroLength);
+          const progress = Math.max(-1, heroScroll + (bootStore.springDone ? 0 : 1 - bootStore.spring));
           const u = Math.min(progress / HERO_SCROLL.pushRange, 1);
           const ease = 1 - Math.pow(1 - u, HERO_SCROLL.easeOutPower);
 
@@ -491,6 +645,55 @@ export default function HeroOneToOne() {
           // s=1 时屏幕显示开机底图，随 s 降到 0 切到循环片 —— 与镜头拉远同一进度、天然同步
           screenLoop.update();
           uScreenIntro.value = progress;
+          // 原件 `sceneBlend = initialTransitionDone ? 1 : clamp(scroll/.15, 0, 1)`：
+          // 入场未完成时显示器只能看到 boot，入场一结束立刻切到 projects 场景
+          uScreenBlend.value = bootStore.springDone
+            ? 1
+            : Math.min(1, Math.max(0, heroScroll / 0.15));
+
+          // 穿越完成 → projects 覆盖层淡入
+          if (overlayRef.current) {
+            const ot = Math.min(1, Math.max(0, (scrollSmooth - 0.96) / 0.1));
+            const oo = ot * ot * (3 - 2 * ot);
+            overlayRef.current.style.opacity = String(oo);
+            overlayRef.current.style.transform = `translate3d(0, ${(1 - oo) * 24}px, 0)`;
+            overlayRef.current.style.visibility = oo < 0.002 ? 'hidden' : 'visible';
+
+            // 胶片换段 → 覆盖层文案与圆点跟着换（原版 FilmReelScene 的 section 通知同语义）
+            const secIdx =
+              ((Math.round(reelOffsetRef.current) % SECTIONS.length) + SECTIONS.length) % SECTIONS.length;
+            if (secIdx !== overlaySection) {
+              overlaySection = secIdx;
+              const sec = SECTIONS[secIdx];
+              const root = overlayRef.current;
+              const setText = (sel: string, text: string) => {
+                const el = root.querySelector(sel);
+                if (el) el.textContent = text;
+              };
+              setText('.film-title', sec.title);
+              setText('.film-subtitle', sec.subtitle);
+              setText('.film-description', sec.description);
+              setText('.film-index-current', String(secIdx + 1).padStart(2, '0'));
+              root.querySelectorAll<HTMLElement>('.film-dot').forEach((dot, i) => {
+                const active = i === secIdx;
+                dot.classList.toggle('active', active);
+                dot.style.backgroundColor = active ? SECTIONS[i].accentColor : 'rgba(255,255,255,0.2)';
+                dot.style.color = active ? SECTIONS[i].accentColor : 'rgba(255,255,255,0.2)';
+              });
+            }
+          }
+
+          // projects 场景每帧渲到离屏 RT：显示器屏幕与合成链共用这张纹理
+          const projectsT = Math.min(1, Math.max(0, scrollSmooth - HERO_TIMELINE.heroLength));
+          projects.update(dt, time, {
+            t: projectsT,
+            mouseX: mouseRef.current.x,
+            mouseY: mouseRef.current.y,
+            reelOffset: reelOffsetRef.current,
+          });
+          renderer.setRenderTarget(projectsRT);
+          await doRender(projects.scene, projects.camera);
+          renderer.setRenderTarget(null);
 
           if (useCompose && compose) {
             // boot 期的两条门（对应原件 `isReadyToRender == 0` 与 `e$ = smoothstep(0,1,1-initialTransition)`）：
@@ -507,6 +710,7 @@ export default function HeroOneToOne() {
               portrait: window.innerHeight > window.innerWidth,
               loadingActive: bootActive,
               loadingMix: 1 - Math.min(1, Math.max(0, bootStore.spring)),
+              pageScroll: scrollSmooth,
             });
           } else {
             renderer.setRenderTarget(null);
@@ -563,11 +767,55 @@ export default function HeroOneToOne() {
 
   return (
     <div ref={hostRef} style={{ position: 'fixed', inset: 0, background: '#0a0b0d', overflow: 'hidden' }}>
+      {/* 穿越完成后的 projects 覆盖层：内容与胶片页 SELECTED WORK 段同源，
+          透明度/位移由主循环按时间轴驱动（pageScroll ≥ 0.96 开始淡入） */}
+      <div
+        ref={overlayRef}
+        className="content-overlay film-content-overlay"
+        style={{
+          opacity: 0,
+          visibility: 'hidden',
+          pointerEvents: 'none',
+          zIndex: 45,
+          willChange: 'opacity, transform',
+          transform: 'translate3d(0, 24px, 0)',
+        }}
+      >
+        <div className="hero-block film-hero-block" style={{ pointerEvents: 'none' }}>
+          <h1 className="film-title" style={{ margin: 0 }}>{PROJECTS_SECTION.title}</h1>
+          <p className="film-subtitle">{PROJECTS_SECTION.subtitle}</p>
+          <div className="film-section-index">
+            <span className="film-index-current">02</span>
+            <span className="film-index-separator">/</span>
+            <span className="film-index-total">0{SECTIONS.length}</span>
+          </div>
+          <p className="film-description">{PROJECTS_SECTION.description}</p>
+        </div>
+        <div
+          className="film-progress-dots"
+          style={{
+            pointerEvents: 'none',
+            transform: `translateX(calc(-50% - ${(1 - (SECTIONS.length - 1) / 2) * 22}px))`,
+          }}
+        >
+          {SECTIONS.map((s, i) => (
+            <span
+              key={s.title}
+              className={`film-dot ${i === 1 ? 'active' : ''}`}
+              style={{
+                backgroundColor: i === 1 ? s.accentColor : 'rgba(255,255,255,0.2)',
+                color: i === 1 ? s.accentColor : 'rgba(255,255,255,0.2)',
+              }}
+            />
+          ))}
+        </div>
+      </div>
       {/* boot 覆盖屏由 createHeroBootPass 以画布注入（见 effect），此处只留 HUD */}
       <div
         style={{
           position: 'absolute', left: 16, bottom: 16, right: 16, color: 'rgba(255,255,255,.6)',
           font: '12px/1.6 ui-monospace, Consolas, monospace', pointerEvents: 'none',
+          display: showHud ? 'block' : 'none',
         }}
       >
         {hud}
@@ -809,44 +1057,65 @@ function replaceModelMaterials(
  *
  * 功能：实现原件那条
  *      `mix(reelTexture.rgb * 4 min 1, mix(loadingScreen, projectsScene, sceneBlend), smoothstep(.05,.55,progress))`
- *      —— 开机/入场期间（progress→1）屏幕显示 boot 画面，随 progress 降到 0 切到循环片。
- *      本页没有 projectsScene（那是 /projects 页的场景纹理），sceneBlend 恒为 0，故该内层 mix 退化为 loadingScreen。
+ *      —— 开机/入场期间（progress→1）屏幕显示 boot 画面，随 progress 降到 0 切到循环片；
+ *      `sceneBlend` 决定内层是 boot 还是 projects 实时场景（入场结束后恒为 1）。
  *
  * 参数：
- *  - content        {THREE.Texture} 循环片内容纹理（程序化自制，对应原件的视频流）
- *  - loadingScreen  {THREE.Texture} boot 画面纹理（与全屏覆盖层**同一张画布**，见调用处）
- *  - intro          {unknown}       TSL float uniform，取相机那一条进度 s（1 = 开机中，0 = 已入场）
- *  - viewportAspect {unknown}       TSL float uniform，视口宽高比（原件用 dimensions.x/dimensions.y）
+ *  - content          {THREE.Texture} 循环片内容纹理（程序化自制，对应原件的视频流）
+ *  - loadingScreen    {THREE.Texture} boot 画面纹理（与全屏覆盖层**同一张画布**，见调用处）
+ *  - projectsTexture  {THREE.Texture} projects 场景离屏 RT
+ *  - intro            {unknown}       TSL float uniform，取相机那一条进度 s（1 = 开机中，0 = 已入场）
+ *  - sceneBlend       {unknown}       TSL float uniform，`initialTransitionDone ? 1 : clamp(scroll/.15,0,1)`
+ *  - viewportAspect   {unknown}       TSL float uniform，视口宽高比（原件 dimensions.x/dimensions.y）
+ *  - viewportDims     {unknown}       TSL vec2 uniform，视口像素尺寸（只用于 AW 的宽高比圆角）
  *
  * 返回值：TSL 节点（vec3，屏幕颜色）
  *
  * 异常：无
  *
  * 注意事项：
- *  - loadingScreen 的取样 uv **不是朴素 uv**，而是原件 `pl` 里那段映射：
- *      `i = (uv - 0.5) / 0.9 + 0.5`（0.9 是给桶形畸变边界留的边距）→ `n = clamp(i, 0, 1)`
- *      横屏（视口比 > 屏幕平面比）时 `c = (n.x, 1 - n.y)`；竖屏时横向按 contain 收窄。
- *      漏掉这个映射会让显示器上的 boot 画面上下颠倒且比例不对（boot 纹理是视口尺寸的 RT 类纹理）。
+ *  - 两套取样 uv 都照原件：
+ *      `i = (uv - 0.5) / 0.9 + 0.5`（不裁剪）→ `n = clamp(i, 0, 1)`（loadingScreen 用 n 的映射 c）
+ *      横屏时 x 直取、y 按 `a/s` 拉伸；竖屏时 x 按 `s/a` 收窄。projects 用未裁剪的 i 的映射 d，
+ *      再交给 `sampleScreenProjects`（原件 AW：桶形 + 圆角，界外黑）。
+ *  - `1 - ...` 对应 FBO 语义（flipY=false / WebGPU RT）的贴图；调用方必须把 bootTexture.flipY 置 false，
+ *    否则 CanvasTexture 默认的 flipY=true 会再翻一次，显示器上的 boot 反成上下颠倒。
  *  - 内容亮度按原件乘 4 后截顶（`mul(4).min(1)`），让屏幕成为画面里最亮的元素
  */
 function makeScreenContentNode(
   content: THREE.Texture,
   loadingScreen: THREE.Texture,
+  projectsTexture: THREE.Texture,
   intro: any,
-  viewportAspect: any
+  sceneBlend: any,
+  viewportAspect: any,
+  viewportDims: any
 ): unknown {
-  // 原件 loadingScreen 分支的取样坐标（逐项照抄）
   const i = T.uv().sub(0.5).div(0.9).add(0.5);
   const n = T.clamp(i, 0, 1);
   const planeAspect = HERO_SCREEN.planeAspect[0] / HERO_SCREEN.planeAspect[1];
-  const l = T.float(planeAspect).div(viewportAspect);
-  const A = viewportAspect.div(planeAspect);
-  const wide = viewportAspect.greaterThan(planeAspect);
-  const cx = T.select(wide, n.x, n.x.mul(l).sub(l.sub(1).mul(0.5)));
-  const cy = T.oneMinus(T.select(wide, n.y.mul(A).sub(A.sub(1).mul(0.5)), n.y));
-  const boot = T.texture(loadingScreen, T.vec2(cx, cy)).rgb;
+  const a = viewportAspect;
+  const s = T.float(planeAspect);
+  const l = s.div(a);
+  const A = a.div(s);
+  const wide = a.greaterThan(s);
+  /** 原件映射：横屏 x 直取 / 竖屏 x 收窄；y 反向（FBO 方向） */
+  const mapX = (x: any) => T.select(wide, x, x.mul(l).sub(l.sub(1).mul(0.5)));
+  const mapY = (y: any) => T.oneMinus(T.select(wide, y.mul(A).sub(A.sub(1).mul(0.5)), y));
+  const c = T.vec2(mapX(n.x), mapY(n.y));
+  const d = T.vec2(mapX(i.x), mapY(i.y));
+
+  const projects = sampleScreenProjects(
+    projectsTexture,
+    d,
+    T.float(HERO_TIMELINE.screenLensDistortion),
+    T.float(HERO_TIMELINE.screenLensBorder),
+    viewportDims
+  );
+  const boot = T.texture(loadingScreen, c).rgb;
+  const inner = T.mix(boot, projects.rgb, sceneBlend);
 
   const reel = T.texture(content, T.uv()).rgb.mul(HERO_SCREEN_PLANE.reelBoost).min(1);
   const [m0, m1] = HERO_SCREEN_PLANE.bootMixRange;
-  return T.mix(reel, boot, T.smoothstep(m0, m1, intro));
+  return T.mix(reel, inner, T.smoothstep(m0, m1, intro));
 }

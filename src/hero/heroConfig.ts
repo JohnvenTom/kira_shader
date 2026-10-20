@@ -427,6 +427,62 @@ export const HERO_LOADING_EFFECTS: HeroEffects = {
 };
 
 /**
+ * 第二个场景（projects / Selected Work 页）的真实效果值
+ *
+ * 来源：原件生产包 `0wb~eqgmow_3x.js` 的 `pagesConfig` 中 `{ id:"projects" }` 那条。
+ *
+ * 关键：projects 页的 `effectTransitionLength` 是 **1**（等于 hero 页长度），
+ * 所以从滚动一开始，整条合成链的效果参数就按 `smoothstep(0, 1, scroll)` 从 hero 值
+ * 渐变成 projects 值 —— 到 0.8（相机贴到屏幕）时已经几乎全是 projects 的效果。
+ * 纹理层面的交叉淡入则只在最后 0.2（见 HERO_TIMELINE.portalFade）。
+ */
+export const HERO_PROJECTS_EFFECTS: HeroEffects = {
+  noiseVelocity: 1,
+  noiseIntensity: 0.87,
+  sepiaIntensity: 0.28,
+  bloomThreshold: 0.62,
+  bloomIntensity: 0.77,
+  bloomRadius: 0.8,
+  bloomSmoothing: 0.2,
+  contrast: 0.98,
+  brightness: 1.08,
+  saturation: 0.92,
+  motionBlur: 0.4,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 1,
+  pow: 1.36,
+  chromaticAbberationStrength: 1,
+  vignetteRadius: 0,
+  vignetteSmoothness: 0.32,
+  vignetteIntensity: 0,
+};
+
+/**
+ * 首页 → projects 的滚动时间轴（单位：视口高度 vh，与原件 Lenis 的 scroll 同单位）
+ *
+ * 原件页面划分：hero 页 [0, 1]，projects 页 [1, 2]。
+ *  - 相机在 scroll=0.8 时刚好贴在屏幕上（`u = 1 - (1 - min(s/0.8,1))^1.4`）
+ *  - 视口纹理交叉淡入发生在最后 `transitionLength = 0.2`（0.8 → 1.0）
+ *  - 屏幕内容在 `smoothstep(.05, .55, s)` 区间从循环片切成 projects 实况纹理
+ *    （s 为相机进度：一开始滚，显示器就变成"窗口"，而不是等到穿越那一刻）
+ */
+export const HERO_TIMELINE = {
+  /** hero 页长度（vh） */
+  heroLength: 1,
+  /** projects 页长度（vh） */
+  projectsLength: 1,
+  /** 整条 Demo 的滚动总长（vh）：滚到底停在 projects 页末尾 */
+  total: 2,
+  /** projects 页的 transitionLength（vh）：视口从 hero 画面淡到 projects 画面 */
+  portalFade: 0.2,
+  /** 显示器内循环片 → projects 实况的切换区间（对应相机进度 s） */
+  screenMixRange: [0.05, 0.55] as [number, number],
+  /** 显示器内 projects 纹理的镜头参数（原件 pl 组件里写死的 `.16 * factor` / `1 * factor`） */
+  screenLensDistortion: 0.16,
+  screenLensBorder: 1,
+} as const;
+
+/**
  * 设置 store 的默认值（原件 `useSettingsStore`）与合成链的换算常数
  *
  * 全部为原件实测：`dpr [1,1.5]`、`lensDistortionFactor 1`、`bloomBoost 0`、`noiseFactor 1`；

@@ -1,7 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
-import { HERO_EFFECTS, HERO_LOADING_EFFECTS, HERO_SETTINGS, type HeroEffects } from './heroConfig';
+import {
+  HERO_EFFECTS,
+  HERO_LOADING_EFFECTS,
+  HERO_PROJECTS_EFFECTS,
+  HERO_SETTINGS,
+  HERO_TIMELINE,
+  type HeroEffects,
+} from './heroConfig';
 
 /**
  * shader.se 首页合成链的 1:1 复刻（原件 `A5` 最终 pass + 场景合成 pass）
@@ -47,6 +54,15 @@ export interface HeroComposeFrame {
   /** loading 参数渐出权重（原件 `e$ = smoothstep(0,1, 1 - initialTransition)`：
    *  1 = 完全是 loading 效果，0 = 完全是 hero 效果） */
   loadingMix: number;
+  /**
+   * 整条时间轴的滚动位置（单位 vh，hero 页 0~1、projects 页 1~2）
+   *
+   * 两件事由它驱动：
+   *  - 效果参数：原件 projects 页的 `effectTransitionLength = 1`，
+   *    所以 hero→projects 的效果值在整个 hero 页（0→1）上平滑过渡
+   *  - 视口穿越：最后 0.2（0.8→1.0）把 hero 场景 RT 交叉淡入 projects 场景 RT
+   */
+  pageScroll: number;
 }
 
 /** 合成管线句柄 */
@@ -194,6 +210,35 @@ const gaussian = (x: any, mu: any, sigma: any) => {
 };
 
 /**
+ * 屏幕材质里 projectsScene 的采样（原件 `AW`）
+ *
+ * 功能：对映射后的屏幕 uv 做桶形畸变，落在 [0,1] 内时采样并过圆角/四边渐隐；界外为黑。
+ *
+ * 参数：
+ *  - tex        {any} projects 场景纹理（WebGPU RT，方向与原件 FBO 同语义）
+ *  - uv         {any} 已经过屏幕 contain 映射的 uv（原件 `d`，可超出 [0,1]）
+ *  - distortion {any} 畸变（原件固定 `.16 * lensDistortionFactor`）
+ *  - border     {any} 边框（原件固定 `1 * lensDistortionFactor`）
+ *  - dimensions {any} 视口像素尺寸（vec2，仅用宽高比）
+ *
+ * 返回值：TSL 节点（vec4）
+ *
+ * 异常：无
+ *
+ * 注意事项：与场景合成里的每 section 采样不同 —— 这里**不做** `l > .01` 门控，
+ *          界外直接黑（原件 `AW` 原文），所以显示器边缘能看到圆角遮罩的黑边
+ */
+export const sampleScreenProjects = (tex: any, uv: any, distortion: any, border: any, dimensions: any) => {
+  const warped = barrel(uv, distortion, border);
+  const inRange = N.step(N.float(0), warped.x)
+    .mul(N.step(warped.x, N.float(1)))
+    .mul(N.step(N.float(0), warped.y))
+    .mul(N.step(warped.y, N.float(1)));
+  const sampled = edgeFade(N.texture(tex, warped), warped, border, dimensions);
+  return N.mix(N.vec4(0, 0, 0, 0), sampled, inRange);
+};
+
+/**
  * 饱和度（原件 `ApplySaturation`）
  *
  * 功能：`mix(luminance(color), color, saturation)`，亮度权重 0.299/0.587/0.114
@@ -273,19 +318,26 @@ const blur4 = (tex: any, uvBase: any, texel: any) => {
  *  - width / height {number} 初始 CSS 画布尺寸（像素）
  *  - bootCanvas     {HTMLCanvasElement | undefined} boot 覆盖屏画布；原件把 loading 屏纹理喂进合成链，
  *                   所以这张画布**同时在合成链里当 loading 屏**（不是只当显示器贴图）
+ *  - projectsTexture {THREE.Texture | undefined} 第二个场景（胶片卷）的离屏 RT 纹理；
+ *                   最后 0.2vh 与 hero 场景 RT 交叉淡入，穿越后成为整屏画面
  *
  * 返回值：HeroComposeHandle —— { sceneRT, setSize, render, dispose }
  *
  * 异常：无（贴图缺失时退化，不影响其余效果）
  *
  * 注意事项：
- *  - **原件是「每 section 一张 RT → 场景合成」的多 section 架构**；本页只有一个 section，
- *    因此 `sceneMode` 恒为 1（单 section），跨 section 过渡、子页（project/not-found）分支、
- *    UI 贴图合成分支按已确认范围**不实现**（本页无对应 DOM UI，跨 section 过渡不在首页成立）
+ *  - **原件是「每 section 一张 RT → 场景合成」的多 section 架构**；本页实现 hero 与 projects
+ *    两个 section：各用自己的镜头参数/饱和度采样，再按 `portalBlend` 交叉淡入。
+ *    其余 section（office 之后）、子页（project/not-found）分支、UI 贴图合成分支不实现。
  *  - 运动模糊用两张全分辨率 HalfFloat RT 交替（原件 `A3` 的 ping-pong）
  *  - 每帧约 18 趟全屏/半屏绘制 —— 与原件同量级
  */
-export function createHeroCompose(width: number, height: number, bootCanvas?: HTMLCanvasElement): HeroComposeHandle {
+export function createHeroCompose(
+  width: number,
+  height: number,
+  bootCanvas?: HTMLCanvasElement,
+  projectsTexture?: THREE.Texture
+): HeroComposeHandle {
   const dpr = Math.min(window.devicePixelRatio || 1, HERO_SETTINGS.dprMax);
   let cssW = Math.max(1, width);
   let cssH = Math.max(1, height);
@@ -366,9 +418,8 @@ export function createHeroCompose(width: number, height: number, bootCanvas?: HT
   // ---------- uniforms ----------
   const u = {
     // 场景合成 pass
-    lensDistortion: N.uniform(0.1),
-    lensBorder: N.uniform(0.5),
-    saturation: N.uniform(1),
+    /** hero 场景 RT → projects 场景 RT 的交叉淡入权重（0.8vh 起、1.0vh 满） */
+    portalBlend: N.uniform(0),
     vigRadius: N.uniform(0),
     vigSmooth: N.uniform(0.3),
     vigIntensity: N.uniform(0),
@@ -403,21 +454,39 @@ export function createHeroCompose(width: number, height: number, bootCanvas?: HT
   {
     const uvS = N.uv();
     const uvB = baseUv(uvS);
-    const warped = barrel(uvB, u.lensDistortion, u.lensBorder);
-    const active = N.step(N.float(0.01), u.lensDistortion); // 原件 `A = l > 0.01`
-    const inRange = N.step(N.float(0), warped.x)
-      .mul(N.step(warped.x, N.float(1)))
-      .mul(N.step(N.float(0), warped.y))
-      .mul(N.step(warped.y, N.float(1)));
-    const inside = active.mul(inRange);
-    const sampleUv = N.mix(uvB, warped, inside);
-    const raw = N.texture(sceneRT.texture, sampleUv);
-    // 原件：`!A || inRange` 才出图，否则该像素为 0（此处用乘法实现同样的门）
-    const gated = raw.mul(N.float(1).sub(active.mul(N.float(1).sub(inRange))));
-    const masked = N.mix(gated, edgeFade(gated, warped, u.lensBorder, u.dimensions), inside);
-    const saturated = applySaturation(masked, u.saturation);
+
+    /**
+     * 采样一个 section 的 RT（原件场景合成里的 `n(texture, lensDistortion, border, saturation, uv, ...)`）
+     *
+     * 顺序照原件：畸变 → 越界判 → 圆角/四边渐隐（AV）→ 饱和度（ApplySaturation）。
+     * 注意每个 section 用的是**自己的**镜头参数，而不是加权后的全局值。
+     */
+    const sampleSection = (tex: any, lens: any, border: any, saturation: any) => {
+      const warped = barrel(uvB, lens, border);
+      const active = N.step(N.float(0.01), lens); // 原件 `A = l > 0.01`
+      const inRange = N.step(N.float(0), warped.x)
+        .mul(N.step(warped.x, N.float(1)))
+        .mul(N.step(N.float(0), warped.y))
+        .mul(N.step(warped.y, N.float(1)));
+      const inside = active.mul(inRange);
+      const sampleUv = N.mix(uvB, warped, inside);
+      const raw = N.texture(tex, sampleUv);
+      // 原件：lens 生效且畸变 uv 在界内 → 采样畸变 uv 并过 AV；否则退回未畸变 uv、不做边遮罩
+      return applySaturation(N.mix(raw, edgeFade(raw, warped, border, u.dimensions), inside), saturation);
+    };
+
+    // hero：镜头畸变 0 / 边框 0 / 饱和度 1（原件 hero 页 effects）
+    const heroScene = sampleSection(sceneRT.texture, N.float(0), N.float(0), N.float(1));
+    // projects：.16 / 1 / .92（原件 projects 页 effects；border=1 时桶形被回拉为 0，只留圆角）
+    const projectsScene = sampleSection(
+      projectsTexture ?? sceneRT.texture,
+      N.float(HERO_PROJECTS_EFFECTS.lensDistortion),
+      N.float(HERO_PROJECTS_EFFECTS.lensDistortionBorders),
+      N.float(HERO_PROJECTS_EFFECTS.saturation)
+    );
+    const mixedScene = N.mix(heroScene, projectsScene, u.portalBlend);
     // loading 屏覆盖（原件 `isReadyToRender == 0` 分支）：按基准 uv 直采，**不吃畸变**
-    const withLoading = N.mix(saturated, N.texture(bootTexture, uvB), u.loadingActive);
+    const withLoading = N.mix(mixedScene, N.texture(bootTexture, uvB), u.loadingActive);
     // 暗角：`smoothstep(-s, s, radius - length(uv - 0.5))`
     const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
@@ -654,25 +723,26 @@ export function createHeroCompose(width: number, height: number, bootCanvas?: HT
    * 注意事项：bloom 的三频呼吸调制与运动模糊的帧率归一化都是**逐帧推导量**，必须每帧重算
    */
   const writeUniforms = (frame: HeroComposeFrame) => {
-    const { time, dt, portrait, loadingMix, loadingActive } = frame;
+    const { time, dt, loadingMix, loadingActive, pageScroll } = frame;
     // 原件：`e$ = eg*eg*(3-2*eg)`，eg = 1 - initialTransition
     const mixT = loadingMix <= 0 ? 0 : loadingMix >= 1 ? 1 : loadingMix * loadingMix * (3 - 2 * loadingMix);
     const L = HERO_LOADING_EFFECTS;
     const H = HERO_EFFECTS;
-    /** 按原件 `e = e*(1-e$) + loading*e$` 在 hero 值与 loading 值之间插值 */
-    const eff = (k: keyof HeroEffects) => H[k] + (L[k] - H[k]) * mixT;
+    const P = HERO_PROJECTS_EFFECTS;
+    // 原件 projects 页 `effectTransitionLength = 1`：整段 hero 页上做 smoothstep 过渡
+    const pageT = Math.min(1, Math.max(0, pageScroll / HERO_TIMELINE.heroLength));
+    const pageMix = pageT * pageT * (3 - 2 * pageT);
+    /** 原件 `e = e*(1-e$) + loading*e$`，再按 pageMix 过渡到 projects 页效果 */
+    const eff = (k: keyof HeroEffects) => {
+      const heroVal = H[k] + (L[k] - H[k]) * mixT;
+      return heroVal + (P[k] - heroVal) * pageMix;
+    };
 
-    // ---- 场景合成 pass ----
-    const rawDistortion = eff('lensDistortion') * (portrait ? HERO_SETTINGS.portraitDistortionFactor : 1);
-    const sceneDistortion =
-      (HERO_SETTINGS.lensDistortionScale * rawDistortion + HERO_SETTINGS.lensDistortionBias) *
-      HERO_SETTINGS.lensDistortionFactor;
-    const sceneBorder =
-      (HERO_SETTINGS.lensBorderBias + HERO_SETTINGS.lensBorderScale * eff('lensDistortionBorders')) *
-      HERO_SETTINGS.lensDistortionFactor;
-    u.lensDistortion.value = sceneDistortion;
-    u.lensBorder.value = sceneBorder;
-    u.saturation.value = eff('saturation');
+    // ---- 场景合成 pass：hero ↔ projects 两段 RT 的交叉淡入 ----
+    // 原件 sceneMode：最后一页的前 `portalFade`（0.2vh）内按 smoothstep 混合
+    const fadeStart = HERO_TIMELINE.heroLength - HERO_TIMELINE.portalFade;
+    const ft = Math.min(1, Math.max(0, (pageScroll - fadeStart) / HERO_TIMELINE.portalFade));
+    u.portalBlend.value = ft * ft * (3 - 2 * ft);
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');
     u.vigIntensity.value = eff('vignetteIntensity');
