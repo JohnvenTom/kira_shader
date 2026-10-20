@@ -468,11 +468,11 @@ export function createHeroCompose(
         .mul(N.step(warped.x, N.float(1)))
         .mul(N.step(N.float(0), warped.y))
         .mul(N.step(warped.y, N.float(1)));
-      const inside = active.mul(inRange);
-      const sampleUv = N.mix(uvB, warped, inside);
-      const raw = N.texture(tex, sampleUv);
-      // 原件：lens 生效且畸变 uv 在界内 → 采样畸变 uv 并过 AV；否则退回未畸变 uv、不做边遮罩
-      return applySaturation(N.mix(raw, edgeFade(raw, warped, border, u.dimensions), inside), saturation);
+      const raw = N.texture(tex, uvB);
+      // 原件 AW：畸变 uv 出界时整颗输出透明黑（圆角黑边与四角切角由此而来），界内再走 AV 边遮罩
+      const awColor = edgeFade(N.texture(tex, warped), warped, border, u.dimensions);
+      const masked = N.mix(N.vec4(0, 0, 0, 0), awColor, inRange);
+      return applySaturation(N.mix(raw, masked, active), saturation);
     };
 
     // hero：镜头畸变 0 / 边框 0 / 饱和度 1（原件 hero 页 effects）

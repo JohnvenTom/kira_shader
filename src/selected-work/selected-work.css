@@ -1,0 +1,240 @@
+/* === Selected Work 视口覆盖层 ===
+   数值来自线上 bundle（导航 height 100 / paddingX 20 / 内边距、按钮 48、提示字体 16），
+   但线上 UI 会随场景一起做桶形畸变：四角元素在屏上被明显向内推。
+   DOM 层没有畸变，因此这里用略大的边缘留白去对齐参考截图的观感。 */
+.sw-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  color: #fdfdf5;
+  font-family: 'STIX Two Text', 'Times New Roman', serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 顶部导航 ---------- */
+.sw-nav {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 clamp(20px, 3.05vw, 58px) 0 clamp(20px, 2.1vw, 40px);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.05);
+}
+
+.sw-logo {
+  display: block;
+  pointer-events: auto;
+  line-height: 0;
+  transform: translateY(6px);
+}
+
+.sw-logo img {
+  display: block;
+  width: clamp(150px, 10.66vw, 190px);
+  height: auto;
+  user-select: none;
+}
+
+.sw-nav-links {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 2px);
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 33px;
+  pointer-events: auto;
+}
+
+.sw-nav-link {
+  display: block;
+  padding: 12px 8px;
+  color: #fdfdf5;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 400;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+/* 当前页无下划线、其余常显 2px 下划线（线上 `opacity = 1 - activeSpring`） */
+.sw-nav-link:not(.is-active) {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.sw-nav-link:not(.is-active):hover {
+  color: #fff;
+}
+
+.sw-book {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #fdfdf5;
+  pointer-events: auto;
+  text-decoration: none;
+  white-space: nowrap;
+  transform: translateY(6px);
+}
+
+.sw-book img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  user-select: none;
+}
+
+.sw-book span {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 400;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 1px;
+}
+
+.sw-book:hover {
+  opacity: 0.86;
+}
+
+/* ---------- 左右翻页箭头 ---------- */
+.sw-arrow {
+  position: absolute;
+  bottom: calc(34px + 4.4vh);
+  width: 54px;
+  height: 50px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0b0b;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 0 20px rgba(80, 140, 220, 0.35);
+  transition: opacity 0.15s ease;
+}
+
+.sw-arrow:hover {
+  opacity: 0.8;
+}
+
+.sw-arrow:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 3px;
+}
+
+.sw-arrow img {
+  width: 30px;
+  height: 30px;
+  display: block;
+  user-select: none;
+  filter: drop-shadow(1px 0 0 rgba(255, 60, 60, 0.55)) drop-shadow(-1px 0 0 rgba(60, 120, 255, 0.55));
+}
+
+.sw-arrow-prev {
+  left: calc(27px + 4.4vw);
+}
+
+.sw-arrow-prev img {
+  transform: rotate(180deg);
+}
+
+.sw-arrow-next {
+  right: calc(27px + 4.4vw);
+}
+
+/* ---------- 底部滚动提示 ---------- */
+.sw-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 19px;
+  line-height: 19px;
+  cursor: pointer;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.sw-hint-hand {
+  display: block;
+  animation: sw-hint-bob 0.5s ease-in-out infinite alternate;
+}
+
+.sw-hint-hand img {
+  display: block;
+  width: 36px;
+  height: 36px;
+  transform: rotate(90deg);
+  user-select: none;
+  filter: drop-shadow(1px 0 0 rgba(255, 60, 60, 0.5)) drop-shadow(-1px 0 0 rgba(60, 120, 255, 0.5));
+}
+
+.sw-hint-text {
+  font-weight: 400;
+  text-shadow: 1px 0 0 rgba(255, 60, 60, 0.4), -1px 0 0 rgba(60, 120, 255, 0.4);
+}
+
+@keyframes sw-hint-bob {
+  from {
+    transform: translateY(5px);
+  }
+  to {
+    transform: translateY(-5px);
+  }
+}
+
+@media (max-width: 1023px) {
+  .sw-nav {
+    height: 64px;
+    padding: 0 8px;
+  }
+
+  .sw-logo img {
+    width: 160px;
+  }
+
+  .sw-nav-links {
+    display: none;
+  }
+
+  .sw-nav-link {
+    font-size: 18px;
+  }
+
+  .sw-book span {
+    font-size: 16px;
+  }
+
+  .sw-arrow {
+    bottom: calc(24px + 3vh);
+    width: 44px;
+    height: 44px;
+  }
+
+  .sw-arrow-prev {
+    left: 20px;
+  }
+
+  .sw-arrow-next {
+    right: 20px;
+  }
+}

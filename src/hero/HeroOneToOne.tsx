@@ -11,12 +11,12 @@ import {
 import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
 import { createHeroCompose, sampleScreenProjects } from './heroCompose';
-import { createHeroProjects, REEL_FRAME_WIDTH } from './heroProjects';
+import { createSelectedWorkScene } from '../selected-work/scene';
+import SelectedWorkUI from '../selected-work/SelectedWorkUI';
 import { createHeroScreenLoop } from './heroScreenLoop';
 import { createHeroSpillFactory } from './heroSpill';
 import { createHeroBootPass } from './heroBootPass';
 import { createHeroSlats } from './heroSlats';
-import { SECTIONS } from '../components/FilmScene';
 import {
   bootStore,
   clearBootAssets,
@@ -52,8 +52,6 @@ const WARMUP_FRAME_SEC = 0.04;
 /** 预热超时兜底（秒） */
 const WARMUP_TIMEOUT_SEC = 3;
 
-/** 胶片拖拽窥视折算（原件 `dragPx / (0.05·width)`，与 FilmReelScene 同值） */
-const REEL_DRAG_UNIT = 0.05;
 /** 拖动像素钳制（原件 ±0.2·width） */
 const REEL_DRAG_CLAMP_RATIO = 0.2;
 /** 释放翻帧阈值（原件 |drag| > 0.1·width） */
@@ -62,9 +60,6 @@ const REEL_DRAG_SNAP_RATIO = 0.1;
 const REEL_WHEEL_STEP_RATIO = 0.1;
 /** 横向滚轮翻帧锁（原件 700ms） */
 const REEL_WHEEL_LOCK_MS = 700;
-
-/** 穿越后覆盖在 projects 场景上的 section 文案（与胶片页 SELECTED WORK 同源） */
-const PROJECTS_SECTION = SECTIONS[1];
 
 /**
  * hero 1:1 复刻页
@@ -116,8 +111,12 @@ export default function HeroOneToOne() {
   const mouseRef = useRef({ x: 0, y: 0 });
   /** 整条时间轴（hero 页 0~1、projects 页 1~2，单位 vh）；帧循环写入，输入回调读取 */
   const pageScrollRef = useRef(0);
-  /** 胶片连续 section 指针（idle 为整数；拖动时带小数窥视，与 FilmReelScene 同语义） */
-  const reelOffsetRef = useRef(1);
+  /** Selected Work 当前选中序号（整数，可为负；场景内部取模） */
+  const selectedIndexRef = useRef(0);
+  /** 拖拽窥视位移（CSS px，右正；场景按 dragPx/(0.05w) 换算成胶片偏移） */
+  const dragPxRef = useRef(0);
+  /** 供覆盖层 UI 调用的翻页入口（在 effect 内绑定到场景输入） */
+  const selectedApiRef = useRef<{ prev: () => void; next: () => void; about: () => void } | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -275,10 +274,10 @@ export default function HeroOneToOne() {
       // 资产齐备 → boot 状态机进入 warmup（预热帧由下方主循环按真实时间上报）
       bootAsset.markDone();
 
-      // ---------- 6. projects 场景（显示器传送门 + 穿越后的第二场景） ----------
+      // ---------- 6. Selected Work 场景（显示器传送门 + 穿越后的第二场景） ----------
       // 原件里这是 /projects 页自己的场景 RT：同一张纹理既被显示器屏幕材质采样，
-      // 又在最后 0.2vh 被合成链整屏交叉淡入。这里用 TSL 版胶片卷场景 + 离屏 RT 复刻。
-      const projects = createHeroProjects(host.clientWidth, host.clientHeight);
+      // 又在最后 0.2vh 被合成链整屏交叉淡入。这里用新版 TSL 胶片卷 + 旋转棱柱标题复刻。
+      const projects = createSelectedWorkScene(host.clientWidth, host.clientHeight);
       cleanups.push(projects.dispose);
       const renderDpr = Math.min(window.devicePixelRatio || 1, 1.5);
       const projectsPxW = Math.max(1, Math.floor(host.clientWidth * renderDpr));
@@ -388,6 +387,11 @@ export default function HeroOneToOne() {
       let pointerStart = 0;
       let lastD = 0;
 
+      /** 翻一帧（选中序号只做整数步进；场景内部按 11 取模） */
+      const stepSelected = (delta: number) => {
+        selectedIndexRef.current += delta;
+      };
+
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         // 入场期间锁滚动（与项目 bootInteractionUnlocked 同一意图）：弹簧收敛前
@@ -409,9 +413,7 @@ export default function HeroOneToOne() {
           wheelAcc -= dx;
           const step = REEL_WHEEL_STEP_RATIO * window.innerWidth;
           if (Math.abs(wheelAcc) > step) {
-            const cur = Math.round(reelOffsetRef.current);
-            // 无限循环：与拖拽同理，只做整数步进、不夹取
-            reelOffsetRef.current = cur - Math.sign(wheelAcc);
+            stepSelected(Math.sign(wheelAcc));
             wheelAcc = 0;
             wheelLockUntil = now + REEL_WHEEL_LOCK_MS;
           }
@@ -428,17 +430,24 @@ export default function HeroOneToOne() {
         mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
         mouseRef.current.y = (e.clientY / window.innerHeight) * 2 - 1;
       };
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (pageScrollRef.current < HERO_TIMELINE.heroLength - 0.1) return;
+        if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.key === 'ArrowLeft') stepSelected(-1);
+        else if (e.key === 'ArrowRight') stepSelected(1);
+      };
       const onPointerDown = (e: PointerEvent) => {
         if (!bootStore.springDone) return;
         if (pageScrollRef.current < HERO_TIMELINE.heroLength - 0.1) return;
         if (e.button !== 0) return;
+        if ((e.target as HTMLElement | null)?.closest('[data-sw-ui]')) return;
         const yRatio = e.clientY / window.innerHeight;
         if (yRatio < 0.15 || yRatio > 0.85) return;
         pending = true;
         dragging = false;
         startX = e.clientX;
         startY = e.clientY;
-        pointerStart = reelOffsetRef.current;
+        pointerStart = selectedIndexRef.current;
         lastD = 0;
       };
       const onPointerMove = (e: PointerEvent) => {
@@ -457,19 +466,25 @@ export default function HeroOneToOne() {
         const lim = REEL_DRAG_CLAMP_RATIO * window.innerWidth;
         const d = Math.max(-lim, Math.min(lim, dx));
         lastD = d;
-        reelOffsetRef.current = pointerStart - d / (REEL_DRAG_UNIT * window.innerWidth * REEL_FRAME_WIDTH);
+        dragPxRef.current = d;
       };
       const onPointerUp = () => {
         if (!pending) return;
         pending = false;
         document.body.style.cursor = '';
+        dragPxRef.current = 0;
         if (!dragging) return;
         dragging = false;
         let target = Math.round(pointerStart);
         if (Math.abs(lastD) > REEL_DRAG_SNAP_RATIO * window.innerWidth) {
-          target = Math.round(pointerStart) - Math.sign(lastD);
+          target = Math.round(pointerStart) + (lastD > 0 ? -1 : 1);
         }
-        reelOffsetRef.current = target;
+        selectedIndexRef.current = target;
+      };
+      selectedApiRef.current = {
+        prev: () => stepSelected(-1),
+        next: () => stepSelected(1),
+        about: () => { window.location.hash = '#about'; },
       };
       const onResize = () => {
         const w = host.clientWidth, h = host.clientHeight;
@@ -487,6 +502,7 @@ export default function HeroOneToOne() {
       };
       window.addEventListener('wheel', onWheel, { passive: false });
       window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('keydown', onKeyDown);
       window.addEventListener('pointerdown', onPointerDown);
       window.addEventListener('pointermove', onPointerMove);
       window.addEventListener('pointerup', onPointerUp);
@@ -495,12 +511,14 @@ export default function HeroOneToOne() {
       cleanups.push(() => {
         window.removeEventListener('wheel', onWheel);
         window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('pointerdown', onPointerDown);
         window.removeEventListener('pointermove', onPointerMove);
         window.removeEventListener('pointerup', onPointerUp);
         window.removeEventListener('pointercancel', onPointerUp);
         window.removeEventListener('resize', onResize);
         document.body.style.cursor = '';
+        selectedApiRef.current = null;
         if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
       });
 
@@ -545,7 +563,8 @@ export default function HeroOneToOne() {
         projects,
         projectsRT,
         pageScroll: () => pageScrollRef.current,
-        reelOffset: () => reelOffsetRef.current,
+        selectedIndex: () => selectedIndexRef.current,
+        dragPx: () => dragPxRef.current,
       };
 
       // ---------- 12. 主循环 ----------
@@ -554,8 +573,6 @@ export default function HeroOneToOne() {
       const tmpLook = new THREE.Vector3();
       let useCompose = !!compose;
       let frameErrored = false;
-      /** 覆盖层当前展示的胶片 section（拖动/横向滚轮后同步文案与圆点） */
-      let overlaySection = 1;
 
       const frame = async () => {
         if (disposed) return;
@@ -651,45 +668,21 @@ export default function HeroOneToOne() {
             ? 1
             : Math.min(1, Math.max(0, heroScroll / 0.15));
 
-          // 穿越完成 → projects 覆盖层淡入
+          // 穿越完成 → Selected Work UI 覆盖层淡入
           if (overlayRef.current) {
             const ot = Math.min(1, Math.max(0, (scrollSmooth - 0.96) / 0.1));
             const oo = ot * ot * (3 - 2 * ot);
             overlayRef.current.style.opacity = String(oo);
-            overlayRef.current.style.transform = `translate3d(0, ${(1 - oo) * 24}px, 0)`;
             overlayRef.current.style.visibility = oo < 0.002 ? 'hidden' : 'visible';
-
-            // 胶片换段 → 覆盖层文案与圆点跟着换（原版 FilmReelScene 的 section 通知同语义）
-            const secIdx =
-              ((Math.round(reelOffsetRef.current) % SECTIONS.length) + SECTIONS.length) % SECTIONS.length;
-            if (secIdx !== overlaySection) {
-              overlaySection = secIdx;
-              const sec = SECTIONS[secIdx];
-              const root = overlayRef.current;
-              const setText = (sel: string, text: string) => {
-                const el = root.querySelector(sel);
-                if (el) el.textContent = text;
-              };
-              setText('.film-title', sec.title);
-              setText('.film-subtitle', sec.subtitle);
-              setText('.film-description', sec.description);
-              setText('.film-index-current', String(secIdx + 1).padStart(2, '0'));
-              root.querySelectorAll<HTMLElement>('.film-dot').forEach((dot, i) => {
-                const active = i === secIdx;
-                dot.classList.toggle('active', active);
-                dot.style.backgroundColor = active ? SECTIONS[i].accentColor : 'rgba(255,255,255,0.2)';
-                dot.style.color = active ? SECTIONS[i].accentColor : 'rgba(255,255,255,0.2)';
-              });
-            }
           }
 
-          // projects 场景每帧渲到离屏 RT：显示器屏幕与合成链共用这张纹理
-          const projectsT = Math.min(1, Math.max(0, scrollSmooth - HERO_TIMELINE.heroLength));
+          // Selected Work 场景每帧渲到离屏 RT：显示器屏幕与合成链共用这张纹理。
+          // 鼠标 y 在场景里是「向上为正」，而本页 mouseRef.y 是 DOM 的下正上负 → 取反。
           projects.update(dt, time, {
-            t: projectsT,
             mouseX: mouseRef.current.x,
-            mouseY: mouseRef.current.y,
-            reelOffset: reelOffsetRef.current,
+            mouseY: -mouseRef.current.y,
+            selectedIndex: selectedIndexRef.current,
+            dragPx: dragPxRef.current,
           });
           renderer.setRenderTarget(projectsRT);
           await doRender(projects.scene, projects.camera);
@@ -767,48 +760,25 @@ export default function HeroOneToOne() {
 
   return (
     <div ref={hostRef} style={{ position: 'fixed', inset: 0, background: '#0a0b0d', overflow: 'hidden' }}>
-      {/* 穿越完成后的 projects 覆盖层：内容与胶片页 SELECTED WORK 段同源，
-          透明度/位移由主循环按时间轴驱动（pageScroll ≥ 0.96 开始淡入） */}
+      {/* 穿越完成后的 Selected Work 覆盖层：导航 / 翻页箭头 / 滚动提示与独立页同源，
+          透明度由主循环按时间轴驱动（pageScroll ≥ 0.96 开始淡入） */}
       <div
         ref={overlayRef}
-        className="content-overlay film-content-overlay"
         style={{
+          position: 'fixed',
+          inset: 0,
           opacity: 0,
           visibility: 'hidden',
           pointerEvents: 'none',
           zIndex: 45,
-          willChange: 'opacity, transform',
-          transform: 'translate3d(0, 24px, 0)',
+          willChange: 'opacity',
         }}
       >
-        <div className="hero-block film-hero-block" style={{ pointerEvents: 'none' }}>
-          <h1 className="film-title" style={{ margin: 0 }}>{PROJECTS_SECTION.title}</h1>
-          <p className="film-subtitle">{PROJECTS_SECTION.subtitle}</p>
-          <div className="film-section-index">
-            <span className="film-index-current">02</span>
-            <span className="film-index-separator">/</span>
-            <span className="film-index-total">0{SECTIONS.length}</span>
-          </div>
-          <p className="film-description">{PROJECTS_SECTION.description}</p>
-        </div>
-        <div
-          className="film-progress-dots"
-          style={{
-            pointerEvents: 'none',
-            transform: `translateX(calc(-50% - ${(1 - (SECTIONS.length - 1) / 2) * 22}px))`,
-          }}
-        >
-          {SECTIONS.map((s, i) => (
-            <span
-              key={s.title}
-              className={`film-dot ${i === 1 ? 'active' : ''}`}
-              style={{
-                backgroundColor: i === 1 ? s.accentColor : 'rgba(255,255,255,0.2)',
-                color: i === 1 ? s.accentColor : 'rgba(255,255,255,0.2)',
-              }}
-            />
-          ))}
-        </div>
+        <SelectedWorkUI
+          onPrev={() => selectedApiRef.current?.prev()}
+          onNext={() => selectedApiRef.current?.next()}
+          onScrollHint={() => selectedApiRef.current?.about()}
+        />
       </div>
       {/* boot 覆盖屏由 createHeroBootPass 以画布注入（见 effect），此处只留 HUD */}
       <div
