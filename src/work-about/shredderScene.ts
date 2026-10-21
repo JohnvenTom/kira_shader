@@ -307,6 +307,7 @@ export function createShredderScene(
   let simTargets: THREE.RenderTarget[] = [];
   let simCurrent = 0;
   let simInitialized = false;
+  let simAge = 0;
   let restMat: THREE.MeshBasicNodeMaterial;
   let integrateMats: THREE.MeshBasicNodeMaterial[] = [];
   let constraintMats: THREE.MeshBasicNodeMaterial[] = [];
@@ -682,12 +683,18 @@ export function createShredderScene(
   const reset = () => {
     simInitialized = false;
     simCurrent = 0;
+    simAge = 0;
     for (const mesh of stripMeshes) mesh.visible = false;
   };
 
   const update: ShredderSceneHandle['update'] = async (rendererIn, state) => {
     const mp = Math.max(0, Math.min(4, state.shred * 4));
     const slotY = mp * vh - 0.5 * vh;
+    // 用户在终幕停留太久、纸条全部落出画面后，重新生成一批
+    simAge += state.dt;
+    if (simInitialized && simAge > 3.2 && state.shred < 0.55) {
+      reset();
+    }
     paperUniforms.contentTop.value = state.ctaTop;
     paperUniforms.slotUvY.value = slotY / vh + 0.5;
     stripUniforms.contentTop.value = state.ctaTop;
