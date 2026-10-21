@@ -86,6 +86,8 @@ export interface HeroComposeHandle {
     motionBlend: [THREE.RenderTarget, THREE.RenderTarget];
     graded: THREE.RenderTarget;
   };
+  /** 调试：uniform 直读（自动化验证用） */
+  __debug: { u: Record<string, any>; HERO_PROJECTS_EFFECTS: HeroEffects };
 }
 
 /**
@@ -491,7 +493,10 @@ export function createHeroCompose(
     const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
     const vignetted = N.mix(withLoading.rgb, N.clamp(withLoading.rgb.mul(vf), 0, 1), u.vigIntensity);
-    sceneComposeMat.colorNode = N.vec4(vignetted, N.float(1));
+    // alpha 随 portalBlend 过渡到 projects 的门禁结果（0/1 硬边）：hero 页保持 1 不变，
+    // projects 页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）
+    const alphaNow = N.mix(N.float(1), projectsScene.a, u.portalBlend);
+    sceneComposeMat.colorNode = N.vec4(vignetted, alphaNow);
   }
 
   // ---------- ② mip 金字塔 ----------
@@ -582,7 +587,10 @@ export function createHeroCompose(
     const scene = N.texture(composeRT.texture, uvB);
     const screened = clamped.add(scene).sub(clamped.mul(scene));
     const warmed = screened.add(clamped.mul(N.vec3(1, 0.8, 0).mul(0.1)));
-    m.colorNode = N.mix(warmed, N.texture(prevTex, uvB), u.motionBlur);
+    // 场景 alpha 门禁（projects 页出界=0）：bloom 不得涂进门禁黑边，否则亮渐变会被
+    // mip 模糊拖进黑边形成一条假「延续带」（参考图该区域是纯黑硬边）
+    const masked = warmed.mul(scene.a);
+    m.colorNode = N.mix(masked, N.texture(prevTex, uvB), u.motionBlur);
     return m;
   };
   const bloomBlendMatA = makeBloomBlendMat(mbRT[1].texture, 'HeroBloomBlendA'); // 读 mbRT[1] → 写 mbRT[0]
@@ -619,7 +627,8 @@ export function createHeroCompose(
     const mixed = N.mix(powed.rgb, sepia, u.sepia);
     const bright = N.clamp(mixed.mul(u.brightness), 0, 1);
     const contrasted = N.clamp(bright.sub(0.5).mul(u.contrast).add(0.5), 0, 1);
-    m.colorNode = N.vec4(contrasted, N.float(1));
+    // alpha 原样透传（上游是场景 pass 的门禁结果），不能强制 1 —— 否则 bloom 遮罩失效
+    m.colorNode = N.vec4(contrasted, powed.a);
     return m;
   };
   const gradeMatA = makeGradeMat(mbRT[0].texture, 'HeroGradeA'); // A 帧写 mbRT[0] → 读 mbRT[0]
@@ -915,10 +924,21 @@ export function createHeroCompose(
     render,
     dispose,
     debugRTs: {
-      compose: composeRT,
-      bloom: upRT[0],
-      motionBlend: mbRT,
-      graded: bRT,
+      // getter：applySizes 会重建 RT，快照会拿到已释放的旧目标 —— 必须每次取当前引用
+      get compose() {
+        return composeRT;
+      },
+      get bloom() {
+        return upRT[0];
+      },
+      get motionBlend() {
+        return mbRT;
+      },
+      get graded() {
+        return bRT;
+      },
     },
+    /** 调试：运行时 uniform 直读（自动化验证用，与 debugRTs 同款无副作用） */
+    __debug: { u, HERO_PROJECTS_EFFECTS },
   };
 }

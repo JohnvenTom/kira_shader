@@ -104,7 +104,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#101225');
 
-  const camera = new THREE.PerspectiveCamera(REEL_FOV, width / Math.max(1, height), 0.1, 305);
+  const camera = new THREE.PerspectiveCamera(REEL_FOV, width / Math.max(1, height), 0.1, 320);
   camera.position.set(0, 0, 5);
   camera.lookAt(0, 0.03, 0);
 
@@ -177,7 +177,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   const reelMat = new THREE.MeshBasicNodeMaterial();
   reelMat.toneMapped = false;
   reelMat.transparent = true;
-  reelMat.depthWrite = false;
+  // 原件保持默认 depthWrite=true：近处画格必须遮挡后方上层卷曲，否则会透出后续画格
   reelMat.side = THREE.DoubleSide;
 
   const vWorld = T.vec3(0).varying('vWorldPos');
@@ -284,11 +284,11 @@ export function createSelectedWorkScene(width: number, height: number): Selected
 
   // ---------- 渐变背景 ----------
   const bgCanvas = document.createElement('canvas');
-  bgCanvas.width = 4;
-  bgCanvas.height = 256;
+  bgCanvas.width = 16;
+  bgCanvas.height = 1024;
   {
     const ctx = bgCanvas.getContext('2d')!;
-    const grad = ctx.createLinearGradient(0, 0, bgCanvas.width * 0.1, bgCanvas.height);
+    const grad = ctx.createLinearGradient(0, 0, 0, bgCanvas.height);
     grad.addColorStop(0.2, 'rgb(33,25,35)');
     grad.addColorStop(0.6, 'rgb(51,54,115)');
     grad.addColorStop(1.0, 'rgb(69,148,197)');
@@ -299,9 +299,19 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   gradientTexture.colorSpace = THREE.SRGBColorSpace;
   const bgMat = new THREE.MeshBasicNodeMaterial();
   bgMat.toneMapped = false;
-  bgMat.colorNode = T.texture(gradientTexture, T.uv()).rgb;
+  // 原件 `<np rotation={0.1}>`：纹理矩阵绕中心旋转 0.1rad，这里直接在 UV 上复现
+  const bgRot = 0.1;
+  const bgCos = Math.cos(bgRot);
+  const bgSin = Math.sin(bgRot);
+  const bgUv = T.uv().sub(0.5).toVar();
+  const bgRotUv = T.vec2(
+    bgUv.x.mul(bgCos).add(bgUv.y.mul(bgSin)),
+    bgUv.x.mul(-bgSin).add(bgUv.y.mul(bgCos))
+  ).add(0.5);
+  bgMat.colorNode = T.texture(gradientTexture, bgRotUv).rgb;
   const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bgMat);
-  bgMesh.position.set(0, 60 * 0.28, -200);
+  // 原件平面挂在 z=-300（`position=[0,0,-300]`）；尺寸/纵向偏移按参考截图标定（见 measure 注释）
+  bgMesh.position.set(0, 0, -300);
   scene.add(bgMesh);
 
   // ---------- 棱柱标题 + 胶片（同一个 0.4 缩放组） ----------
@@ -317,14 +327,20 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   let aspect = width / Math.max(1, height);
   let bgW = 1;
   let bgH = 1;
+  let bgY = 0;
   let eg = -1.6;
   const fovConst = 2 * Math.tan((REEL_FOV * Math.PI) / 180 / 2);
 
   let reelMeshScale = 1;
   const measure = () => {
-    const ec = fovConst * 195;
-    bgW = 1.2 * ec * aspect;
-    bgH = 1.4 * ec;
+    // 背景平面（z=-300）尺寸/位置按参考截图三点标定（等值线线性拟合，R²>0.999）：
+    // 高 ≈ 1.362 倍视锥高、中心上移 0.106 倍视锥高 —— 上下边都落在 RT 外：
+    // 底端边界由合成门禁的 warp 曲线收出（屏幕 y≈761/747），顶端露出 t≈0.21 的暗蓝。
+    // 若平面小于视锥，屏幕底部永远采不到渐变末端的纯蓝，整条背景会偏暗。
+    const bgFrustumH = fovConst * 305;
+    bgW = 0.986 * bgFrustumH * aspect;
+    bgH = 1.362 * bgFrustumH;
+    bgY = 0.106 * bgFrustumH;
     eg = aspect <= 1 ? -1.6 : -1.6 - 0.3 * aspect + 0.2;
     reelMeshScale = clamp(remap(width, 500, 2560, 0.7, 0.9), 0.7, 0.9) + 0.1 * aspect;
   };
@@ -337,6 +353,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     camera.updateProjectionMatrix();
     measure();
     bgMesh.scale.set(bgW, bgH, 1);
+    bgMesh.position.set(0, bgY, -300);
     reelMesh.position.set(0, eg, 0);
     reelMesh.scale.set(reelMeshScale, reelMeshScale, reelMeshScale);
     prism.setSize(width, height);

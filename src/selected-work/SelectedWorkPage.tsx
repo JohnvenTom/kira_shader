@@ -117,7 +117,8 @@ export default function SelectedWorkPage() {
           wheelAcc -= dx;
           const threshold = WHEEL_STEP_RATIO * host.clientWidth;
           if (Math.abs(wheelAcc) > threshold) {
-            step(Math.sign(wheelAcc));
+            // 原件 `x.set(x.get() + -Math.sign(acc))`：向右滚（deltaX>0）前进一帧
+            step(-Math.sign(wheelAcc));
             wheelAcc = 0;
             wheelLockUntil = now + WHEEL_LOCK_MS;
           }
@@ -223,6 +224,7 @@ export default function SelectedWorkPage() {
       (window as unknown as { __selectedWorkProbe?: unknown }).__selectedWorkProbe = {
         renderer,
         scene,
+        compose,
         selectedIndex: () => selectedRef.current,
         dragPx: () => dragPx,
       };

@@ -413,7 +413,8 @@ export default function HeroOneToOne() {
           wheelAcc -= dx;
           const step = REEL_WHEEL_STEP_RATIO * window.innerWidth;
           if (Math.abs(wheelAcc) > step) {
-            stepSelected(Math.sign(wheelAcc));
+            // 原件 `x + -Math.sign(acc)`：向右滚前进一帧
+            stepSelected(-Math.sign(wheelAcc));
             wheelAcc = 0;
             wheelLockUntil = now + REEL_WHEEL_LOCK_MS;
           }
