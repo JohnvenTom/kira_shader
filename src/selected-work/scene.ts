@@ -91,11 +91,12 @@ export interface SelectedWorkSceneHandle {
    *  - mouseX/mouseY  鼠标 NDC（-1~1，y 向上为正）
    *  - selectedIndex  当前选中项目（整数；可越界取模）
    *  - dragPx         拖拽位移（CSS px，右正；松手后由页面清零并决定是否换页）
+   *  - scrollPhase    纵向滚离停驻点的相位（0=胶片停驻，1=完全推入场景；缺省 0）
    */
   update: (
     dt: number,
     time: number,
-    state: { mouseX: number; mouseY: number; selectedIndex: number; dragPx?: number }
+    state: { mouseX: number; mouseY: number; selectedIndex: number; dragPx?: number; scrollPhase?: number }
   ) => void;
   dispose: () => void;
 }
@@ -404,8 +405,14 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     flex += (flexTarget - flex) * (1 - Math.exp(-10 * dts));
     u.flexAnimation.value = flex;
 
-    camera.position.set(0.2 * camMouse.x, 0.2 * camMouse.y, 5);
-    camera.lookAt(0, 0.03, 0);
+    // 纵向滚离停驻点：相机向胶片场景推入（原站 1vh→2vh 的镜头运动），标题随透视自然上移出框
+    const phase = clamp(state.scrollPhase ?? 0, 0, 1);
+    camera.position.set(
+      0.2 * camMouse.x,
+      0.2 * camMouse.y - phase * 0.32,
+      5 - phase * 2.35
+    );
+    camera.lookAt(0, 0.03 + phase * 0.42, 0);
 
     prism.update(dts, time);
 

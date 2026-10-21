@@ -60,6 +60,10 @@ const REEL_DRAG_SNAP_RATIO = 0.1;
 const REEL_WHEEL_STEP_RATIO = 0.1;
 /** 横向滚轮翻帧锁（原件 700ms） */
 const REEL_WHEEL_LOCK_MS = 700;
+/** 镜头吸附：时间轴越过该位置后输入一停 → 滑向胶片停驻点（原站 Lenis snap 的落点结构） */
+const FILM_SNAP_MIN = 1.15;
+/** 输入停止多久后执行吸附 */
+const FILM_SNAP_IDLE_MS = 200;
 
 /**
  * hero 1:1 复刻页
@@ -380,6 +384,7 @@ export default function HeroOneToOne() {
       let wheelAcc = 0;
       let wheelLockUntil = 0;
       let wheelResetTimer: number | null = null;
+      let filmSnapTimer: number | null = null;
       let dragging = false;
       let pending = false;
       let startX = 0;
@@ -426,6 +431,15 @@ export default function HeroOneToOne() {
           HERO_TIMELINE.total,
           Math.max(0, scrollTargetRef.current + dy / Math.max(1, host.clientHeight))
         );
+        // 镜头吸附（原站 Lenis snap 的等价物）：滚离胶片停驻点后输入一停，滑回停驻位
+        if (filmSnapTimer !== null) window.clearTimeout(filmSnapTimer);
+        filmSnapTimer = window.setTimeout(() => {
+          filmSnapTimer = null;
+          const t = scrollTargetRef.current;
+          if (t >= FILM_SNAP_MIN && t < HERO_TIMELINE.total - 0.01) {
+            scrollTargetRef.current = HERO_TIMELINE.total;
+          }
+        }, FILM_SNAP_IDLE_MS);
       };
       const onMouseMove = (e: MouseEvent) => {
         mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -521,6 +535,7 @@ export default function HeroOneToOne() {
         document.body.style.cursor = '';
         selectedApiRef.current = null;
         if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
+        if (filmSnapTimer !== null) window.clearTimeout(filmSnapTimer);
       });
 
       // ---------- 11. 相机端位（原件公式：屏幕世界【缩放】反解，因屏幕几何是单位平面） ----------

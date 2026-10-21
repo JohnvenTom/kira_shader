@@ -106,6 +106,7 @@
 }
 
 /* ---------- 左右翻页箭头 ---------- */
+/* 滚离停驻点时随 --sw-ui-fade 淡出（页面主循环逐帧写入，不再用过渡缓冲） */
 .sw-arrow {
   position: absolute;
   bottom: calc(34px + 4.4vh);
@@ -120,17 +121,22 @@
   border-radius: 6px;
   cursor: pointer;
   pointer-events: auto;
+  opacity: var(--sw-ui-fade, 1);
   box-shadow: 0 0 20px rgba(80, 140, 220, 0.35);
-  transition: opacity 0.15s ease;
 }
 
 .sw-arrow:hover {
-  opacity: 0.8;
+  opacity: calc(var(--sw-ui-fade, 1) * 0.8);
 }
 
 .sw-arrow:focus-visible {
   outline: 2px solid rgba(255, 255, 255, 0.8);
   outline-offset: 3px;
+}
+
+[data-ui-hidden] .sw-arrow,
+[data-ui-hidden] .sw-hint {
+  pointer-events: none;
 }
 
 .sw-arrow img {
@@ -172,6 +178,7 @@
   cursor: pointer;
   pointer-events: auto;
   white-space: nowrap;
+  opacity: var(--sw-ui-fade, 1);
 }
 
 .sw-hint-hand {
