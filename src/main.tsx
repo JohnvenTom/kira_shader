@@ -8,6 +8,7 @@ import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import BadgePage from './components/badge/BadgePage';
 import HeroOneToOne from './hero/HeroOneToOne';
 import SelectedWorkPage from './selected-work/SelectedWorkPage';
+import AboutPage from './about/AboutPage';
 import './styles.css';
 
 /**
@@ -68,6 +69,13 @@ function Root() {
   const isHero = hash.split('?')[0] === '#hero';
   // #selected-work：Selected Work 视口独立页（也作为 hero 穿越终点的落地页）
   const isSelectedWork = hash.split('?')[0] === '#selected-work';
+  // #about-us：About Us 页（与线上一致）；#about 作为别名重定向
+  const isAboutUs = hash.split('?')[0] === '#about-us';
+  useEffect(() => {
+    if (hash.split('?')[0] === '#about') {
+      window.location.replace(`${window.location.pathname}${window.location.search}#about-us`);
+    }
+  }, [hash]);
   const isFilm =
     hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
   // 页面本体：互斥
@@ -78,6 +86,12 @@ function Root() {
     : isSelectedWork
       // #selected-work：同样手动持有 WebGPURenderer，禁止 StrictMode 双挂载
       ? <SelectedWorkPage key="selected-work" />
+      : isAboutUs
+        // #about-us：办公室 3D 场景页，同样手动持有 WebGPURenderer
+        ? <AboutPage key="about-us" />
+        : hash.split('?')[0] === '#about'
+          // #about → #about-us 的重定向瞬间：先渲染空页，避免旧胶片页闪一帧
+          ? null
     : isTape
     // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
     // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
