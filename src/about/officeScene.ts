@@ -54,7 +54,7 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
   spot.target.position.set(0, -0.6, 0);
   scene.add(spot, spot.target);
 
-  /** 灯架（原件 `pF`）：发光盒 + 点光，白/绿/蓝三色 */
+  /** 灯架（原件 `pF`）：矩形面光（发光盒）+ 点光，白/绿/蓝三色 */
   const RIG: Array<{
     pos: [number, number, number];
     scale: [number, number, number];
@@ -71,21 +71,14 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
     { pos: [0, 20, 0], scale: [0.1, 0.1, 0.1], color: 0xfffff0, intensity: 0.4, point: true },
     { pos: [0, 15, 0], scale: [10, 1, 10], color: 0xfffff0, intensity: 6, point: true },
   ];
-  const rigMeshes: THREE.Mesh[] = [];
-  const rigGeo = new THREE.BoxGeometry(1, 1, 1);
+  const rigLights: THREE.PointLight[] = [];
   for (const def of RIG) {
-    // 原件用自定义发光盒当面积光；这里用 MeshBasicMaterial 盒 + 点光近似
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(def.color).multiplyScalar(1) });
-    const box = new THREE.Mesh(rigGeo, mat);
-    box.position.set(...def.pos);
-    box.scale.set(...def.scale);
-    scene.add(box);
-    rigMeshes.push(box);
-    if (def.point) {
-      const pl = new THREE.PointLight(def.color, 100, 28, 2);
-      pl.position.set(...def.pos);
-      scene.add(pl);
-    }
+    // 原件 n5 发光盒在本构建的 WebGPU 下无 RectAreaLight（LTC 缺失），
+    // 用高衰减点光近似主光，再用一盏宽点光补亮桌面
+    const pl = new THREE.PointLight(def.color, def.point ? 100 : def.intensity * 2.2, 28, 2);
+    pl.position.set(...def.pos);
+    scene.add(pl);
+    rigLights.push(pl);
   }
 
   // ---------- desks 实例（/models/deskbox.glb） ----------
@@ -94,6 +87,46 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
   group.position.set(9, 0, -1);
   group.rotation.set(0, Math.PI + 0.5, 0);
   scene.add(group);
+
+  // ---------- About Us 标题（原件 uikit 文本的 Canvas 复刻） ----------
+  // 原件：白色 [−0.01, 1.502, 0.001] / 黑色 [0, 1.5, 0]，绕 X −0.4rad，fontSize 100（light）
+  const makeTitleTexture = (color: string) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 320;
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '300 210px "STIX Two Text", "Times New Roman", serif';
+    ctx.fillText('About Us', canvas.width / 2, canvas.height / 2 + 6);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  };
+  const titleGeo = new THREE.PlaneGeometry(5.0, 1.56);
+  const makeTitle = (color: string, pos: [number, number, number]) => {
+    const tex = makeTitleTexture(color);
+    const mat = new THREE.MeshBasicNodeMaterial();
+    mat.map = tex as any;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    mat.toneMapped = false;
+    mat.side = THREE.DoubleSide;
+    const mesh = new THREE.Mesh(titleGeo, mat);
+    mesh.position.set(...pos);
+    mesh.rotation.set(-0.4, 0, 0);
+    mesh.renderOrder = 10;
+    scene.add(mesh);
+    return { mesh, mat, tex };
+  };
+  const titleWhite = makeTitle('#ffffff', [-0.01, 1.502, 0.001]);
+  const titleBlack = makeTitle('#111111', [0, 1.5, 0]);
+  titleBlack.mesh.visible = false;
 
   let disposed = false;
   const instanced: THREE.InstancedMesh[] = [];
@@ -156,17 +189,22 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
 
   const dispose = () => {
     disposed = true;
+    titleGeo.dispose();
+    for (const t of [titleWhite, titleBlack]) {
+      t.mat.dispose();
+      t.tex.dispose();
+      scene.remove(t.mesh);
+    }
     for (const im of instanced) {
       im.geometry.dispose();
       (im.material as THREE.Material).dispose();
       group.remove(im);
     }
     instanced.length = 0;
-    for (const m of rigMeshes) {
-      m.geometry.dispose();
-      (m.material as THREE.Material).dispose();
+    for (const m of rigLights) {
+      scene.remove(m);
+      m.dispose();
     }
-    rigGeo.dispose();
   };
 
   return { scene, camera, setSize, update, dispose };
