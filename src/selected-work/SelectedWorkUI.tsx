@@ -14,18 +14,19 @@ export interface SelectedWorkUIProps {
   onPrev?: () => void;
   onNext?: () => void;
   onScrollHint?: () => void;
+  onAbout?: () => void;
 }
 
 const NAV_ITEMS = [
   { label: 'Home', href: '#hero', key: 'home' },
   { label: 'Selected Work', href: '#selected-work', key: 'work' },
-  { label: 'About Us', href: '#about', key: 'about' },
+  { label: 'About Us', href: '#about-us', key: 'about' },
   { label: 'Contact', href: '#contact', key: 'contact' },
 ] as const;
 
 const BOOK_A_CALL = 'https://cal.com/simon-hedlund-kglzne';
 
-export default function SelectedWorkUI({ style, onPrev, onNext, onScrollHint }: SelectedWorkUIProps) {
+export default function SelectedWorkUI({ style, onPrev, onNext, onScrollHint, onAbout }: SelectedWorkUIProps) {
   return (
     <div className="sw-ui" style={style} data-sw-ui>
       <header className="sw-nav">
@@ -42,6 +43,14 @@ export default function SelectedWorkUI({ style, onPrev, onNext, onScrollHint }: 
                 href={item.href}
                 className={`sw-nav-link${active ? ' is-active' : ''}`}
                 aria-current={active ? 'page' : undefined}
+                onClick={
+                  item.key === 'about'
+                    ? (e) => {
+                        e.preventDefault();
+                        onAbout?.();
+                      }
+                    : undefined
+                }
               >
                 {item.label}
               </a>

@@ -7,8 +7,7 @@ import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import BadgePage from './components/badge/BadgePage';
 import HeroOneToOne from './hero/HeroOneToOne';
-import SelectedWorkPage from './selected-work/SelectedWorkPage';
-import AboutPage from './about/AboutPage';
+import WorkAboutExperience from './work-about/WorkAboutExperience';
 import './styles.css';
 
 /**
@@ -47,7 +46,8 @@ function useHashRoute() {
  * 功能：根据 URL hash 决定渲染哪个 demo
  *  - 无 hash / 其他未知 hash → App（ComputerScene 版落地页）
  *  - #film           → KiraFilmDemo（多 section 滚动版，起始帧由 sessionStorage 恢复决定）
- *  - #home/#work/#about/#contact → KiraFilmDemo（起始帧由锚点映射决定，不再退出胶片页）
+ *  - #home/#work/#about → KiraFilmDemo（起始帧由锚点映射决定，不再退出胶片页）
+ *  - #contact        → WorkAboutExperience 的 Contact 段（电话 3D + 联系页脚）
  *  - #trace          → TraceDetailPage（trace 作品展示页）
  *  - #tape           → TapePage（磁带机整页，hash 后可带查询串，如 #tape?p=1）
  *
@@ -71,6 +71,8 @@ function Root() {
   const isSelectedWork = hash.split('?')[0] === '#selected-work';
   // #about-us：About Us 页（与线上一致）；#about 作为别名重定向
   const isAboutUs = hash.split('?')[0] === '#about-us';
+  // #contact：碎纸终幕之后的电话 3D / 联系页脚段
+  const isContact = hash.split('?')[0] === '#contact';
   useEffect(() => {
     if (hash.split('?')[0] === '#about') {
       window.location.replace(`${window.location.pathname}${window.location.search}#about-us`);
@@ -83,15 +85,18 @@ function Root() {
     // #hero：不套 StrictMode —— 它会手动创建 WebGPURenderer 并在 effect 里 await init()，
     // 双挂载会并发建两个设备；资源释放由组件自身的 cleanup 负责
     ? <HeroOneToOne key="hero" />
-    : isSelectedWork
-      // #selected-work：同样手动持有 WebGPURenderer，禁止 StrictMode 双挂载
-      ? <SelectedWorkPage key="selected-work" />
-      : isAboutUs
-        // #about-us：办公室 3D 场景页，同样手动持有 WebGPURenderer
-        ? <AboutPage key="about-us" />
-        : hash.split('?')[0] === '#about'
-          // #about → #about-us 的重定向瞬间：先渲染空页，避免旧胶片页闪一帧
-          ? null
+    : isSelectedWork || isAboutUs || isContact
+      // Selected Work / About Us / Contact 共用一个稳定的 experience：渲染器、合成链和
+      // 3D 场景跨路由常驻，孔洞转场与碎纸后的 Contact 衔接期间不会重新初始化 WebGPU
+      ? (
+          <WorkAboutExperience
+            key="work-about"
+            mode={isSelectedWork ? 'work' : isContact ? 'contact' : 'about'}
+          />
+        )
+      : hash.split('?')[0] === '#about'
+        // #about → #about-us 的重定向瞬间：先渲染空页，避免旧胶片页闪一帧
+        ? null
     : isTape
     // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
     // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
@@ -120,7 +125,7 @@ function Root() {
           tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断。
           BGM 开屏引导已融合进首页 boot 屏（BIOS 文字行，见 App.tsx），
           其他页面直链的首次交互由 tapeAudio 全局钩子兜底 */}
-      {!isTape && !isBadge && !isHero && !isSelectedWork && <MusicBoxDock />}
+      {!isTape && !isBadge && !isHero && !isSelectedWork && !isAboutUs && !isContact && <MusicBoxDock />}
     </>
   );
 }

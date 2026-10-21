@@ -73,6 +73,14 @@ export interface HeroComposeHandle {
   setSize: (cssWidth: number, cssHeight: number) => void;
   /** 执行整条合成链并把最终结果上屏 */
   render: (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => Promise<void>;
+  /** 执行同一条合成链，但把结果写进离屏 RT（用于转场冻结帧） */
+  renderToTarget: (
+    renderer: any,
+    scene: THREE.Object3D,
+    camera: THREE.Camera,
+    frame: HeroComposeFrame,
+    target: THREE.RenderTarget
+  ) => Promise<void>;
   /** 释放全部 RT / 材质 / 几何 */
   dispose: () => void;
   /**
@@ -813,7 +821,13 @@ export function createHeroCompose(
    *  - 全屏 pass 期间 `autoClear = false`（每趟 quad 都写满整屏，无需清屏，可省带宽）
    *  - boot 画布纹理每帧要标 `needsUpdate`，否则 WebGPU 侧读到的是旧帧
    */
-  const render = async (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => {
+  const renderInner = async (
+    renderer: any,
+    scene: THREE.Object3D,
+    camera: THREE.Camera,
+    frame: HeroComposeFrame,
+    target: THREE.RenderTarget | null
+  ) => {
     if (pxW !== lastPxW || pxH !== lastPxH) applySizes();
     writeUniforms(frame);
     if (bootCanvas) bootTexture.needsUpdate = true;
@@ -859,13 +873,24 @@ export function createHeroCompose(
     renderer.setRenderTarget(bRT);
     await renderer.renderAsync(quadScene, quadCamera);
 
-    // ⑦ 色散 + 噪点 → 屏幕
+    // ⑦ 色散 + 噪点 → 屏幕（或离屏目标）
     quad.material = finalMat;
-    renderer.setRenderTarget(null);
+    renderer.setRenderTarget(target);
     await renderer.renderAsync(quadScene, quadCamera);
 
     parity = writeIdx === 0 ? 1 : 0;
   };
+
+  const render = (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) =>
+    renderInner(renderer, scene, camera, frame, null);
+
+  const renderToTarget = (
+    renderer: any,
+    scene: THREE.Object3D,
+    camera: THREE.Camera,
+    frame: HeroComposeFrame,
+    target: THREE.RenderTarget
+  ) => renderInner(renderer, scene, camera, frame, target);
 
   /**
    * 适配画布尺寸
@@ -922,6 +947,7 @@ export function createHeroCompose(
     sceneRT,
     setSize,
     render,
+    renderToTarget,
     dispose,
     debugRTs: {
       // getter：applySizes 会重建 RT，快照会拿到已释放的旧目标 —— 必须每次取当前引用
