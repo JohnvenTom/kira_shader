@@ -137,8 +137,8 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
     const pi = T.float(Math.PI);
     const radius = T.float(0.15);
     const dir = T.vec2(0.4472135955, 0.894427191);
-    // 原件可见扫掠段：m = 0.15（贴底、全遮）→ 1.268（全铺开），斜率 1.118/屏
-    const mz = T.float(0.15).add(uEnter.mul(1.118));
+    // 从屏幕下方开始：m = -0.17 时卷边顶沿仍在屏幕外；1.268 时完全铺开
+    const mz = T.float(-0.17).add(uEnter.mul(1.438));
     // animateUp = 1：折痕方向量 I 就是 three 的 uv（底为 0）
     const I = uv;
     const y = T.dot(I, dir);
