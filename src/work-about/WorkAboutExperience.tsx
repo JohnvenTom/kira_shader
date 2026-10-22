@@ -21,6 +21,12 @@ const T = TSL as any;
 const DAMPING = 8.2;
 /** 碎纸终幕滚动长度（屏）。原站 AS=4： shredder 每滚一屏上升一屏 */
 const ENDING_SCREENS = 4;
+/** 进入 About 后先保留的 office 屏数（原站 office 页） */
+const ENTRY_OFFICE_SCREENS = 1;
+/** 原站折痕可见扫掠约 1 屏（enterProgress 前 0.85 屏不可见、后 0.75 屏已铺满，均略去） */
+const FOLD_SCREENS = 1;
+/** 纸页铺开结束、内容开始上滚的滚动位置（屏） */
+const FOLD_END = ENTRY_OFFICE_SCREENS + FOLD_SCREENS;
 /** golden-tie-reveal 页长度（原站 pagesConfig length: 1.7） */
 const REVEAL_SCREENS = 1.7;
 /** golden-tie 页长度（原站 pagesConfig length: 6） */
@@ -113,17 +119,77 @@ function makeIrisMaterial(workTex: THREE.Texture, officeTex: THREE.Texture, aspe
   return { mat, uRadius, uTime, uAspect };
 }
 
-function makeRevealMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
+/**
+ * 原件 at 组件的纸页进入折痕（paperplane.js 的 a/s）：
+ * 纸面 mesh 屏幕固定，折痕沿 normalize(.5, 1) 从底部斜向上扫过；
+ * 卷边用 cos 明暗 + 背面暖色表现，折痕外侧透明、透出下层 office。
+ */
+function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
   const mat = new THREE.MeshBasicNodeMaterial();
-  const uv = T.uv();
-  const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
-  const office = T.texture(officeTex, ruv);
-  const paper = T.texture(paperTex, ruv);
-  mat.colorNode = T.vec4(T.mix(office.rgb, paper.rgb, paper.a), 1.0);
+  const uEnter = T.uniform(0);
   mat.toneMapped = false;
   mat.depthTest = false;
   mat.depthWrite = false;
-  return mat;
+
+  const build = T.Fn(() => {
+    const uv = T.uv();
+    const o = T.float(0.4);
+    const pi = T.float(Math.PI);
+    const radius = T.float(0.15);
+    const dir = T.vec2(0.4472135955, 0.894427191);
+    // 原件可见扫掠段：m = 0.15（贴底、全遮）→ 1.268（全铺开），斜率 1.118/屏
+    const mz = T.float(0.15).add(uEnter.mul(1.118));
+    // animateUp = 1：折痕方向量 I 就是 three 的 uv（底为 0）
+    const I = uv;
+    const y = T.dot(I, dir);
+    const C = T.abs(T.vec2(1, 1).sub(I).div(dir));
+    const B = y.add(T.min(C.x, C.y));
+
+    const v = T.vec2(0, 0).toVar();
+    const s = T.vec2(y, 1).toVar();
+    T.If(y.lessThan(mz.sub(radius)), () => {
+      v.assign(s);
+    })
+      .ElseIf(y.greaterThan(mz.add(radius)), () => {
+        v.assign(T.vec2(-1, -1));
+      })
+      .Else(() => {
+        const theta = T.asin(y.sub(mz).div(radius));
+        const l = theta.negate().add(pi);
+        s.x.assign(mz.add(l.mul(radius)));
+        s.y.assign(T.cos(l));
+        T.If(s.x.lessThan(B), () => {
+          v.assign(s);
+        })
+          .ElseIf(y.lessThan(mz), () => {
+            v.assign(T.vec2(y, 1));
+          })
+          .Else(() => {
+            s.y.assign(T.cos(theta));
+            s.x.assign(mz.add(theta.mul(radius)));
+            v.assign(T.mix(T.vec2(-1, -1), s, s.x.lessThan(B).toFloat()));
+          });
+      });
+
+    const shadow = T.float(1)
+      .sub(T.smoothstep(0, o.mul(2), mz.sub(y)))
+      .mul(T.smoothstep(o.negate(), o, B.sub(v.x.add(pi.mul(1.5).mul(o)).add(o))));
+    const offset = dir.mul(v.x.sub(y));
+    const folded = uv.add(offset);
+    const paper = T.texture(paperTex, T.vec2(folded.x, T.float(1).sub(folded.y)));
+    const lit = paper.rgb.mul(v.y).mul(T.float(1).sub(shadow));
+    const back = paper.rgb
+      .mul(0.25)
+      .add(T.vec3(0.7, 0.67, 0.5))
+      .mul(v.y.negate());
+    const shaded = T.mix(back, lit, v.y.greaterThan(0).toFloat());
+    const mask = T.float(1).sub(v.x.lessThan(0).toFloat()).mul(paper.a);
+    const below = T.texture(officeTex, T.vec2(uv.x, T.float(1).sub(uv.y)));
+    return T.vec4(T.mix(below.rgb, shaded, mask), 1);
+  });
+
+  mat.colorNode = build();
+  return { mat, uEnter };
 }
 
 export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
@@ -236,7 +302,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let workRT: THREE.RenderTarget | null = null;
     let composite: ReturnType<typeof createFullscreenQuad> | null = null;
     let irisMat: ReturnType<typeof makeIrisMaterial> | null = null;
-    let revealMat: THREE.MeshBasicNodeMaterial | null = null;
+    let entryMat: ReturnType<typeof makeFoldMaterial> | null = null;
 
     const setUiVisibleState = (value: boolean) => {
       if (st.uiVisible === value) return;
@@ -306,7 +372,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const getContactStart = () => {
       if (!paper) return null;
       const scale = window.innerWidth / paper.width;
-      const shredStart = 2 + (paper.ctaY * scale) / Math.max(1, window.innerHeight);
+      const shredStart = FOLD_END + (paper.ctaY * scale) / Math.max(1, window.innerHeight);
       return shredStart + ENDING_SCREENS + REVEAL_SCREENS + TIE_SCREENS;
     };
 
@@ -345,13 +411,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       revealRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       shredderRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       nextRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      if (composite && irisMat && revealMat) {
+      if (composite && irisMat && entryMat) {
         irisMat.mat.dispose();
-        revealMat.dispose();
+        entryMat.mat.dispose();
       }
       if (!composite) composite = createFullscreenQuad();
       irisMat = makeIrisMaterial(workRT.texture, officeRT.texture, host.clientWidth / Math.max(1, host.clientHeight));
-      revealMat = makeRevealMaterial(officeRT.texture, paperRT.texture);
+      entryMat = makeFoldMaterial(officeRT.texture, paperRT.texture);
       belowMat?.dispose();
       belowMat = new THREE.MeshBasicNodeMaterial();
       {
@@ -835,7 +901,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             const w = window.innerWidth;
             const aim = st.about;
             const scale = paper ? w / paper.width : 1;
-            const shredStart = paper ? 2 + (paper.ctaY * scale) / h : 1e9;
+            const shredStart = paper ? FOLD_END + (paper.ctaY * scale) / h : 1e9;
             const revealStart = paper ? shredStart + ENDING_SCREENS : 1e9;
             const tieStart = paper ? revealStart + REVEAL_SCREENS : 1e9;
             const tieEnd = tieStart + TIE_SCREENS;
@@ -869,7 +935,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             const contactEnterScreens = inContact ? s - contactStart : 0;
             const shred = stage === 'paper' ? 0 : clamp((s - shredStart) / ENDING_SCREENS, 0, 1);
             st.about.shred = shred;
-            const paperTop = h - (s - 1) * h;
+            // 原站：铺开期间纸面固定在页首，折痕扫过；铺开后才开始卷动内容
+            const foldProgress = clamp((s - ENTRY_OFFICE_SCREENS) / FOLD_SCREENS, 0, 1);
+            const paperTop = s < FOLD_END ? 0 : -(s - FOLD_END) * h;
             const officeProgress = clamp(s, 0, 1);
 
             // golden-tie-reveal 时间轴（原站：文案 l = (scroll-start+4)/5.6；
@@ -887,7 +955,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
 
             if (stage === 'paper') {
-              setThemeState(paperTop <= 0 ? 'dark' : 'light');
+              setThemeState(s >= FOLD_END ? 'dark' : 'light');
             } else {
               setThemeState('light');
             }
@@ -1088,7 +1156,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 const y = paperTop + hotspot.y * scale;
                 const hw = hotspot.w * scale;
                 const hh = hotspot.h * scale;
-                const visible = y + hh > 0 && y < h && paperTop <= 0;
+                const visible = s >= FOLD_END && y + hh > 0 && y < h && paperTop <= 0;
                 const el = hotspotRef.current;
                 el.style.display = visible ? 'block' : 'none';
                 el.style.left = `${x}px`;
@@ -1096,13 +1164,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 el.style.width = `${hw}px`;
                 el.style.height = `${hh}px`;
               }
-              if (paperTop > 0.5 && compose && officeRT && paperRT && revealMat && composite) {
+              // 原站 overlay 转场：纸页铺开期间固定在全屏，折痕从底部扫过并透出 office
+              if (foldProgress < 1 && compose && officeRT && paperRT && entryMat && composite) {
                 renderer.setClearColor(CLEAR_TRANSPARENT, 0);
                 renderer.setRenderTarget(paperRT);
                 await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
                 renderer.setClearColor(CLEAR_PAPER, 1);
                 await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt), officeRT);
-                composite.mesh.material = revealMat;
+                entryMat.uEnter.value = foldProgress;
+                composite.mesh.material = entryMat.mat;
                 renderer.setRenderTarget(null);
                 await (renderer as any).renderAsync(composite.scene, composite.camera);
               } else {
@@ -1179,7 +1249,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       nextRT?.dispose();
       belowMat?.dispose();
       irisMat?.mat.dispose();
-      revealMat?.dispose();
+      entryMat?.mat.dispose();
       composite?.geometry.dispose();
       const canvas = host.querySelector('canvas');
       if (canvas) canvas.remove();
