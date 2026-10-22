@@ -350,11 +350,12 @@ export function createShredderScene(
     return T.mix(T.mix(a, b, w.x), T.mix(c, d, w.x), w.y);
   }
 
+  // 原件 Ay：3 个八度从 2p 开始（2p/4p/8p，权重 .5/.25/.125）
   function fbm2(p: any) {
-    return noise2(p)
+    return noise2(p.mul(2))
       .mul(0.5)
-      .add(noise2(p.mul(2)).mul(0.25))
-      .add(noise2(p.mul(4)).mul(0.125));
+      .add(noise2(p.mul(4)).mul(0.25))
+      .add(noise2(p.mul(8)).mul(0.125));
   }
 
   function restPos(uv: any, count: any) {
@@ -433,11 +434,11 @@ export function createShredderScene(
       const left = T.texture(tex, uv.sub(T.vec2(u.texelSizeX, 0))).xyz.sub(SIM_BIAS_VEC());
       const right = T.texture(tex, uv.add(T.vec2(u.texelSizeX, 0))).xyz.sub(SIM_BIAS_VEC());
 
-      T.If(uv.y.add(u.uTexelSizeY).lessThanEqual(1), () => {
-        p.assign(relax(p, up, u.restDistanceY, u.stiffness));
-      });
       T.If(uv.y.sub(u.uTexelSizeY).greaterThanEqual(0), () => {
         p.assign(relax(p, down, u.restDistanceY, u.stiffness));
+      });
+      T.If(uv.y.add(u.uTexelSizeY).lessThanEqual(1), () => {
+        p.assign(relax(p, up, u.restDistanceY, u.stiffness));
       });
       const strip = T.floor(uv.x.mul(u.numStrips));
       T.If(
@@ -464,7 +465,9 @@ export function createShredderScene(
 
   function buildStripMaterial(posTex: THREE.Texture) {
     const mat = new THREE.MeshBasicNodeMaterial();
-    mat.side = THREE.DoubleSide;
+    // 纸条是单面纸带：之前用 DoubleSide，纸带底部朝镜头翻卷时会把背面
+    // 渲染成一条平直的反光带（看起来像多出来的一根直纸片）
+    mat.side = THREE.FrontSide;
     mat.depthTest = false;
     mat.depthWrite = false;
     mat.toneMapped = false;
@@ -516,7 +519,8 @@ export function createShredderScene(
       const texV = T.float(1).sub(T.float(1).sub(restV).mul(s.sheetScale));
       const col = T.texture(ctaTexture, T.vec2(vPageUv.x, T.clamp(texV, 0, 1))).rgb.toVar();
       col.assign(T.mix(col.mul(T.abs(vNormal.z)), col, 0.25));
-      const edge = T.clamp(T.min(vPageUv.x.mul(7), T.float(1).sub(vPageUv.x).mul(7)), 0, 1);
+      // 每根布条的边缘压暗用布条局部 uv.x（原件 s.x），不是全页坐标
+      const edge = T.clamp(T.min(uv.x.mul(7), T.float(1).sub(uv.x).mul(7)), 0, 1);
       const shaded = T.mix(col, T.mix(T.vec3(0), col, edge), 0.6);
       T.If(vWorld.y.greaterThan(s.slotY), () => {
         T.Discard();
@@ -603,8 +607,9 @@ export function createShredderScene(
   }
 
   async function runSimulation(rendererIn: THREE.WebGPURenderer, state: ShredderUpdateState) {
-    // 原站用帧间隔（>2s 时回退到 .016）；低帧率下过高 dt 会让约束迭代失稳，这里按 60fps 上限
-    const dt = Math.max(1e-4, Math.min(1 / 60, state.dt || 1 / 60));
+    // 原站：h > 2s 时回退到 .016，其余直接用帧间隔（飘动速度随帧率自洽）
+    const rawDt = state.dt || 1 / 60;
+    const dt = rawDt > 2 ? 0.016 : Math.max(1e-4, rawDt);
     const m = 1 / dt / 120;
     const u = simUniforms;
     const E = Math.min(1, Math.max(0, state.shred));
