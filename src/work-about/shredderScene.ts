@@ -107,7 +107,7 @@ export function createShredderScene(
   height: number
 ): ShredderSceneHandle {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#02030a');
+  scene.background = null;
   const camera = new THREE.PerspectiveCamera(FOV, Math.max(1, width) / Math.max(1, height), 0.1, 100);
   camera.position.set(0, 0, CAMERA_Z);
   camera.lookAt(0, 0, 0);
@@ -120,39 +120,6 @@ export function createShredderScene(
   let visibleDesignH = sheetW * (height / Math.max(1, width));
 
   const ctaTexture = paper.ctaSheet.texture;
-
-  // ---------------------------------------------------------------------------
-  // 背景蓝光（沿用之前终幕的色值）
-  // ---------------------------------------------------------------------------
-  const bgUniforms = {
-    aspect: T.uniform(width / Math.max(1, height)),
-  };
-  const bgMat = new THREE.MeshBasicNodeMaterial();
-  {
-    const uv = T.uv();
-    const p = T.vec2(uv.x.sub(0.5).mul(bgUniforms.aspect), uv.y.sub(0.22));
-    const glow = T.smoothstep(1.05, 0.0, T.length(p));
-    const blue = T.mix(
-      T.vec3(0.0012, 0.0016, 0.006),
-      T.vec3(0.016, 0.019, 0.12),
-      T.min(glow.mul(glow).mul(glow).mul(1.15), 1)
-    );
-    const blueTop = T.mix(blue, T.vec3(0.001, 0.0015, 0.006), T.smoothstep(0.55, 1.0, uv.y).mul(0.7));
-    const grainHash = T.fract(
-      T.sin(T.dot(uv.mul(T.vec2(1920.0, 1080.0)), T.vec2(12.9898, 78.233))).mul(43758.5453)
-    );
-    const vig = T.smoothstep(1.3, 0.25, T.length(T.vec2(uv.x.sub(0.5).mul(bgUniforms.aspect), uv.y.sub(0.5))));
-    bgMat.colorNode = T.vec4(blueTop.add(grainHash.sub(0.5).mul(0.02)).mul(T.mix(0.72, 1.0, vig)), 1);
-    bgMat.toneMapped = false;
-    bgMat.depthTest = false;
-    bgMat.depthWrite = false;
-  }
-  const bgGeo = new THREE.PlaneGeometry(1, 1);
-  const bgMesh = new THREE.Mesh(bgGeo, bgMat);
-  bgMesh.position.z = 0;
-  bgMesh.renderOrder = -10;
-  bgMesh.frustumCulled = false;
-  scene.add(bgMesh);
 
   // ---------------------------------------------------------------------------
   // 纸页：全屏平面，slot 以下 discard
@@ -715,8 +682,6 @@ export function createShredderScene(
     vh = 2 * CAMERA_Z * Math.tan(FOV * 0.5 * DEG);
     vw = vh * (w / Math.max(1, h));
     visibleDesignH = sheetW * (h / Math.max(1, w));
-    bgUniforms.aspect.value = w / Math.max(1, h);
-    bgMesh.scale.set(vw, vh, 1);
     paperMesh.scale.set(vw, vh, 1);
     paperUniforms.visibleH.value = visibleDesignH;
     stripUniforms.viewport.value.set(vw, vh);
@@ -770,8 +735,6 @@ export function createShredderScene(
     for (const g of modelGeometries) g.dispose();
     for (const m of modelMaterials) m.dispose();
     disposeSimulation();
-    bgGeo.dispose();
-    bgMat.dispose();
     paperGeo.dispose();
     paperMat.dispose();
     quad.geometry.dispose();

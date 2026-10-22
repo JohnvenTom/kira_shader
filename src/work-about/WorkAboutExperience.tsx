@@ -11,6 +11,8 @@ import { HERO_TIMELINE } from '../hero/heroConfig';
 import { createAboutPaper, disposeAboutPaper, AboutPaperResult } from './paperContent';
 import { createAboutPaperScene, PaperSceneHandle } from './paperScene';
 import { createShredderScene, ShredderSceneHandle } from './shredderScene';
+import { createGoldenTieRevealScene, GoldenTieRevealHandle } from './goldenTieRevealScene';
+import { createGoldenTieScene, GoldenTieSceneHandle } from './goldenTieScene';
 import AboutUI, { AboutTheme } from './AboutUI';
 import ContactUI, { ContactPhase } from './ContactUI';
 import './about.css';
@@ -19,8 +21,10 @@ const T = TSL as any;
 const DAMPING = 8.2;
 /** 碎纸终幕滚动长度（屏）。原站 AS=4： shredder 每滚一屏上升一屏 */
 const ENDING_SCREENS = 4;
-/** 碎纸终幕停住的一小段，之后进入 Contact */
-const ENDING_HOLD = 0.9;
+/** golden-tie-reveal 页长度（原站 pagesConfig length: 1.7） */
+const REVEAL_SCREENS = 1.7;
+/** golden-tie 页长度（原站 pagesConfig length: 6） */
+const TIE_SCREENS = 6;
 /** Contact 段总长度（屏数） */
 const CONTACT_SCREENS = 3.2;
 /** 跳转/直链进入 Contact 时越过黑场过渡的距离（屏数） */
@@ -28,7 +32,6 @@ const CONTACT_JUMP = 0.55;
 const IRIS_MS = 1050;
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
 const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
-const CLEAR_ENDING = new THREE.Color(0x02030a);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
 const CLEAR_TRANSPARENT = new THREE.Color(0x000000);
 
@@ -68,6 +71,10 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const smoothstep = (a: number, b: number, v: number) => {
   const x = clamp((v - a) / (b - a), 0, 1);
   return x * x * (3 - 2 * x);
+};
+const smootherstep = (a: number, b: number, v: number) => {
+  const x = clamp((v - a) / (b - a), 0, 1);
+  return x * x * x * (x * (x * 6 - 15) + 10);
 };
 
 function createFullscreenQuad() {
@@ -123,6 +130,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const workUiHostRef = useRef<HTMLDivElement>(null);
   const finalRef = useRef<HTMLDivElement>(null);
+  const tieCopyRef = useRef<HTMLDivElement>(null);
   const hotspotRef = useRef<HTMLAnchorElement>(null);
   const veilRef = useRef<HTMLDivElement>(null);
   const contactUiRef = useRef<HTMLDivElement>(null);
@@ -208,6 +216,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let paper: AboutPaperResult | null = null;
     let paperScene: PaperSceneHandle | null = null;
     let shredder: ShredderSceneHandle | null = null;
+    let reveal: GoldenTieRevealHandle | null = null;
+    let tie: GoldenTieSceneHandle | null = null;
+    let revealRT: THREE.RenderTarget | null = null;
+    let shredderRT: THREE.RenderTarget | null = null;
+    let nextRT: THREE.RenderTarget | null = null;
+    let belowMat: THREE.MeshBasicNodeMaterial | null = null;
     let paperPromise: Promise<void> | null = null;
     let paperToken = 0;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -293,7 +307,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (!paper) return null;
       const scale = window.innerWidth / paper.width;
       const shredStart = 2 + (paper.ctaY * scale) / Math.max(1, window.innerHeight);
-      return shredStart + ENDING_SCREENS + ENDING_HOLD;
+      return shredStart + ENDING_SCREENS + REVEAL_SCREENS + TIE_SCREENS;
     };
 
     const workFrame = (time: number, dt: number) => ({
@@ -322,9 +336,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (officeRT) officeRT.dispose();
       if (paperRT) paperRT.dispose();
       if (workRT) workRT.dispose();
+      if (revealRT) revealRT.dispose();
+      if (shredderRT) shredderRT.dispose();
+      if (nextRT) nextRT.dispose();
       officeRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       paperRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       workRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
+      revealRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
+      shredderRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
+      nextRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       if (composite && irisMat && revealMat) {
         irisMat.mat.dispose();
         revealMat.dispose();
@@ -332,6 +352,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (!composite) composite = createFullscreenQuad();
       irisMat = makeIrisMaterial(workRT.texture, officeRT.texture, host.clientWidth / Math.max(1, host.clientHeight));
       revealMat = makeRevealMaterial(officeRT.texture, paperRT.texture);
+      belowMat?.dispose();
+      belowMat = new THREE.MeshBasicNodeMaterial();
+      {
+        const uv = T.uv();
+        const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
+        const rv = T.texture(revealRT.texture, ruv);
+        const sh = T.texture(shredderRT.texture, ruv);
+        belowMat.colorNode = T.vec4(T.mix(rv.rgb, sh.rgb, sh.a), 1);
+        belowMat.toneMapped = false;
+        belowMat.depthTest = false;
+        belowMat.depthWrite = false;
+      }
       st.iris.captured = false;
     };
 
@@ -660,6 +692,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       compose?.setSize(w, h);
       paperScene?.setSize(w, h);
       shredder?.setSize(w, h);
+      reveal?.setSize(w, h);
+      tie?.setSize(w, h);
       rebuildRTs();
       if (paper && paper.mobile !== (window.innerWidth < 768)) void ensurePaper();
     };
@@ -704,9 +738,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       workScene = createSelectedWorkScene(host.clientWidth, host.clientHeight);
       office = createAboutOfficeScene(host.clientWidth, host.clientHeight);
       contact = createAboutContactScene(host.clientWidth, host.clientHeight);
+      reveal = createGoldenTieRevealScene(r, host.clientWidth, host.clientHeight);
+      tie = createGoldenTieScene(r, host.clientWidth, host.clientHeight);
       cleanups.push(workScene.dispose);
       cleanups.push(office.dispose);
       cleanups.push(contact.dispose);
+      cleanups.push(reveal.dispose);
+      cleanups.push(tie.dispose);
       try {
         compose = createHeroCompose(host.clientWidth, host.clientHeight);
         cleanups.push(compose.dispose);
@@ -798,7 +836,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             const aim = st.about;
             const scale = paper ? w / paper.width : 1;
             const shredStart = paper ? 2 + (paper.ctaY * scale) / h : 1e9;
-            const contactStart = paper ? shredStart + ENDING_SCREENS + ENDING_HOLD : 1e9;
+            const revealStart = paper ? shredStart + ENDING_SCREENS : 1e9;
+            const tieStart = paper ? revealStart + REVEAL_SCREENS : 1e9;
+            const tieEnd = tieStart + TIE_SCREENS;
+            const contactStart = paper ? tieEnd : 1e9;
             const maxS = paper ? contactStart + CONTACT_SCREENS : 1;
 
             if (pendingContact && paper) {
@@ -814,11 +855,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             if (Math.abs(diff) < 0.0004) aim.s = aim.target;
             const s = clamp(aim.s, 0, maxS);
             const inContact = !!paper && s >= contactStart;
-            const stage: 'paper' | 'ending' | 'contact' = inContact
+            const stage: 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
               ? 'contact'
-              : s >= shredStart
-                ? 'ending'
-                : 'paper';
+              : s >= tieStart
+                ? 'tie'
+                : s >= revealStart
+                  ? 'reveal'
+                  : s >= shredStart
+                    ? 'ending'
+                    : 'paper';
             const contactP = inContact ? clamp((s - contactStart) / CONTACT_SCREENS, 0, 1) : 0;
             /** 进入 Contact 的位移，单位：屏（s 本身是屏单位，不是像素） */
             const contactEnterScreens = inContact ? s - contactStart : 0;
@@ -826,6 +871,20 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             st.about.shred = shred;
             const paperTop = h - (s - 1) * h;
             const officeProgress = clamp(s, 0, 1);
+
+            // golden-tie-reveal 时间轴（原站：文案 l = (scroll-start+4)/5.6；
+            // 卡片 n_((scroll-(start-3))/(end-(start-3)))，end-start=1.7）
+            const revealText = clamp((s - shredStart) / 5.6, 0, 1);
+            const revealCards = smootherstep(shredStart + 1, shredStart + 5.7, s);
+
+            // golden-tie 页（原站 pagesConfig: start-2 → end-.5 相机推进；
+            // 握手 A = (end-3.6 → end-.7)；墨迹 (end-1.6 → end+.5)）
+            const tieDolly = clamp((s - (tieStart - 2)) / (tieEnd - 0.5 - (tieStart - 2)), 0, 1);
+            const tieHandshake = clamp((s - (tieEnd - 3.6)) / 2.9, 0, 1);
+            const tieTransition = smootherstep(tieEnd - 1.6, tieEnd + 0.5, s);
+            const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, s);
+            const tiePin = clamp((s - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
+            const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
 
             if (stage === 'paper') {
               setThemeState(paperTop <= 0 ? 'dark' : 'light');
@@ -836,11 +895,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             setContactActiveState(inContact);
             if (!inContact && contactUiOn) resetContactUi();
 
-            // 碎纸终幕 → Contact：先压黑，再从黑场里浮出电话与 Hello
             let veil = 0;
-            if (stage === 'ending') veil = smoothstep(contactStart - 0.42, contactStart - 0.02, s);
+            if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, s);
             else if (stage === 'contact') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
             if (veilRef.current) veilRef.current.style.opacity = String(veil);
+            if (tieCopyRef.current) tieCopyRef.current.style.opacity = String(tieCopyOpacity);
 
             if (stage === 'contact') {
               wasEnding = false;
@@ -878,13 +937,26 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 shredder?.reset();
                 wasEnding = true;
               }
-              const opacity = smoothstep(0.87, 0.96, shred);
-              if (finalRef.current) finalRef.current.style.opacity = String(opacity);
-              setFinalState(opacity > 0.05);
-              host.style.background = '#02030a';
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#000000';
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
 
-              if (shredder) {
+              if (shredder && reveal && revealRT && shredderRT && belowMat && composite) {
+                // 原站 "below" 转场：golden-tie-reveal 场景垫在碎纸页下面，
+                // 碎纸页以自身 alpha 叠在上面（纸被切掉的区域会透出下一场景）
+                reveal.update({
+                  text: revealText,
+                  cards: revealCards,
+                  time,
+                  mouseX: mouse.x,
+                  mouseY: mouse.y,
+                });
+                reveal.setNextTexture(null, rtW, rtH);
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                renderer.setRenderTarget(revealRT);
+                await renderer.renderAsync(reveal.scene, reveal.camera);
+
                 await shredder.update(renderer, {
                   shred,
                   time,
@@ -892,10 +964,109 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   mouseX: mouse.x,
                   mouseY: mouse.y,
                 });
+                renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+                renderer.setRenderTarget(shredderRT);
+                await renderer.renderAsync(shredder.scene, shredder.camera);
+
+                composite.mesh.material = belowMat;
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                renderer.setRenderTarget(null);
+                await renderer.renderAsync(composite.scene, composite.camera);
+              } else {
+                if (shredder) {
+                  await shredder.update(renderer, {
+                    shred,
+                    time,
+                    dt,
+                    mouseX: mouse.x,
+                    mouseY: mouse.y,
+                  });
+                }
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                renderer.setRenderTarget(null);
+                if (shredder) await renderer.renderAsync(shredder.scene, shredder.camera);
+                else renderer.clear();
               }
-              renderer.setClearColor(CLEAR_ENDING, 1);
+            } else if (stage === 'reveal') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#000000';
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+
+              reveal?.update({
+                text: revealText,
+                cards: revealCards,
+                time,
+                mouseX: mouse.x,
+                mouseY: mouse.y,
+              });
+
+              // 星形窗口采样 golden-tie 页场景
+              if (tie && nextRT && reveal) {
+                tie.update({
+                  dolly: tieDolly,
+                  handshake: tieHandshake,
+                  transition: 0,
+                  flash: 0,
+                  pin: tiePin,
+                  time,
+                  dt,
+                  mouseX: mouse.x,
+                  mouseY: mouse.y,
+                  contactTexture: null,
+                  contactW: rtW,
+                  contactH: rtH,
+                });
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                renderer.setRenderTarget(nextRT);
+                await renderer.renderAsync(tie.scene, tie.camera);
+                reveal.setNextTexture(nextRT.texture, rtW, rtH);
+                renderer.setRenderTarget(null);
+              }
+
+              renderer.setClearColor(CLEAR_TRANSPARENT, 1);
               renderer.setRenderTarget(null);
-              if (shredder) await renderer.renderAsync(shredder.scene, shredder.camera);
+              if (reveal) await renderer.renderAsync(reveal.scene, reveal.camera);
+              else renderer.clear();
+            } else if (stage === 'tie') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#000000';
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+
+              if (contact && nextRT) {
+                contact.update(dt, time, {
+                  progress: 0,
+                  enter: 0,
+                  mouseX: mouse.x,
+                  mouseY: mouse.y,
+                  touch: 'ontouchstart' in window,
+                });
+                renderer.setClearColor(CLEAR_CONTACT, 1);
+                renderer.setRenderTarget(nextRT);
+                await renderer.renderAsync(contact.scene, contact.camera);
+                renderer.setRenderTarget(null);
+              }
+
+              tie?.update({
+                dolly: tieDolly,
+                handshake: tieHandshake,
+                transition: tieTransition,
+                flash: tieFlash,
+                pin: tiePin,
+                time,
+                dt,
+                mouseX: mouse.x,
+                mouseY: mouse.y,
+                contactTexture: nextRT?.texture ?? null,
+                contactW: rtW,
+                contactH: rtH,
+              });
+              renderer.setClearColor(CLEAR_CONTACT, 1);
+              renderer.setRenderTarget(null);
+              if (tie) await renderer.renderAsync(tie.scene, tie.camera);
               else renderer.clear();
             } else if (paperScene && paper) {
               wasEnding = false;
@@ -972,6 +1143,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         get shredder() {
           return shredder;
         },
+        get reveal() {
+          return reveal;
+        },
+        get tie() {
+          return tie;
+        },
         state: st,
         work,
         compose,
@@ -997,6 +1174,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       officeRT?.dispose();
       paperRT?.dispose();
       workRT?.dispose();
+      revealRT?.dispose();
+      shredderRT?.dispose();
+      nextRT?.dispose();
+      belowMat?.dispose();
       irisMat?.mat.dispose();
       revealMat?.dispose();
       composite?.geometry.dispose();
@@ -1075,6 +1256,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           </span>
         </h2>
         <p>We&apos;ve got one last trick up our sleeve.</p>
+      </div>
+
+      <div ref={tieCopyRef} className="ab-tie-copy" aria-hidden="true">
+        <h2>Check Out This Golden Tie</h2>
+        <p>You made it this far. You deserve a tie-break.</p>
       </div>
 
       <div ref={veilRef} className="ab-veil" aria-hidden="true" />

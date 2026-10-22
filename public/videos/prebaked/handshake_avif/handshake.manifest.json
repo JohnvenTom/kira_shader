@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "input": "/Users/filipkantedal/dev/shader-web/public/videos/handshake.mp4",
+  "generatedAt": "2026-02-27T12:24:47.058Z",
+  "frameWidth": 819,
+  "frameHeight": 461,
+  "fps": 30,
+  "totalFrames": 106,
+  "durationSeconds": 3.506022,
+  "sheetCols": 5,
+  "sheetRows": 8,
+  "framesPerSheet": 40,
+  "sheetWidth": 4095,
+  "sheetHeight": 3688,
+  "sheetCount": 3,
+  "format": "avif",
+  "webpEncoder": "ffmpeg",
+  "quality": 60,
+  "effort": 9,
+  "nearLossless": false,
+  "avifSpeed": 0,
+  "sheets": [
+    {
+      "index": 0,
+      "file": "handshake_sheet_000.avif",
+      "startFrame": 0,
+      "endFrame": 39,
+      "frameCount": 40
+    },
+    {
+      "index": 1,
+      "file": "handshake_sheet_001.avif",
+      "startFrame": 40,
+      "endFrame": 79,
+      "frameCount": 40
+    },
+    {
+      "index": 2,
+      "file": "handshake_sheet_002.avif",
+      "startFrame": 80,
+      "endFrame": 105,
+      "frameCount": 26
+    }
+  ]
+}
