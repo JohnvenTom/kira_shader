@@ -17,7 +17,8 @@ import './about.css';
 
 const T = TSL as any;
 const DAMPING = 8.2;
-const ENDING_SCREENS = 1.35;
+/** 碎纸终幕滚动长度（屏）。原站 AS=4： shredder 每滚一屏上升一屏 */
+const ENDING_SCREENS = 4;
 /** 碎纸终幕停住的一小段，之后进入 Contact */
 const ENDING_HOLD = 0.9;
 /** Contact 段总长度（屏数） */
@@ -888,7 +889,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   shred,
                   time,
                   dt,
-                  ctaTop: (s - shredStart) * (h / scale),
                   mouseX: mouse.x,
                   mouseY: mouse.y,
                 });
