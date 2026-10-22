@@ -123,9 +123,10 @@ export function createShredderScene(
 
   // ---------------------------------------------------------------------------
   // 纸页：全屏平面，slot 以下 discard
-  // 原件在碎纸段纸张是钉住的（内容进度被 clamp），碎纸机从纸面里穿过去
+  // 原件：碎纸机扫过阶段纸页仍随滚动上移 min(E,1/4) 屏，之后停住
   // ---------------------------------------------------------------------------
   const paperUniforms = {
+    contentTop: T.uniform(0),
     visibleH: T.uniform(visibleDesignH),
     sheetH: T.uniform(sheetH),
     slotUvY: T.uniform(0),
@@ -134,7 +135,7 @@ export function createShredderScene(
   {
     const build = T.Fn(() => {
     const uv = T.uv();
-    const designY = T.float(1).sub(uv.y).mul(paperUniforms.visibleH);
+    const designY = paperUniforms.contentTop.add(T.float(1).sub(uv.y).mul(paperUniforms.visibleH));
     const texV = T.float(1).sub(designY.div(paperUniforms.sheetH));
     const col = T.texture(ctaTexture, T.vec2(uv.x, T.clamp(texV, 0, 1)));
     const slotShade = T.mix(0.62, 1.0, T.smoothstep(paperUniforms.slotUvY, paperUniforms.slotUvY.add(0.09), uv.y));
@@ -311,6 +312,8 @@ export function createShredderScene(
       exit: T.uniform(0),
       /** 一屏可见高度 / CTA 纸张总高 */
       sheetScale: T.uniform(1),
+      /** 原站纸页在 bar 扫过阶段的额外上移（texV 偏移，E 在 [0,1/4] 内） */
+      contentShiftV: T.uniform(0),
       slotY: T.uniform(0),
     };
   }
@@ -516,7 +519,8 @@ export function createShredderScene(
       const uv = T.uv();
       // 内容以世界坐标冻结在布条上：与上方静止纸页在 slot 处严格衔接
       const restV = uv.y.add(s.exit).div(T.float(1).sub(s.texelSizeY));
-      const texV = T.float(1).sub(T.float(1).sub(restV).mul(s.sheetScale));
+      // 与纸页同步上移，保证槽口处内容衔接
+      const texV = T.float(1).sub(T.float(1).sub(restV).mul(s.sheetScale)).sub(s.contentShiftV);
       const col = T.texture(ctaTexture, T.vec2(vPageUv.x, T.clamp(texV, 0, 1))).rgb.toVar();
       col.assign(T.mix(col.mul(T.abs(vNormal.z)), col, 0.25));
       // 每根布条的边缘压暗用布条局部 uv.x（原件 s.x），不是全页坐标
@@ -709,9 +713,12 @@ export function createShredderScene(
     const E = Math.min(1, Math.max(0, state.shred));
     const mp = E * 4;
     const slotY = mp * vh - 0.5 * vh;
-    // 纸张在碎纸段是钉住的；bar 从下往上穿过纸面
+    // 原件：碎纸机扫过阶段（E 0→1/4）纸页额外上移 min(E,1/4) 屏，之后停住
+    const paperShift = Math.min(E, 0.25) * visibleDesignH;
+    paperUniforms.contentTop.value = paperShift;
     paperUniforms.slotUvY.value = slotY / vh + 0.5;
     stripUniforms.exit.value = E;
+    stripUniforms.contentShiftV.value = paperShift / sheetH;
     stripUniforms.slotY.value = slotY;
 
     // slot 越过屏幕上沿后，整张纸都已被切掉
