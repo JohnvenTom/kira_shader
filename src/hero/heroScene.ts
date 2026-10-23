@@ -109,6 +109,17 @@ export function createHeroScene(
     bootCanvas = document.createElement('canvas');
     bootCanvas.width = 1;
     bootCanvas.height = 1;
+    // WebGPU 的纹理上传走 copyExternalImageToTexture，要求 canvas 已绑定渲染
+    // 上下文；这个兜底画布若从不 getContext，只要它所在场景一被渲染（例如
+    // #selected-work 直链回滚跨过 scroll 1.0 后 hero 段恢复渲染）就会抛
+    // OperationError "canvas without rendering context"，并让整帧渲染中断。
+    // 拿一个 2D 上下文并画一个纯白像素即满足上传前提（该纹理在 loadingActive
+    // 恒 false 之下永远不会被实际采样，内容无关紧要）。
+    const bootCtx = bootCanvas.getContext('2d');
+    if (bootCtx) {
+      bootCtx.fillStyle = '#ffffff';
+      bootCtx.fillRect(0, 0, 1, 1);
+    }
   }
 
   // ---------- 场景 / 相机 / 补光 ----------

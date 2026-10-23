@@ -277,10 +277,12 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     // 原件 exitProgress 分支：激活画格内按屏幕坐标混入下一场景（raw office），
     // 随后把整条胶片的亮度/光照/高光归一到“无风格”状态
     const isActiveFrame = T.abs(g.sub(u.activeIndex)).lessThan(0.5);
-    // 原件 `texture(transitionTexture, screenCoordinate / resolution)`：直接屏幕坐标
-    // WebGPU 离屏 RT 需要翻 V（与 heroCompose 的 baseUv 同款约定）
-    const officeUv = T.vec2(T.screenUV.x, T.oneMinus(T.screenUV.y));
-    const officeScreen = u.transitionTexture.uv(officeUv).rgb;
+    // 原件 `texture(transitionTexture, screenCoordinate / resolution)`：直接屏幕坐标。
+    // screenUV 本身就是 y 向下的屏幕坐标惯例，页 RT（同一 renderer 渲出）存储即屏幕序
+    // （用 ?debugRT= 分屏实测确认：screenUV 直采正立、quad uv 翻采颠倒），
+    // 直接采样即可；此前在 screenUV 上再叠一层 oneMinus 形成双重翻转，
+    // 导致 projects→office 转场期间激活画格内的 office 画面上下颠倒
+    const officeScreen = u.transitionTexture.uv(T.screenUV).rgb;
     const showOffice = uv.x.lessThan(0.35)
       .and(u.exitProgress.greaterThan(0))
       .and(isActiveFrame);

@@ -341,6 +341,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let wasEnding = false;
     let rtW = 1;
     let rtH = 1;
+    // === 转场方向调试（?debugRT=film|office）：把页 RT 以两种 V 方向分屏直铺上屏 ===
+    // 左半 = quad uv()（y 向上惯例）采样，右半 = screenUV（y 向下惯例）采样。
+    // 任一半正立刻确定该 RT 的存储方向约定，用于定位页间转场的画面颠倒问题。
+    const dbgRTName = new URLSearchParams(window.location.search).get('debugRT');
+    let dbgQuad: ReturnType<typeof createFullscreenQuad> | null = null;
     /** 逐页 RT（原件 sceneMode 的 c[0..6]）：每页场景渲进自己的 RT，合成链统一采样 */
     let heroRT: THREE.RenderTarget | null = null;
     let filmRT: THREE.RenderTarget | null = null;
@@ -1388,6 +1393,32 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               if (pair) await (renderer as any).renderAsync(pair[0], pair[1]);
               else renderer.clear();
             }
+            // === debugRT 分屏铺放（合成之后、上屏即最终调试画面）===
+            if (dbgRTName) {
+              const rt =
+                dbgRTName === 'film'
+                  ? filmRT
+                  : dbgRTName === 'office'
+                    ? officeRT
+                    : dbgRTName === 'about'
+                      ? aboutRT
+                      : null;
+              if (rt) {
+                if (!dbgQuad) {
+                  dbgQuad = createFullscreenQuad();
+                  // 左半 uv()（y 向上）/ 右半 screenUV（y 向下）采同一张 RT
+                  dbgQuad.mesh.material.colorNode = T.mix(
+                    T.texture(rt.texture, T.uv()),
+                    T.texture(rt.texture, T.screenUV),
+                    T.step(T.float(0.5), T.uv().x)
+                  );
+                  dbgQuad.mesh.material.toneMapped = false;
+                }
+                renderer.setRenderTarget(null);
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                await (renderer as any).renderAsync(dbgQuad.scene, dbgQuad.camera);
+              }
+            }
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error('[WorkAbout] 渲染循环抛错：', err);
@@ -1405,6 +1436,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         ui,
         get filmRT() {
           return filmRT;
+        },
+        get officeRT() {
+          return officeRT;
         },
         get aboutRT() {
           return aboutRT;
