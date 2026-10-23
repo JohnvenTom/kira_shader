@@ -70,8 +70,8 @@ const ABOUT_UI_START = ABOUT_START - 0.35;
 const REVEAL_SCREENS = 1.7;
 /** golden-tie 页长度（原站 pagesConfig length: 6） */
 const TIE_SCREENS = 6;
-/** Contact 段总长度（屏数） */
-const CONTACT_SCREENS = 3.2;
+/** Contact 段总长度（屏数）：hello / info / 照片屏(CEO) / footer 四节拍 */
+const CONTACT_SCREENS = 4.2;
 /** 跳转/直链进入 Contact 时越过黑场过渡的距离（屏数） */
 const CONTACT_JUMP = 0.55;
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
@@ -702,8 +702,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               break;
             case 'book':
             case 'ctEmail':
-            case 'ctBook':
               window.location.href = 'mailto:hello@shader.se?subject=Book%20a%20call';
+              break;
+            case 'ctBook':
+              window.open('https://cal.com/filip-kantedal-hd30xa/30min', '_blank', 'noopener,noreferrer');
+              break;
+            case 'ctCeo':
+              window.location.href = 'mailto:ceo@shader.se';
               break;
             case 'burger':
               toggleMenu(!menuOpen);
@@ -1104,9 +1109,16 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
           const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
           // contact 三段透明度（canvas UI 用；contact stage 块里不再重复计算）
-          const ctHello = inContact ? 1 - smoothstep(0.22, 0.44, contactP) : 0;
-          const ctInfo = inContact ? smoothstep(0.28, 0.5, contactP) * (1 - smoothstep(0.66, 0.84, contactP)) : 0;
-          const ctFooter = inContact ? smoothstep(0.72, 0.92, contactP) : 0;
+          // contact 四节拍透明度（hello → info → 照片屏(CEO) → footer）：
+          // 各占 contactP 的 1/4，段首尾 0.06-0.08 宽度渐入渐出
+          const ctHello = inContact ? 1 - smoothstep(0.16, 0.28, contactP) : 0;
+          const ctInfo = inContact
+            ? smoothstep(0.2, 0.28, contactP) * (1 - smoothstep(0.44, 0.52, contactP))
+            : 0;
+          const ctPhoto = inContact
+            ? smoothstep(0.46, 0.54, contactP) * (1 - smoothstep(0.68, 0.76, contactP))
+            : 0;
+          const ctFooter = inContact ? smoothstep(0.72, 0.82, contactP) : 0;
 
             if (stage === 'fade') {
               // 原站 projects UI 在 fade 前已消失；office UI 从 office 页首才出现
@@ -1145,7 +1157,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               });
 
               contactUiOn = true;
-              setContactPhaseState(contactP > 0.8 ? 'footer' : contactP > 0.32 ? 'info' : 'hello');
+              setContactPhaseState(
+                contactP > 0.72 ? 'footer' : contactP > 0.5 ? 'photo' : contactP > 0.25 ? 'info' : 'hello'
+              );
             }
             if (stage === 'ending' || stage === 'reveal') {
               // reveal 段清 wasEnding：重新下滚进碎纸段时 shredder.reset 会再次触发（合并前语义）
@@ -1180,7 +1194,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               menuOpen,
               time,
               mode: uiModeDamped,
-              contact: { hello: ctHello, info: ctInfo, footer: ctFooter },
+              contact: { hello: ctHello, info: ctInfo, photo: ctPhoto, footer: ctFooter },
+              contactProgress: inContact ? contactP : 0,
               tieCopy: tieCopyOpacity,
             });
             const uiModeTarget = st.theme === 'dark' ? 1 : 0;

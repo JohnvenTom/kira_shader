@@ -1,7 +1,7 @@
 import { forwardRef } from 'react';
 import './contact.css';
 
-export type ContactPhase = 'hello' | 'info' | 'footer';
+export type ContactPhase = 'hello' | 'info' | 'photo' | 'footer';
 
 export interface ContactUIProps {
   phase: ContactPhase;
