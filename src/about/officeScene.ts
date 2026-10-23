@@ -180,7 +180,8 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
   setSize(width, height);
 
   const update: AboutOfficeHandle['update'] = (_dt, _time, state) => {
-    const i = Math.max(0, Math.min(1, state.scrollProgress));
+    // 原站 office 场景在 fade 阶段（office 页首之前）也会被渲染，progress 可为负
+    const i = Math.max(-0.25, Math.min(1, state.scrollProgress));
     const touch = state.touch ?? false;
     camera.rotation.x = -0.6 + 0.025 * state.mouseY;
     camera.rotation.y = touch ? 0 : (0.5 - state.mouseX) * 0.025;

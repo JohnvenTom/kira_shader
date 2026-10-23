@@ -21,12 +21,18 @@ const T = TSL as any;
 const DAMPING = 8.2;
 /** 碎纸终幕滚动长度（屏）。原站 AS=4： shredder 每滚一屏上升一屏 */
 const ENDING_SCREENS = 4;
-/** 进入 About 后先保留的 office 屏数（原站 office 页） */
-const ENTRY_OFFICE_SCREENS = 1;
-/** 原站折痕可见扫掠约 1 屏（enterProgress 前 0.85 屏不可见、后 0.75 屏已铺满，均略去） */
-const FOLD_SCREENS = 1;
-/** 纸页铺开结束、内容开始上滚的滚动位置（屏） */
-const FOLD_END = ENTRY_OFFICE_SCREENS + FOLD_SCREENS;
+/** 进入 About 前 projects→office 的通用 fade：原站 transitionLength 0.4（scroll 1.6→2.0） */
+const FADE_SCREENS = 0.4;
+/** office 页长度（原站 pagesConfig length 1.8） */
+const OFFICE_SCREENS = 1.8;
+/** About 内容起点；本时间轴 local s=0 = 原站 scroll 1.6（fade 起点） */
+const ABOUT_START = FADE_SCREENS + OFFICE_SCREENS;
+/** 纸卷 enterProgress 起点：原站 about.start − transitionLength = 1.8 → local 0.2 */
+const FOLD_LEAD_SCREENS = 0.2;
+/** 原站 enterProgress = nM(scroll, about.start−2, about.start+.6, 0, 1) 的跨度 */
+const FOLD_ENTER_SPAN = 2.6;
+/** 原站 about UI 起点 about.start−0.35 → local 1.85 */
+const ABOUT_UI_START = ABOUT_START - 0.35;
 /** golden-tie-reveal 页长度（原站 pagesConfig length: 1.7） */
 const REVEAL_SCREENS = 1.7;
 /** golden-tie 页长度（原站 pagesConfig length: 6） */
@@ -35,7 +41,6 @@ const TIE_SCREENS = 6;
 const CONTACT_SCREENS = 3.2;
 /** 跳转/直链进入 Contact 时越过黑场过渡的距离（屏数） */
 const CONTACT_JUMP = 0.55;
-const IRIS_MS = 1050;
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
 const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
@@ -50,7 +55,6 @@ interface ExperienceState {
   uiVisible: boolean;
   theme: AboutTheme;
   contactActive: boolean;
-  iris: { active: boolean; captured: boolean; startedAt: number; progress: number };
   about: { s: number; target: number; shred: number };
   finalShown: boolean;
 }
@@ -93,32 +97,6 @@ function createFullscreenQuad() {
   return { scene, camera, mesh, geometry };
 }
 
-function makeIrisMaterial(workTex: THREE.Texture, officeTex: THREE.Texture, aspect: number) {
-  const mat = new THREE.MeshBasicNodeMaterial();
-  const uRadius = T.uniform(0.01);
-  const uTime = T.uniform(0);
-  const uAspect = T.uniform(aspect);
-  const uv = T.uv();
-  const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
-  const work = T.texture(workTex, ruv);
-  const office = T.texture(officeTex, ruv);
-  const d = T.length(T.vec2(uv.x.sub(0.5).mul(uAspect), uv.y.sub(0.5)));
-  const reveal = T.smoothstep(uRadius, uRadius.add(0.012), d);
-  const rim = T.smoothstep(uRadius.sub(0.022), uRadius.sub(0.004), d).mul(
-    T.float(1).sub(T.smoothstep(uRadius, uRadius.add(0.01), d))
-  );
-  const grain = T.fract(
-    T.sin(T.dot(uv.mul(T.vec2(1920.0, 1080.0)).add(uTime.mul(61.0)), T.vec2(12.9898, 78.233))).mul(43758.5453)
-  );
-  const col = T.mix(office.rgb, work.rgb, reveal);
-  const withRim = T.mix(col, T.vec3(0.97, 0.94, 0.84), rim.mul(0.5));
-  mat.colorNode = T.vec4(withRim.add(grain.sub(0.5).mul(0.035)), 1.0);
-  mat.toneMapped = false;
-  mat.depthTest = false;
-  mat.depthWrite = false;
-  return { mat, uRadius, uTime, uAspect };
-}
-
 /**
  * 原件 at 组件的纸页进入折痕（paperplane.js 的 a/s）：
  * 纸面 mesh 屏幕固定，折痕沿 normalize(.5, 1) 从底部斜向上扫过；
@@ -137,8 +115,9 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
     const pi = T.float(Math.PI);
     const radius = T.float(0.15);
     const dir = T.vec2(0.4472135955, 0.894427191);
-    // 从屏幕下方开始：m = -0.17 时卷边顶沿仍在屏幕外；1.268 时完全铺开
-    const mz = T.float(-0.17).add(uEnter.mul(1.438));
+    // 原件 enterProgress 公式：m = -0.8 + 2.9068·e
+    // e≈0.2236 时卷边顶沿才进入屏幕；e≈0.7115 时完全铺开
+    const mz = T.float(-0.8).add(uEnter.mul(2.9068));
     // animateUp = 1：折痕方向量 I 就是 three 的 uv（底为 0）
     const I = uv;
     const y = T.dot(I, dir);
@@ -192,6 +171,21 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
   return { mat, uEnter };
 }
 
+/** 原站通用 fade（transitionTypeMap.fade=0）：smoothstep 过渡两页已渲染纹理 */
+function makeFadeMaterial(workTex: THREE.Texture, officeTex: THREE.Texture) {
+  const mat = new THREE.MeshBasicNodeMaterial();
+  const uFade = T.uniform(0);
+  const uv = T.uv();
+  const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
+  const work = T.texture(workTex, ruv);
+  const office = T.texture(officeTex, ruv);
+  mat.colorNode = T.vec4(T.mix(work.rgb, office.rgb, uFade), 1.0);
+  mat.toneMapped = false;
+  mat.depthTest = false;
+  mat.depthWrite = false;
+  return { mat, uFade };
+}
+
 export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const workUiHostRef = useRef<HTMLDivElement>(null);
@@ -201,7 +195,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const veilRef = useRef<HTMLDivElement>(null);
   const contactUiRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{
-    startAbout: () => void;
+    startAbout: (source?: 'scroll' | 'auto') => void;
     switchToWork: () => void;
     jumpToContact: () => void;
     jumpToAboutTop: () => void;
@@ -212,7 +206,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const [view, setView] = useState<View>(initialView);
   const [workMounted, setWorkMounted] = useState(mode === 'work');
   const [uiVisible, setUiVisible] = useState(mode !== 'work');
-  const [theme, setTheme] = useState<AboutTheme>('light');
+  const [theme, setTheme] = useState<AboutTheme>(mode === 'about' ? 'dark' : 'light');
   const [finalShown, setFinalShown] = useState(false);
   const [contactActive, setContactActive] = useState(mode === 'contact');
   const [contactPhase, setContactPhase] = useState<ContactPhase>('hello');
@@ -221,10 +215,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     ready: false,
     view: initialView,
     uiVisible: mode !== 'work',
-    theme: 'light',
+    theme: mode === 'about' ? 'dark' : 'light',
     contactActive: mode === 'contact',
-    iris: { active: false, captured: false, startedAt: 0, progress: 0 },
-    about: { s: mode === 'contact' ? -1 : 0, target: mode === 'contact' ? -1 : 0, shred: 0 },
+    about: {
+      s: mode === 'contact' ? -1 : mode === 'about' ? ABOUT_START : 0,
+      target: mode === 'contact' ? -1 : mode === 'about' ? ABOUT_START : 0,
+      shred: 0,
+    },
     finalShown: false,
   });
 
@@ -257,7 +254,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       return;
     }
     if (mode === 'about') {
-      if (st.view === 'work') apiRef.current?.startAbout();
+      if (st.view === 'work') apiRef.current?.startAbout('auto');
       else if (prev === 'contact' || st.contactActive) apiRef.current?.jumpToAboutTop();
       return;
     }
@@ -301,7 +298,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let paperRT: THREE.RenderTarget | null = null;
     let workRT: THREE.RenderTarget | null = null;
     let composite: ReturnType<typeof createFullscreenQuad> | null = null;
-    let irisMat: ReturnType<typeof makeIrisMaterial> | null = null;
+    let fadeMat: ReturnType<typeof makeFadeMaterial> | null = null;
     let entryMat: ReturnType<typeof makeFoldMaterial> | null = null;
 
     const setUiVisibleState = (value: boolean) => {
@@ -372,7 +369,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const getContactStart = () => {
       if (!paper) return null;
       const scale = window.innerWidth / paper.width;
-      const shredStart = FOLD_END + (paper.ctaY * scale) / Math.max(1, window.innerHeight);
+      const shredStart = ABOUT_START + (paper.ctaY * scale) / Math.max(1, window.innerHeight);
       return shredStart + ENDING_SCREENS + REVEAL_SCREENS + TIE_SCREENS;
     };
 
@@ -411,12 +408,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       revealRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       shredderRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
       nextRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      if (composite && irisMat && entryMat) {
-        irisMat.mat.dispose();
+      if (composite && fadeMat) {
+        fadeMat.mat.dispose();
+      }
+      if (composite && entryMat) {
         entryMat.mat.dispose();
       }
       if (!composite) composite = createFullscreenQuad();
-      irisMat = makeIrisMaterial(workRT.texture, officeRT.texture, host.clientWidth / Math.max(1, host.clientHeight));
+      fadeMat = makeFadeMaterial(workRT.texture, officeRT.texture);
       entryMat = makeFoldMaterial(officeRT.texture, paperRT.texture);
       belowMat?.dispose();
       belowMat = new THREE.MeshBasicNodeMaterial();
@@ -430,7 +429,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         belowMat.depthTest = false;
         belowMat.depthWrite = false;
       }
-      st.iris.captured = false;
     };
 
     const resetContactUi = () => {
@@ -444,8 +442,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       contactUiOn = false;
     };
 
-    const startAbout = () => {
-      if (!st.ready || st.iris.active || st.view !== 'work') return;
+    const startAbout = (source: 'scroll' | 'auto' = 'auto') => {
+      if (!st.ready || st.view !== 'work') return;
       if (work.phaseIdleTimer !== null) {
         window.clearTimeout(work.phaseIdleTimer);
         work.phaseIdleTimer = null;
@@ -455,13 +453,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       work.dragAxis = null;
       work.dragPx = 0;
       document.body.style.cursor = '';
-      st.iris.active = true;
-      st.iris.captured = false;
-      st.iris.startedAt = 0;
-      st.iris.progress = 0;
+      // 原站 projects→office fade 与 office→about overlay 都是滚动驱动：
+      // scroll 触发时把控制权交给 about 的 s（从 0 开始），由后续滚动推进；
+      // 点击/键盘/拖拽没有后续滚动，自动走完整段 intro 到 About 内容。
+      const auto = source === 'auto';
       st.about.s = 0;
-      st.about.target = 0;
+      st.about.target = auto ? ABOUT_START : 0;
       st.about.shred = 0;
+      work.phaseTarget = 1;
       pendingContact = false;
       setViewState('about');
       setWorkMounted(false);
@@ -477,8 +476,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const switchToWork = () => {
       if (!st.ready) return;
-      st.iris.active = false;
-      st.iris.captured = false;
       st.about.s = 0;
       st.about.target = 0;
       st.about.shred = 0;
@@ -513,16 +510,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const jumpToAboutTop = () => {
       if (!st.ready) return;
-      st.iris.active = false;
-      st.iris.captured = false;
-      st.about.s = 0;
-      st.about.target = 0;
+      st.about.s = ABOUT_START;
+      st.about.target = ABOUT_START;
       st.about.shred = 0;
       pendingContact = false;
       setViewState('about');
       setWorkMounted(false);
       setUiVisibleState(true);
-      setThemeState('light');
+      setThemeState('dark');
       setFinalState(false);
       setContactActiveState(false);
       resetContactUi();
@@ -534,8 +529,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const jumpToContact = () => {
       if (!st.ready) return;
       if (st.view === 'work') {
-        st.iris.active = false;
-        st.iris.captured = false;
         work.pending = false;
         work.dragging = false;
         work.dragAxis = null;
@@ -574,17 +567,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     apiRef.current = { startAbout, switchToWork, jumpToContact, jumpToAboutTop };
 
-    const finishIris = () => {
-      st.iris.active = false;
-      st.iris.progress = 1;
-      setUiVisibleState(true);
-      setContactActiveState(false);
-      resetContactUi();
-      if (window.location.hash.split('?')[0] !== '#about-us') {
-        window.location.hash = '#about-us';
-      }
-    };
-
     const onWheel = (e: WheelEvent) => {
       if (!st.ready) return;
       if (document.body.dataset.aboutMenu === '1') return;
@@ -599,7 +581,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         dy *= host.clientHeight;
       }
 
-      if (st.view === 'work' && !st.iris.active) {
+      if (st.view === 'work') {
         if (Math.abs(dx) > Math.abs(dy)) {
           if (work.dragging || work.pending) return;
           const now = performance.now();
@@ -618,16 +600,21 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           return;
         }
         work.phaseTarget = clamp(work.phaseTarget + dy / (1.6 * window.innerHeight), 0, 1);
+        if (work.phaseTarget >= 0.5) {
+          // 原站 fade 是连续滚动的一部分：越过阈值立即切到 about 时间轴，
+          // 同一次滚动手势后续的 dy 直接推进 fade / office / 折痕。
+          startAbout('scroll');
+          return;
+        }
         if (work.phaseIdleTimer !== null) window.clearTimeout(work.phaseIdleTimer);
         work.phaseIdleTimer = window.setTimeout(() => {
           work.phaseIdleTimer = null;
-          if (work.phaseTarget >= 0.5) startAbout();
-          else work.phaseTarget = 0;
+          if (st.view === 'work' && work.phaseTarget < 0.5) work.phaseTarget = 0;
         }, 160);
         return;
       }
 
-      if (st.view === 'about' && !st.iris.active) {
+      if (st.view === 'about') {
         const aim = st.about as { s: number; target: number; shred: number };
         aim.target = clamp(aim.target + dy / window.innerHeight, 0, 1e6);
         if (Math.abs(dx) > Math.abs(dy) * 1.4) return;
@@ -640,7 +627,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (!st.ready || st.iris.active) return;
+      if (!st.ready) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('[data-sw-ui],[data-ab-ui],.ab-hotspot,.ab-menu,.ab-final')) return;
       if (e.button !== 0) return;
@@ -660,7 +647,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (!work.pending || st.iris.active) return;
+      if (!work.pending) return;
       if (st.view === 'work') {
         const dx = e.clientX - work.startX;
         const dy = e.clientY - work.startY;
@@ -703,7 +690,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         work.dragging = false;
         if (work.dragAxis === 'y') {
           work.dragPx = 0;
-          if (work.phaseTarget >= 0.5) startAbout();
+          if (work.phaseTarget >= 0.5) startAbout('auto');
           else work.phaseTarget = 0;
           return;
         }
@@ -717,14 +704,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!st.ready || st.iris.active) return;
+      if (!st.ready) return;
       if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
       if (st.view === 'work') {
         if (e.key === 'ArrowLeft') work.index -= 1;
         else if (e.key === 'ArrowRight') work.index += 1;
         else if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
           e.preventDefault();
-          startAbout();
+          startAbout('auto');
         }
         return;
       }
@@ -824,6 +811,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         // 直链 #contact：等纸页尺寸与电话模型都就绪，避免先闪一帧 About 页首
         await ensurePaper();
         await contact.ready;
+      } else if (mode === 'about') {
+        // 直链 #about-us：直接落到 About 内容页首，等纸页就绪避免闪 office
+        await ensurePaper();
       }
       st.ready = true;
       setReady(true);
@@ -837,7 +827,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const time = clock.elapsedTime;
           lastTime = time;
 
-          if (st.view === 'work' && !st.iris.active) {
+          if (st.view === 'work') {
             work.phaseVel += (90 * (work.phaseTarget - work.phase) - 14 * work.phaseVel) * dt;
             work.phase += work.phaseVel * dt;
             if (work.phase < 0 && work.phaseTarget === 0 && Math.abs(work.phaseVel) < 0.05) {
@@ -864,44 +854,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               renderer.setRenderTarget(null);
               await (renderer as any).renderAsync(workScene.scene, workScene.camera);
             }
-          } else if (st.iris.active) {
-            officeFrame(time, dt, 0);
-            if (!st.iris.captured && compose && workRT) {
-              await compose.renderToTarget(
-                renderer,
-                workScene.scene,
-                workScene.camera,
-                workFrame(time, dt),
-                workRT
-              );
-              st.iris.captured = true;
-              st.iris.startedAt = performance.now();
-            }
-            if (st.iris.captured) {
-              const t = clamp((performance.now() - st.iris.startedAt) / IRIS_MS, 0, 1);
-              const eased = 1 - Math.pow(1 - t, 2.35);
-              st.iris.progress = t;
-              if (t > 0.52) setUiVisibleState(true);
-              const radius = 0.012 + eased * 1.45;
-              if (compose && officeRT && irisMat && composite && renderer) {
-                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt), officeRT);
-                irisMat.uRadius.value = radius;
-                irisMat.uTime.value = time;
-                irisMat.uAspect.value = host.clientWidth / Math.max(1, host.clientHeight);
-                composite.mesh.material = irisMat.mat;
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(composite.scene, composite.camera);
-                if (t >= 1) finishIris();
-              } else {
-                finishIris();
-              }
-            }
           } else {
             const h = window.innerHeight;
             const w = window.innerWidth;
             const aim = st.about;
             const scale = paper ? w / paper.width : 1;
-            const shredStart = paper ? FOLD_END + (paper.ctaY * scale) / h : 1e9;
+            const shredStart = paper ? ABOUT_START + (paper.ctaY * scale) / h : 1e9;
             const revealStart = paper ? shredStart + ENDING_SCREENS : 1e9;
             const tieStart = paper ? revealStart + REVEAL_SCREENS : 1e9;
             const tieEnd = tieStart + TIE_SCREENS;
@@ -921,7 +879,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             if (Math.abs(diff) < 0.0004) aim.s = aim.target;
             const s = clamp(aim.s, 0, maxS);
             const inContact = !!paper && s >= contactStart;
-            const stage: 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
+            const stage: 'fade' | 'office' | 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
               ? 'contact'
               : s >= tieStart
                 ? 'tie'
@@ -929,16 +887,22 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   ? 'reveal'
                   : s >= shredStart
                     ? 'ending'
-                    : 'paper';
+                    : s >= ABOUT_START
+                      ? 'paper'
+                      : s >= FADE_SCREENS
+                        ? 'office'
+                        : 'fade';
             const contactP = inContact ? clamp((s - contactStart) / CONTACT_SCREENS, 0, 1) : 0;
             /** 进入 Contact 的位移，单位：屏（s 本身是屏单位，不是像素） */
             const contactEnterScreens = inContact ? s - contactStart : 0;
-            const shred = stage === 'paper' ? 0 : clamp((s - shredStart) / ENDING_SCREENS, 0, 1);
+            const shred = s >= shredStart ? clamp((s - shredStart) / ENDING_SCREENS, 0, 1) : 0;
             st.about.shred = shred;
-            // 原站：铺开期间纸面固定在页首，折痕扫过；铺开后才开始卷动内容
-            const foldProgress = clamp((s - ENTRY_OFFICE_SCREENS) / FOLD_SCREENS, 0, 1);
-            const paperTop = s < FOLD_END ? 0 : -(s - FOLD_END) * h;
-            const officeProgress = clamp(s, 0, 1);
+            // 原站 enterProgress：about.start−2 → about.start+.6（2.6 屏）；
+            // 可见折痕扫过约 1.27 屏，铺满后内容仍停在页首，直到 about.start。
+            const foldEnter = clamp((s - FOLD_LEAD_SCREENS) / FOLD_ENTER_SPAN, 0, 1);
+            const paperTop = s < ABOUT_START ? 0 : -(s - ABOUT_START) * h;
+            // office 页滚动进度（原站 nM(scroll, office.start, office.end, 0, 1)，fade 期间可为负）
+            const officeProgress = (s - FADE_SCREENS) / OFFICE_SCREENS;
 
             // golden-tie-reveal 时间轴（原站：文案 l = (scroll-start+4)/5.6；
             // 卡片 n_((scroll-(start-3))/(end-(start-3)))，end-start=1.7）
@@ -954,10 +918,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             const tiePin = clamp((s - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
             const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
 
-            if (stage === 'paper') {
-              setThemeState(s >= FOLD_END ? 'dark' : 'light');
-            } else {
+            if (stage === 'fade') {
+              // 原站 projects UI 在 fade 前已消失；office UI 从 office 页首才出现
+              setUiVisibleState(false);
               setThemeState('light');
+            } else {
+              setUiVisibleState(true);
+              if (stage === 'office' || stage === 'paper') {
+                // 原站 office uiMode=light、about uiMode=dark；about UI 从 about.start−0.35 起
+                setThemeState(s >= ABOUT_UI_START ? 'dark' : 'light');
+              } else {
+                setThemeState('light');
+              }
             }
 
             setContactActiveState(inContact);
@@ -1136,9 +1108,70 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               renderer.setRenderTarget(null);
               if (tie) await renderer.renderAsync(tie.scene, tie.camera);
               else renderer.clear();
+            } else if (stage === 'fade') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#0b0b0b';
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+
+              // 原站 projects 页末段仍在推镜，fade 只是把它与 office 纹理混合
+              work.phaseVel += (90 * (1 - work.phase) - 14 * work.phaseVel) * dt;
+              work.phase += work.phaseVel * dt;
+              workScene.update(dt, time, {
+                mouseX: mouse.x,
+                mouseY: mouse.y,
+                selectedIndex: work.index,
+                dragPx: work.dragPx,
+                scrollPhase: clamp(work.phase, 0, 1),
+              });
+              officeFrame(time, dt, officeProgress);
+              if (compose && workRT && officeRT && fadeMat && composite) {
+                await compose.renderToTarget(renderer, workScene.scene, workScene.camera, workFrame(time, dt), workRT);
+                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt), officeRT);
+                fadeMat.uFade.value = smoothstep(0, 1, clamp(s / FADE_SCREENS, 0, 1));
+                composite.mesh.material = fadeMat.mat;
+                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                renderer.setRenderTarget(null);
+                await (renderer as any).renderAsync(composite.scene, composite.camera);
+              } else {
+                renderer.setClearColor(CLEAR_PAPER, 1);
+                renderer.setRenderTarget(null);
+                await (renderer as any).renderAsync(office.scene, office.camera);
+              }
+            } else if (stage === 'office') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#000000';
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+
+              officeFrame(time, dt, officeProgress);
+              paperScene?.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
+
+              // 原站 office→about overlay：office 在底，纸质折痕按 enterProgress 覆盖
+              if (paperScene && compose && officeRT && paperRT && entryMat && composite) {
+                renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+                renderer.setRenderTarget(paperRT);
+                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
+                renderer.setClearColor(CLEAR_PAPER, 1);
+                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt), officeRT);
+                entryMat.uEnter.value = foldEnter;
+                composite.mesh.material = entryMat.mat;
+                renderer.setRenderTarget(null);
+                await (renderer as any).renderAsync(composite.scene, composite.camera);
+              } else if (compose) {
+                await compose.render(renderer, office.scene, office.camera, workFrame(time, dt));
+              } else {
+                renderer.setClearColor(CLEAR_PAPER, 1);
+                renderer.setRenderTarget(null);
+                await (renderer as any).renderAsync(office.scene, office.camera);
+              }
             } else if (paperScene && paper) {
               wasEnding = false;
-              officeFrame(time, dt, officeProgress);
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              host.style.background = '#0b0b0b';
               paperScene.update({
                 stage: 'paper',
                 paperTop,
@@ -1147,16 +1180,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 time,
               });
 
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#0b0b0b';
               const hotspot = paper.hotspots[0];
               if (hotspot && hotspotRef.current) {
                 const x = hotspot.x * scale;
                 const y = paperTop + hotspot.y * scale;
                 const hw = hotspot.w * scale;
                 const hh = hotspot.h * scale;
-                const visible = s >= FOLD_END && y + hh > 0 && y < h && paperTop <= 0;
+                const visible = y + hh > 0 && y < h && paperTop <= 0;
                 const el = hotspotRef.current;
                 el.style.display = visible ? 'block' : 'none';
                 el.style.left = `${x}px`;
@@ -1164,22 +1194,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 el.style.width = `${hw}px`;
                 el.style.height = `${hh}px`;
               }
-              // 原站 overlay 转场：纸页铺开期间固定在全屏，折痕从底部扫过并透出 office
-              if (foldProgress < 1 && compose && officeRT && paperRT && entryMat && composite) {
-                renderer.setClearColor(CLEAR_TRANSPARENT, 0);
-                renderer.setRenderTarget(paperRT);
-                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt), officeRT);
-                entryMat.uEnter.value = foldProgress;
-                composite.mesh.material = entryMat.mat;
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(composite.scene, composite.camera);
-              } else {
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
-              }
+              renderer.setClearColor(CLEAR_PAPER, 1);
+              renderer.setRenderTarget(null);
+              await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
             } else {
               wasEnding = false;
               officeFrame(time, dt, officeProgress);
@@ -1248,7 +1265,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       shredderRT?.dispose();
       nextRT?.dispose();
       belowMat?.dispose();
-      irisMat?.mat.dispose();
+      fadeMat?.mat.dispose();
       entryMat?.mat.dispose();
       composite?.geometry.dispose();
       const canvas = host.querySelector('canvas');
