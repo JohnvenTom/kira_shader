@@ -1,0 +1,9 @@
+ux_playback_id){let t=i[l];if(null==t){let t;t=ei.useSettingsStore.getState().reducedMemoryMode?"480p":"720p",mx=new AbortController,fq({src:`https://stream.mux.com/${u.mux_playback_id}.m3u8?max_resolution=${t}`,signal:m
+x.signal,options:{autoplay:!0,muted:!0,loop:!0,preload:"metadata"}}).then(t=>{if(mx=null,e!==mS)return void fX(t);let s=r[l];s&&(i[l]=t,a?.(),f$(t),mR(t.source.data,s,n))}).catch(e=>{"Aborted"!==e.message&&console.error(
+e)})}else{let e=r[l];if(!e)return;a?.(),f$(t),mR(t.source.data,e,n)}}}({projectIndex:e,activeStatuses:t,videoTransitions:r,videoTextures:i,shouldAnimate:n,onTextureLoaded:a})},300)}function mR(e,t,r){let i=()=>{r?(0,pf.a
+nimate)(t,1,{duration:.1}):t.set(1)};e.readyState>=2&&!e.paused?i():(e.addEventListener("playing",i,{once:!0}),e.play().catch(e=>{"AbortError"!==e.name&&console.error("Video resume error:",e)}))}function mT({renderHandle
+:e,textures:t}){var r;let i,n,a,s,o,l,u,A,c,d,h,g,f,p,m,E,I,y,C,B,v=(0,ee.usePagesStore)(e=>e.getPage),b=(0,er.useProjectsStore)(e=>e.prismicProjects.get()),S=(0,ee.usePagesStore)(e=>e.subPage),x=(0,ee.usePagesStore)(e=>
+e.previousSubPage),w=(0,ee.usePagesStore)(e=>e.subPageTransition),Q=pJ((0,er.useProjectsStore)(e=>e.selectedProjectIndex),e=>e+1e3*b.length),{videoTextures:R,videoTransitions:T,activeStatuses:D,shaderSlots:L,slotProjectI
+ndices:M,updateShaderSlots:k,debouncedUpdateShaderSlots:F}=(r=b.length,(c=(0,K.c)(15))[0]!==r?(i=Array.from({length:r},mB),c[0]=r,c[1]=i):i=c[1],d=(0,q.useRef)(i),c[2]!==r?(n=Array.from({length:r},mC),c[2]=r,c[3]=n):n=c[
+3],h=(0,q.useRef)(n),c[4]!==r?(a=Array.from({length:r},my),c[4]=r,c[5]=a):a=c[5],g=(0,q.useRef)(a),c[6]===Symbol.for("react.memo_cache_sentinel")?(s=Array.from({length:2},mI),c[6]=s):s=c[6],f=(0,q.useRef)(s),c[7]===Symbo
+l.for("react.memo_cache_sentinel")?(o=[,

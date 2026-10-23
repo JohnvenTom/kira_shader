@@ -4,9 +4,10 @@ import * as TSL from 'three/tsl';
 import {
   HERO_EFFECTS,
   HERO_LOADING_EFFECTS,
-  HERO_PROJECTS_EFFECTS,
+  HERO_PAGES,
   HERO_SETTINGS,
-  HERO_TIMELINE,
+  pageIndexAtScroll,
+  resolvePageEffects,
   type HeroEffects,
 } from './heroConfig';
 
@@ -55,14 +56,29 @@ export interface HeroComposeFrame {
    *  1 = 完全是 loading 效果，0 = 完全是 hero 效果） */
   loadingMix: number;
   /**
-   * 整条时间轴的滚动位置（单位 vh，hero 页 0~1、projects 页 1~2）
+   * 整条时间轴的滚动位置（单位 vh，从 hero 0 一直到 contact 22.16）
    *
    * 两件事由它驱动：
-   *  - 效果参数：原件 projects 页的 `effectTransitionLength = 1`，
-   *    所以 hero→projects 的效果值在整个 hero 页（0→1）上平滑过渡
-   *  - 视口穿越：最后 0.2（0.8→1.0）把 hero 场景 RT 交叉淡入 projects 场景 RT
+   *  - 效果参数：原件按 pagesConfig 的进入/退出区间对各页效果做加权和
+   *  - 场景合成：当前页与下一页各用自己的 lens/border/saturation，
+   *    在下一页 transitionLength 内交叉淡入（原件 sceneMode=2）
    */
   pageScroll: number;
+  /**
+   * 关闭场景合成内部的跨页交叉淡入（默认开启）
+   *
+   * WorkAbout 里 projects→office 的淡入由外层 fadeMat 完成，两页各自单独过合成链；
+   * 若这里再混一次，office 会被重复淡入两次。
+   */
+  crossfade?: boolean;
+  /**
+   * 强制指定场景合成使用哪一页的 lens/border/saturation（默认按 pageScroll 自动取当前页）
+   *
+   * WorkAbout 在同一个时刻分别渲染 projects 与 office 两页：两者共享 pageScroll，
+   * 但 office 必须用 office 页自己的镜头参数（原件 sceneMode=2 的 next section），
+   * 不能跟着当前页（projects）走。
+   */
+  sectionPage?: number;
 }
 
 /** 合成管线句柄 */
@@ -95,7 +111,7 @@ export interface HeroComposeHandle {
     graded: THREE.RenderTarget;
   };
   /** 调试：uniform 直读（自动化验证用） */
-  __debug: { u: Record<string, any>; HERO_PROJECTS_EFFECTS: HeroEffects };
+  __debug: { u: Record<string, any>; HERO_PAGES: typeof HERO_PAGES; resolvePageEffects: typeof resolvePageEffects };
 }
 
 /**
@@ -428,8 +444,18 @@ export function createHeroCompose(
   // ---------- uniforms ----------
   const u = {
     // 场景合成 pass
-    /** hero 场景 RT → projects 场景 RT 的交叉淡入权重（0.8vh 起、1.0vh 满） */
+    /** 当前页 / 下一页场景纹理（原件 `currentTexture` / `nextTexture`，逐帧换 value） */
+    curTexture: N.texture(sceneRT.texture),
+    nextTexture: N.texture(projectsTexture ?? sceneRT.texture),
+    /** 当前页场景 RT → 下一页场景 RT 的交叉淡入权重（下一页 transitionLength 区间） */
     portalBlend: N.uniform(0),
+    /** 当前页 / 下一页各自的镜头参数（原件 sceneMode：逐页原值，不是加权和） */
+    curLens: N.uniform(0),
+    curBorder: N.uniform(0),
+    curSaturation: N.uniform(1),
+    nextLens: N.uniform(0),
+    nextBorder: N.uniform(0),
+    nextSaturation: N.uniform(1),
     vigRadius: N.uniform(0),
     vigSmooth: N.uniform(0.3),
     vigIntensity: N.uniform(0),
@@ -478,32 +504,29 @@ export function createHeroCompose(
         .mul(N.step(warped.x, N.float(1)))
         .mul(N.step(N.float(0), warped.y))
         .mul(N.step(warped.y, N.float(1)));
-      const raw = N.texture(tex, uvB);
+      const raw = tex.uv(uvB);
       // 原件 AW：畸变 uv 出界时整颗输出透明黑（圆角黑边与四角切角由此而来），界内再走 AV 边遮罩
-      const awColor = edgeFade(N.texture(tex, warped), warped, border, u.dimensions);
+      const awColor = edgeFade(tex.uv(warped), warped, border, u.dimensions);
       const masked = N.mix(N.vec4(0, 0, 0, 0), awColor, inRange);
       return applySaturation(N.mix(raw, masked, active), saturation);
     };
 
-    // hero：镜头畸变 0 / 边框 0 / 饱和度 1（原件 hero 页 effects）
-    const heroScene = sampleSection(sceneRT.texture, N.float(0), N.float(0), N.float(1));
-    // projects：.16 / 1 / .92（原件 projects 页 effects；border=1 时桶形被回拉为 0，只留圆角）
-    const projectsScene = sampleSection(
-      projectsTexture ?? sceneRT.texture,
-      N.float(HERO_PROJECTS_EFFECTS.lensDistortion),
-      N.float(HERO_PROJECTS_EFFECTS.lensDistortionBorders),
-      N.float(HERO_PROJECTS_EFFECTS.saturation)
-    );
-    const mixedScene = N.mix(heroScene, projectsScene, u.portalBlend);
+    // 当前页与下一页各自采样：镜头/边框/饱和度逐页原值（原件 sceneMode=2 的 current/next）
+    // 本管线最多只有两张场景纹理：sceneRT（第一场景）与 projectsTexture（第二场景）。
+    // 当前页落到第二页及以后时由 writeUniforms 把 curTexture 换成 projectsTexture ——
+    // 否则 HeroOneToOne 的胶片页在 scroll≥1 会突然闪回第一个场景。
+    const curScene = sampleSection(u.curTexture, u.curLens, u.curBorder, u.curSaturation);
+    const nextScene = sampleSection(u.nextTexture, u.nextLens, u.nextBorder, u.nextSaturation);
+    const mixedScene = N.mix(curScene, nextScene, u.portalBlend);
     // loading 屏覆盖（原件 `isReadyToRender == 0` 分支）：按基准 uv 直采，**不吃畸变**
     const withLoading = N.mix(mixedScene, N.texture(bootTexture, uvB), u.loadingActive);
     // 暗角：`smoothstep(-s, s, radius - length(uv - 0.5))`
     const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
     const vignetted = N.mix(withLoading.rgb, N.clamp(withLoading.rgb.mul(vf), 0, 1), u.vigIntensity);
-    // alpha 随 portalBlend 过渡到 projects 的门禁结果（0/1 硬边）：hero 页保持 1 不变，
-    // projects 页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）
-    const alphaNow = N.mix(N.float(1), projectsScene.a, u.portalBlend);
+    // alpha 随 portalBlend 过渡到下一页的门禁结果（0/1 硬边）：单页时保持 1 不变，
+    // 出界页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）
+    const alphaNow = N.mix(N.float(1), nextScene.a, u.portalBlend);
     sceneComposeMat.colorNode = N.vec4(vignetted, alphaNow);
   }
 
@@ -744,22 +767,36 @@ export function createHeroCompose(
     // 原件：`e$ = eg*eg*(3-2*eg)`，eg = 1 - initialTransition
     const mixT = loadingMix <= 0 ? 0 : loadingMix >= 1 ? 1 : loadingMix * loadingMix * (3 - 2 * loadingMix);
     const L = HERO_LOADING_EFFECTS;
-    const H = HERO_EFFECTS;
-    const P = HERO_PROJECTS_EFFECTS;
-    // 原件 projects 页 `effectTransitionLength = 1`：整段 hero 页上做 smoothstep 过渡
-    const pageT = Math.min(1, Math.max(0, pageScroll / HERO_TIMELINE.heroLength));
-    const pageMix = pageT * pageT * (3 - 2 * pageT);
-    /** 原件 `e = e*(1-e$) + loading*e$`，再按 pageMix 过渡到 projects 页效果 */
-    const eff = (k: keyof HeroEffects) => {
-      const heroVal = H[k] + (L[k] - H[k]) * mixT;
-      return heroVal + (P[k] - heroVal) * pageMix;
-    };
+    // 原件逐页权重 → 加权和；loading 期再按 smoothstep(1 - initialTransition) 混回 loading 表
+    const pageEffects = resolvePageEffects(pageScroll);
+    /** 原件 `e = e*(1-e$) + loading*e$` */
+    const eff = (k: keyof HeroEffects) => pageEffects[k] + (L[k] - pageEffects[k]) * mixT;
 
-    // ---- 场景合成 pass：hero ↔ projects 两段 RT 的交叉淡入 ----
-    // 原件 sceneMode：最后一页的前 `portalFade`（0.2vh）内按 smoothstep 混合
-    const fadeStart = HERO_TIMELINE.heroLength - HERO_TIMELINE.portalFade;
-    const ft = Math.min(1, Math.max(0, (pageScroll - fadeStart) / HERO_TIMELINE.portalFade));
-    u.portalBlend.value = ft * ft * (3 - 2 * ft);
+    // ---- 场景合成 pass：当前页 → 下一页（原件 sceneMode） ----
+    // sectionPage：WorkAbout 同一帧分别渲染 projects / office 两页，强制各自页参数
+    const forced = frame.sectionPage;
+    const idx = forced ?? pageIndexAtScroll(pageScroll);
+    const cur = HERO_PAGES[Math.min(HERO_PAGES.length - 1, Math.max(0, idx))];
+    const next = forced === undefined ? HERO_PAGES[idx + 1] : undefined;
+    // 第二页及以后：当前纹理回落到第二场景（本管线只有两张 RT）
+    u.curTexture.value =
+      forced !== undefined || idx < 1 || !projectsTexture ? sceneRT.texture : projectsTexture;
+    u.curLens.value = cur.effects.lensDistortion;
+    u.curBorder.value = cur.effects.lensDistortionBorders;
+    u.curSaturation.value = cur.effects.saturation;
+    let portal = 0;
+    if (next && frame.crossfade !== false) {
+      const r = next.transitionLength;
+      if (r > 0) {
+        const ft = Math.min(1, Math.max(0, (pageScroll - (cur.end - r)) / r));
+        portal = ft * ft * (3 - 2 * ft);
+      }
+    }
+    const nfx = next ? next.effects : cur.effects;
+    u.nextLens.value = nfx.lensDistortion;
+    u.nextBorder.value = nfx.lensDistortionBorders;
+    u.nextSaturation.value = nfx.saturation;
+    u.portalBlend.value = portal;
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');
     u.vigIntensity.value = eff('vignetteIntensity');
@@ -965,6 +1002,6 @@ export function createHeroCompose(
       },
     },
     /** 调试：运行时 uniform 直读（自动化验证用，与 debugRTs 同款无副作用） */
-    __debug: { u, HERO_PROJECTS_EFFECTS },
+    __debug: { u, HERO_PAGES, resolvePageEffects },
   };
 }

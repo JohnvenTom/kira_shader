@@ -457,9 +457,276 @@ export const HERO_PROJECTS_EFFECTS: HeroEffects = {
   vignetteIntensity: 0,
 };
 
+/** office 页（About Us 3D 桌面）效果值 —— 原件 pagesConfig `{ id: "office" }` */
+export const HERO_OFFICE_EFFECTS: HeroEffects = {
+  noiseVelocity: 1,
+  noiseIntensity: 1.48,
+  sepiaIntensity: 0.81,
+  bloomThreshold: 0.55,
+  bloomIntensity: 1.36,
+  bloomRadius: 0.75,
+  bloomSmoothing: 0.2,
+  contrast: 1,
+  brightness: 1,
+  saturation: 0.56,
+  motionBlur: 0.5,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 1,
+  pow: 1.34,
+  chromaticAbberationStrength: 2.5,
+  vignetteRadius: 0.5,
+  vignetteSmoothness: 0.83,
+  vignetteIntensity: 0.45,
+};
+
+/** about-us 页（纸页长页）效果值 —— 原件 pagesConfig `{ id: "about-us" }` */
+export const HERO_ABOUT_EFFECTS: HeroEffects = {
+  noiseVelocity: 0.05,
+  noiseIntensity: 1,
+  sepiaIntensity: 0.4,
+  bloomThreshold: 0.3,
+  bloomIntensity: 0.1,
+  bloomRadius: 0.74,
+  bloomSmoothing: 0.65,
+  contrast: 1,
+  brightness: 1,
+  saturation: 1,
+  motionBlur: 0,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 0,
+  pow: 1.25,
+  chromaticAbberationStrength: 0.8,
+  vignetteRadius: 0.79,
+  vignetteSmoothness: 0.13,
+  vignetteIntensity: 0,
+};
+
+/** golden-tie-reveal 页效果值 —— 原件 pagesConfig `{ id: "golden-tie-reveal" }` */
+export const HERO_REVEAL_EFFECTS: HeroEffects = {
+  noiseVelocity: 1,
+  noiseIntensity: 0.75,
+  sepiaIntensity: 0.17,
+  bloomThreshold: 0.67,
+  bloomIntensity: 1.3,
+  bloomRadius: 0.78,
+  bloomSmoothing: 0.2,
+  contrast: 0.95,
+  brightness: 1,
+  saturation: 0.75,
+  motionBlur: 0.3,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 0,
+  pow: 1.4,
+  chromaticAbberationStrength: 1,
+  vignetteRadius: 0,
+  vignetteSmoothness: 0,
+  vignetteIntensity: 0,
+};
+
+/** golden-tie 页（握手）效果值 —— 原件 pagesConfig `{ id: "golden-tie" }` */
+export const HERO_TIE_EFFECTS: HeroEffects = {
+  noiseVelocity: 1,
+  noiseIntensity: 1,
+  sepiaIntensity: 0.45,
+  bloomThreshold: 0.67,
+  bloomIntensity: 2,
+  bloomRadius: 0.86,
+  bloomSmoothing: 0.29,
+  contrast: 0.95,
+  brightness: 1,
+  saturation: 0.7,
+  motionBlur: 0.3,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 0,
+  pow: 1.4,
+  chromaticAbberationStrength: 1,
+  vignetteRadius: 0,
+  vignetteSmoothness: 0,
+  vignetteIntensity: 0,
+};
+
+/** contact 页（Hello）效果值 —— 原件 pagesConfig `{ id: "contact" }` */
+export const HERO_CONTACT_EFFECTS: HeroEffects = {
+  noiseVelocity: 3.5,
+  noiseIntensity: 0.7,
+  sepiaIntensity: 0.5,
+  bloomThreshold: 0.56,
+  bloomIntensity: 0.8,
+  bloomRadius: 0.72,
+  bloomSmoothing: 0.3,
+  contrast: 0.92,
+  brightness: 1,
+  saturation: 0.85,
+  motionBlur: 0.05,
+  lensDistortion: 0.16,
+  lensDistortionBorders: 0,
+  pow: 1.14,
+  chromaticAbberationStrength: 1.15,
+  vignetteRadius: 0,
+  vignetteSmoothness: 0,
+  vignetteIntensity: 0,
+};
+
+/**
+ * 页面表（原件 `pagesConfig` 的节选，只保留逐页后期会用到的字段）
+ *
+ * 起点/终点由原件各页 `length` 累加得到（hero 1、projects 1、office 1.8、
+ * about-us 7.3367496785380295、reveal 1.7、tie 6、contact 3.3238571052836656）。
+ * `transitionLength` 属于**本页**：作为下一页场景的淡入长度，也作为本页效果退出的默认长度。
+ * `effectTransitionLength` / `effectOffset` 缺失时分别回落到 `transitionLength` / 0（原件同款）。
+ */
+export interface HeroPageConfig {
+  id: string;
+  start: number;
+  end: number;
+  effects: HeroEffects;
+  transitionLength: number;
+  effectTransitionLength?: number;
+  effectOffset?: number;
+  transition: 'direct' | 'fade' | 'overlay' | 'below';
+}
+
+export const HERO_PAGES: readonly HeroPageConfig[] = [
+  {
+    id: 'hero',
+    start: 0,
+    end: 1,
+    effects: HERO_EFFECTS,
+    transitionLength: 0,
+    transition: 'direct',
+  },
+  {
+    id: 'projects',
+    start: 1,
+    end: 2,
+    effects: HERO_PROJECTS_EFFECTS,
+    transitionLength: 0.2,
+    effectTransitionLength: 1,
+    transition: 'fade',
+  },
+  {
+    id: 'office',
+    start: 2,
+    end: 3.8,
+    effects: HERO_OFFICE_EFFECTS,
+    transitionLength: 0.4,
+    effectTransitionLength: 0.4,
+    effectOffset: -0.5,
+    transition: 'fade',
+  },
+  {
+    id: 'about-us',
+    start: 3.8,
+    end: 11.1367496785380295,
+    effects: HERO_ABOUT_EFFECTS,
+    transitionLength: 2,
+    transition: 'overlay',
+  },
+  {
+    id: 'golden-tie-reveal',
+    start: 11.1367496785380295,
+    end: 12.8367496785380295,
+    effects: HERO_REVEAL_EFFECTS,
+    transitionLength: 4.1,
+    effectTransitionLength: 2,
+    effectOffset: -2,
+    transition: 'below',
+  },
+  {
+    id: 'golden-tie',
+    start: 12.8367496785380295,
+    end: 18.8367496785380295,
+    effects: HERO_TIE_EFFECTS,
+    transitionLength: 1.75,
+    effectTransitionLength: 0.5,
+    effectOffset: -1,
+    transition: 'below',
+  },
+  {
+    id: 'contact',
+    start: 18.8367496785380295,
+    end: 22.160606783821695,
+    effects: HERO_CONTACT_EFFECTS,
+    transitionLength: 0.3,
+    effectTransitionLength: 0.5,
+    effectOffset: -0.2,
+    transition: 'fade',
+  },
+];
+
+/** 原件 `nF` 的 smoothstep 语义（区间外钳到 0/1） */
+const smoothRange = (x: number, a: number, b: number) => {
+  if (b <= a) return x >= b ? 1 : 0;
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * 原件的逐页效果权重（`effects-zone.txt` 里的 `q[e]`）
+ *
+ * 规则（照抄反编译）：
+ *  - scroll ≤ 0：只有第 0 页
+ *  - 每页进入段 `[start − r + i, start + i]` 用 smoothstep 淡入（r = effectTransitionLength ?? transitionLength）
+ *  - 中段 `[start + i, end − a + s]` 恒为 1（a/s 取**下一页**的 effectTransitionLength/effectOffset）
+ *  - 退出段 `[end − a + s, end + s]` 用 1 − smoothstep 淡出
+ *
+ * 注意：这些区间在页边界处恰好互补（权重和为 1），因此加权和不会被「压暗」。
+ */
+export function resolvePageEffectWeights(scroll: number): number[] {
+  const q = new Array<number>(HERO_PAGES.length).fill(0);
+  for (let e = 0; e < HERO_PAGES.length; e++) {
+    const p = HERO_PAGES[e];
+    if (scroll <= 0) {
+      q[e] = e === 0 ? 1 : 0;
+      continue;
+    }
+    const r = p.effectTransitionLength ?? p.transitionLength;
+    const i = p.effectOffset ?? 0;
+    if (scroll >= p.start - r + i && scroll <= p.start + i) {
+      q[e] = smoothRange(scroll, p.start - r + i, p.start + i);
+      continue;
+    }
+    const n = HERO_PAGES[e + 1];
+    const a = n ? (n.effectTransitionLength ?? n.transitionLength) : 0;
+    const s = n ? (n.effectOffset ?? 0) : 0;
+    if (scroll >= p.start + i && scroll <= p.end - a + s) {
+      q[e] = 1;
+    } else if (scroll >= p.end - a + s && scroll <= p.end + s) {
+      q[e] = 1 - smoothRange(scroll, p.end - a + s, p.end + s);
+    } else {
+      q[e] = 0;
+    }
+  }
+  return q;
+}
+
+/** 逐页效果参数的加权和（原件最终 pass 的 `let $=0, X=0, …` 那一段） */
+export function resolvePageEffects(scroll: number): HeroEffects {
+  const q = resolvePageEffectWeights(scroll);
+  const out = {} as HeroEffects;
+  for (const key of Object.keys(HERO_EFFECTS) as (keyof HeroEffects)[]) {
+    let sum = 0;
+    for (let e = 0; e < HERO_PAGES.length; e++) sum += q[e] * HERO_PAGES[e].effects[key];
+    out[key] = sum;
+  }
+  return out;
+}
+
+/**
+ * 场景合成 pass 用的「当前页」索引（原件 `I`：第一个 `scroll ≤ range.end` 的页）
+ *
+ * 返回值用于取该页自己的 lensDistortion / lensDistortionBorders / saturation ——
+ * 场景 pass 用的是逐页原值，不是上面的加权和。
+ */
+export function pageIndexAtScroll(scroll: number): number {
+  for (let e = 0; e < HERO_PAGES.length; e++) {
+    if (scroll <= HERO_PAGES[e].end) return e;
+  }
+  return HERO_PAGES.length - 1;
+}
+
 /**
  * 首页 → projects 的滚动时间轴（单位：视口高度 vh，与原件 Lenis 的 scroll 同单位）
- *
  * 原件页面划分：hero 页 [0, 1]，projects 页 [1, 2]。
  *  - 相机在 scroll=0.8 时刚好贴在屏幕上（`u = 1 - (1 - min(s/0.8,1))^1.4`）
  *  - 视口纹理交叉淡入发生在最后 `transitionLength = 0.2`（0.8 → 1.0）

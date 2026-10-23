@@ -1,0 +1,13 @@
+get(),u.time.value=e.elapsed,u.dimensions.value.set(m.width*m.dpr,m.height*m.dpr),u.resolution.value.set(m.width,m.height),u.logoHoverTransition.value=z.get(),u.pageActionHoverTransition.value=V.get(),u.uiModeTransition.
+value=s.get(),r&&(u.uiTextureLight.value=r),i&&(u.uiTextureDark.value=i),a&&(u.loadingScreenTexture.value=a),o&&(u.transitionTexture.value=o);let c=d.current;for(let e=0;e<7;e++){let r=t[e];r&&(c[e]=r)}let f=B.current,E=
+Math.fround(l),I=-1;for(let e=0;e<7;e++)if(E<=Math.fround(f.ranges[e]?.y??0)){I=e;break}if(-1===I)u.sceneMode.value=0;else{let e=I+1,t=Math.fround(f.ranges[I]?.y??0),r=Math.fround(f.transitionLengths[e]??0),i=e<7&&!(E<=M
+ath.fround(t-r));u.sceneMode.value=i?2:1,u.currentTexture.value=c[I],u.currentLensDistortion.value=f.lensDistortions[I]??0,u.currentLensDistortionBorder.value=f.lensDistortionBorders[I]??0,u.currentSaturation.value=f.sat
+urations[I]??1,i&&(u.nextTexture.value=c[e],u.nextLensDistortion.value=f.lensDistortions[e]??0,u.nextLensDistortionBorder.value=f.lensDistortionBorders[e]??0,u.nextSaturation.value=f.saturations[e]??1,u.nextTransitionTyp
+e.value=f.transitionTypes[e]??0,u.transitionRangeEnd.value=f.ranges[I]?.y??0,u.transitionLength.value=f.transitionLengths[e]??0)}let W=A.get(),J=x.get(),Y=w.get();U.current&&U.current.length===W.length||(U.current=new Fl
+oat32Array(W.length));let q=U.current;q.fill(0);for(let e=0;e<W.length;e++){let t=W[e];if(!t)continue;if(l<=0){q[e]=+(0===e);continue}let r=t.effectTransitionLength??t.transitionLength,i=t.effectOffset??0;if(l>=t.range.s
+tart-r+i&&l<=t.range.start+i){q[e]=nF(l,t.range.start-r+i,t.range.start+i);continue}let n=W[e+1],a=n?.effectTransitionLength??n?.transitionLength??0,s=n?.effectOffset??0,o=t.range;l>=o.start+i&&l<=o.end-a+s?q[e]=1:l>=o.e
+nd-a+s&&l<=o.end+s?q[e]=1-nF(l,o.end-a+s,o.end+s):q[e]=0}let $=0,X=0,Z=0,ee=0,et=0,er=0,ei=0,en=0,ea=0,es=0,eo=0,el=0,eu=0,eA=0,ec=0,ed=0,eh=0;for(let e=0;e<q.length;e++){let t=q[e];void 0!==t&&0!==t&&($+=t*(b.current.bl
+oomIntensites[e]??0),X+=t*(b.current.sepiaIntensites[e]??0),Z+=t*(b.current.noiseIntensites[e]??0),ee+=t*(b.current.noiseVelocities[e]??0),et+=t*(b.current.bloomThresholds[e]??1),er+=t*(b.current.bloomRadii[e]??.8),ei+=t
+*(b.current.bloomSmoothings[e]??.2),es+=t*(b.current.lensDistortions[e]??0),eo+=t*(b.current.lensDistortionBorders[e]??0),en+=t*(b.current.contrasts[e]??0),ea+=t*(b.current.brightnesses[e]??0),el+=t*(b.current.motionBlur
+s[e]??0),eu+=t*(b.current.pows[e]??0),eA+=t*(b.current.vignetteRadii[e]??0),ec+=t*(b.current.vignetteSmoothnesses[e]??0),ed+=t*(b.current.vignetteIntensities[e]??0),eh+=t*(b.current.chromaticAbberationStrengths[e]??0))}l
+et eg=1-G.get(),ef=Q.get(),{bloomIntensity:ep,sepiaIntensity

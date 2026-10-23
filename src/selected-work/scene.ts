@@ -91,13 +91,24 @@ export interface SelectedWorkSceneHandle {
    *  - mouseX/mouseY  鼠标 NDC（-1~1，y 向上为正）
    *  - selectedIndex  当前选中项目（整数；可越界取模）
    *  - dragPx         拖拽位移（CSS px，右正；松手后由页面清零并决定是否换页）
-   *  - scrollPhase    纵向滚离停驻点的相位（0=胶片停驻，1=完全推入场景；缺省 0）
+   *  - pageScroll     原站主页面 scroll（屏；1.0=projects 页起点）。缺省按 1.05 摆位，
+   *                   供 hero 页沿用现有画面；WorkAbout 传真实 scroll。
+   *  - exitProgress   原站画格蒙版进度（projects.end−0.7 → +0.2，0..1）
    */
   update: (
     dt: number,
     time: number,
-    state: { mouseX: number; mouseY: number; selectedIndex: number; dragPx?: number; scrollPhase?: number }
+    state: {
+      mouseX: number;
+      mouseY: number;
+      selectedIndex: number;
+      dragPx?: number;
+      pageScroll?: number;
+      exitProgress?: number;
+    }
   ) => void;
+  /** office 场景纹理（raw，projects 页 shader 以屏幕坐标采样进激活画格） */
+  setTransitionTexture: (texture: THREE.Texture | null) => void;
   dispose: () => void;
 }
 
@@ -134,6 +145,21 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   atlasTexture.wrapS = THREE.ClampToEdgeWrapping;
   atlasTexture.wrapT = THREE.ClampToEdgeWrapping;
 
+  // 逐帧 brightness（图集同序：标题数组反序）。用 1D 纹理取样，
+  // 避免 20 个 uniform 的逐帧分支；原件 contrast 全为 1，故只存亮度。
+  const brightnessData = new Uint8Array(PROJECT_COUNT * 4);
+  SELECTED_PROJECTS.forEach((project, index) => {
+    const g = PROJECT_COUNT - 1 - index;
+    brightnessData[g * 4] = Math.round(clamp(project.brightness, 0, 1) * 255);
+    brightnessData[g * 4 + 3] = 255;
+  });
+  const brightnessTexture = new THREE.DataTexture(brightnessData, PROJECT_COUNT, 1, THREE.RGBAFormat);
+  brightnessTexture.colorSpace = THREE.NoColorSpace;
+  brightnessTexture.minFilter = THREE.NearestFilter;
+  brightnessTexture.magFilter = THREE.NearestFilter;
+  brightnessTexture.generateMipmaps = false;
+  brightnessTexture.needsUpdate = true;
+
   const images: HTMLImageElement[] = [];
   SELECTED_PROJECTS.forEach((project, index) => {
     const img = new Image();
@@ -148,10 +174,9 @@ export function createSelectedWorkScene(width: number, height: number): Selected
       const rowFromBottom = Math.floor(atlasIndex / ATLAS_COLS);
       const x = col * ATLAS_CELL_W;
       const y = atlasCanvas.height - (rowFromBottom + 1) * ATLAS_CELL_H;
-      atlasCtx.save();
-      atlasCtx.filter = `brightness(${project.brightness}) contrast(${project.contrast})`;
+      // 原图入图集：brightness/contrast 留到着色器里按帧应用，
+      // 这样 exitProgress 才能把亮度归一（原件 I = brightness·(1−e)+e）
       atlasCtx.drawImage(img, x, y, ATLAS_CELL_W, ATLAS_CELL_H);
-      atlasCtx.restore();
       atlasDirty = true;
     };
     img.onerror = () => {
@@ -161,6 +186,11 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     img.src = project.thumbnail;
     images.push(img);
   });
+
+  // office 未就绪时的占位纹理（1×1 黑）；WorkAbout 每帧替换为 raw office RT
+  const transitionPlaceholder = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  transitionPlaceholder.colorSpace = THREE.NoColorSpace;
+  transitionPlaceholder.needsUpdate = true;
 
   // ---------- 胶片材质 ----------
   const u = {
@@ -173,6 +203,12 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     borderY: T.uniform(0.07),
     frameWidth: T.uniform(REEL_FRAME_WIDTH),
     flexAnimation: T.uniform(0),
+    /** 原件 exitProgress：画格内混入下一场景 + 亮度/光照/高光归一 */
+    exitProgress: T.uniform(0),
+    /** 当前激活画格（图集索引 g） */
+    activeIndex: T.uniform(-1),
+    /** 下一场景纹理（raw office），screenUV 采样 */
+    transitionTexture: T.texture(transitionPlaceholder),
   };
 
   const reelMat = new THREE.MeshBasicNodeMaterial();
@@ -229,9 +265,30 @@ export function createSelectedWorkScene(width: number, height: number): Selected
       row.add(f.y).div(ATLAS_ROWS)
     );
     const thumb = T.texture(atlasTexture, atlasUv).rgb.mul(1.05);
+    // 原件逐帧 brightness（contrast 全为 1）；图集是 raw 颜色
+    const frameBrightness = T.texture(
+      brightnessTexture,
+      T.vec2(g.add(0.5).div(count), 0.5)
+    ).r;
 
     const gray = T.vec3(T.dot(thumb, T.vec3(0.299, 0.587, 0.114)));
     const x = T.select(uv.x.lessThan(0.35), thumb, T.mix(thumb, gray, 0.5));
+
+    // 原件 exitProgress 分支：激活画格内按屏幕坐标混入下一场景（raw office），
+    // 随后把整条胶片的亮度/光照/高光归一到“无风格”状态
+    const isActiveFrame = T.abs(g.sub(u.activeIndex)).lessThan(0.5);
+    // 原件 `texture(transitionTexture, screenCoordinate / resolution)`：直接屏幕坐标
+    // WebGPU 离屏 RT 需要翻 V（与 heroCompose 的 baseUv 同款约定）
+    const officeUv = T.vec2(T.screenUV.x, T.oneMinus(T.screenUV.y));
+    const officeScreen = u.transitionTexture.uv(officeUv).rgb;
+    const showOffice = uv.x.lessThan(0.35)
+      .and(u.exitProgress.greaterThan(0))
+      .and(isActiveFrame);
+    const withOffice = T.select(showOffice, T.mix(x, officeScreen, u.exitProgress), x);
+    // 原件 `mix(_, 1, e·1.1)` / `mix(z, 0, e·1.1)`：不做 clamp，e=1 时会外推到纯白 / 负高光
+    const exitLight = u.exitProgress.mul(1.1);
+    const brightMix = T.mix(frameBrightness, T.float(1), u.exitProgress);
+    const shade = withOffice.mul(brightMix).toVar();
 
     const border = h.lessThan(u.borderX)
       .or(h.greaterThan(T.oneMinus(u.borderX)))
@@ -249,7 +306,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
       .and(ii.lessThan(0.75));
     T.Discard(hole);
 
-    let L = T.select(border, T.vec3(0), x).toVar();
+    let L = T.select(border, T.vec3(0), shade).toVar();
 
     const M = 0.005;
     L.assign(
@@ -270,10 +327,12 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     const viewDir = T.normalize(u.viewPosition.sub(vWorld));
     const n = T.normalize(vNormal);
     const facingDot = T.abs(T.dot(n, viewDir));
-    const lit = T.vec3(0.1).add(T.vec3(0.9).mul(T.pow(facingDot, 1)));
+    const litBase = T.vec3(0.1).add(T.vec3(0.9).mul(T.pow(facingDot, 1)));
+    // 原件 `mix(_, 1, exitProgress·1.1)` + `mix(z, 0, exitProgress·1.1)`
+    const lit = T.mix(litBase, T.vec3(1), exitLight);
     const toLight = T.normalize(T.vec3(14, 7, 0).sub(vWorld));
     const halfDir = T.reflect(toLight.negate(), n);
-    const spec = T.pow(T.max(T.dot(halfDir, viewDir), 0), 35).mul(0.6);
+    const spec = T.pow(T.max(T.dot(halfDir, viewDir), 0), 35).mul(0.6).mul(T.oneMinus(exitLight));
     const J = L.mul(lit).add(T.vec3(spec));
 
     const distFromCenter = T.length(vLocal);
@@ -311,8 +370,8 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   ).add(0.5);
   bgMat.colorNode = T.texture(gradientTexture, bgRotUv).rgb;
   const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bgMat);
-  // 原件平面挂在 z=-300（`position=[0,0,-300]`）；尺寸/纵向偏移按参考截图标定（见 measure 注释）
-  bgMesh.position.set(0, 0, -300);
+  // 原件：平面挂 z=-200，尺寸按初始相机到 z=-190 的距离算，位置 y=60·p 随页面滚动上移
+  bgMesh.position.set(0, 0, -200);
   scene.add(bgMesh);
 
   // ---------- 棱柱标题 + 胶片（同一个 0.4 缩放组） ----------
@@ -328,20 +387,16 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   let aspect = width / Math.max(1, height);
   let bgW = 1;
   let bgH = 1;
-  let bgY = 0;
   let eg = -1.6;
   const fovConst = 2 * Math.tan((REEL_FOV * Math.PI) / 180 / 2);
+  /** 原件背景平面尺寸：`ec=2·tan(fov/2)·|camZ−(−190)|`，`[1.2·ec·aspect, 1.4·ec]` */
+  const BG_REF_DIST = 195;
 
   let reelMeshScale = 1;
   const measure = () => {
-    // 背景平面（z=-300）尺寸/位置按参考截图三点标定（等值线线性拟合，R²>0.999）：
-    // 高 ≈ 1.362 倍视锥高、中心上移 0.106 倍视锥高 —— 上下边都落在 RT 外：
-    // 底端边界由合成门禁的 warp 曲线收出（屏幕 y≈761/747），顶端露出 t≈0.21 的暗蓝。
-    // 若平面小于视锥，屏幕底部永远采不到渐变末端的纯蓝，整条背景会偏暗。
-    const bgFrustumH = fovConst * 305;
-    bgW = 0.986 * bgFrustumH * aspect;
-    bgH = 1.362 * bgFrustumH;
-    bgY = 0.106 * bgFrustumH;
+    const ec = fovConst * BG_REF_DIST;
+    bgW = 1.2 * ec * aspect;
+    bgH = 1.4 * ec;
     eg = aspect <= 1 ? -1.6 : -1.6 - 0.3 * aspect + 0.2;
     reelMeshScale = clamp(remap(width, 500, 2560, 0.7, 0.9), 0.7, 0.9) + 0.1 * aspect;
   };
@@ -354,7 +409,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     camera.updateProjectionMatrix();
     measure();
     bgMesh.scale.set(bgW, bgH, 1);
-    bgMesh.position.set(0, bgY, -300);
+    bgMesh.position.set(0, 0, -200);
     reelMesh.position.set(0, eg, 0);
     reelMesh.scale.set(reelMeshScale, reelMeshScale, reelMeshScale);
     prism.setSize(width, height);
@@ -405,14 +460,29 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     flex += (flexTarget - flex) * (1 - Math.exp(-10 * dts));
     u.flexAnimation.value = flex;
 
-    // 纵向滚离停驻点：相机向胶片场景推入（原站 1vh→2vh 的镜头运动），标题随透视自然上移出框
-    const phase = clamp(state.scrollPhase ?? 0, 0, 1);
-    camera.position.set(
-      0.2 * camMouse.x,
-      0.2 * camMouse.y - phase * 0.32,
-      5 - phase * 2.35
-    );
-    camera.lookAt(0, 0.03 + phase * 0.42, 0);
+    // 原件 ProjectsScene 机位（page-rig）：A=scroll−.05，t=remap(A,1,2,0,.95)
+    // camera.z=5−5t；胶片组 y=1.6·remap(A,1,2,.05,.5)+.2；lookAt y 随 A 升到 .25；
+    // 背景 y=60p 并以 remap(t) 放大。缺省 1.05 保持 hero 页现有画面。
+    const pageScroll = state.pageScroll ?? 1.05;
+    const A = pageScroll - 0.05;
+    const t = remap(A, 1, 2, 0, 0.95);
+    /** 原件 `r = remap(A, .95, 2, 0, 1)`，既是背景放大基准也是相机 y 的下沉量 */
+    const r = remap(A, 0.95, 2, 0, 1);
+    const groupY = 1.6 * remap(A, 1, 2, 0.05, 0.5) + 0.2;
+    const lookY = remap(A, 0.95, 2, 0.03, 0.25);
+    const bgScale = t < 0 ? remap(t, -1, 0, 1.5, 1) : remap(t, 0, 1, 1, 1.5);
+    group.position.y = groupY;
+    bgMesh.position.set(0, 60 * groupY, -200);
+    // 原件逐帧 `ea.current?.scale.set(n,n,1)`（两轴同步缩放）
+    bgMesh.scale.set(bgW * bgScale, bgH * bgScale, 1);
+    // 原件 `.2 * mouseOffset.x` / `-r + .2 * mouseOffset.y`，
+    // mouseOffset = (.5 − mouseX01, .5 − mouseY01) ⇒ x = −.1·NDC.x、y = −r − .1·NDC.y
+    camera.position.set(-0.1 * camMouse.x, -r - 0.1 * camMouse.y, 5 - 5 * t);
+    camera.lookAt(0, lookY, 0);
+
+    u.exitProgress.value = state.exitProgress ?? 0;
+    const active = ((PROJECT_COUNT - 1 - selectedIndex) % PROJECT_COUNT + PROJECT_COUNT) % PROJECT_COUNT;
+    u.activeIndex.value = active;
 
     prism.update(dts, time);
 
@@ -422,10 +492,16 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     }
   };
 
+  const setTransitionTexture = (texture: THREE.Texture | null) => {
+    u.transitionTexture.value = texture ?? transitionPlaceholder;
+  };
+
   const dispose = () => {
     geometry.dispose();
     reelMat.dispose();
     atlasTexture.dispose();
+    brightnessTexture.dispose();
+    transitionPlaceholder.dispose();
     bgMesh.geometry.dispose();
     bgMat.dispose();
     gradientTexture.dispose();
@@ -436,5 +512,5 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     }
   };
 
-  return { scene, camera, setSize, update, dispose };
+  return { scene, camera, setSize, update, setTransitionTexture, dispose };
 }

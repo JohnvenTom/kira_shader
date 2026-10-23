@@ -299,7 +299,9 @@ export default function SelectedWorkPage() {
             mouseY: mouse.y,
             selectedIndex: selectedRef.current,
             dragPx,
-            scrollPhase: phaseClamped,
+            // 独立调试页没有 office 原始纹理：沿原站 projects→office 的机位段推进即可
+            pageScroll: 1 + phaseClamped,
+            exitProgress: clamp((phaseClamped - 0.3) / 0.2, 0, 1),
           });
           if (compose) {
             await compose.render(renderer, scene.scene, scene.camera, {

@@ -180,11 +180,15 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
   setSize(width, height);
 
   const update: AboutOfficeHandle['update'] = (_dt, _time, state) => {
-    // 原站 office 场景在 fade 阶段（office 页首之前）也会被渲染，progress 可为负
-    const i = Math.max(-0.25, Math.min(1, state.scrollProgress));
+    // 原件 `nM(progress, page.start, page.end, 0, 1)` 不做 clamp：
+    // projects 蒙版阶段（scroll 1.3–2.0）office 进度为负，镜头要停在页前机位
+    const i = state.scrollProgress;
     const touch = state.touch ?? false;
-    camera.rotation.x = -0.6 + 0.025 * state.mouseY;
-    camera.rotation.y = touch ? 0 : (0.5 - state.mouseX) * 0.025;
+    // 原件用 getMouseOffset() = (.5 − mouseX01, .5 − mouseY01)，入参是 NDC ⇒ 取 −NDC/2
+    const offX = -state.mouseX * 0.5;
+    const offY = -state.mouseY * 0.5;
+    camera.rotation.x = -0.6 + 0.025 * offY;
+    camera.rotation.y = touch ? 0 : (0.5 - offX) * 0.025;
     camera.position.z = -4 * i + 4.5;
   };
 
