@@ -435,7 +435,9 @@ export function createGoldenTieScene(
   // 载体：CanvasTexture 平面（STIX serif 同款字体），随相机 dolly 自然透视。
   // ---------------------------------------------------------------------------
   const tieTitleCanvas = document.createElement('canvas');
-  tieTitleCanvas.width = 2048;
+  // 宽度余量：190px STIX 的 "Check Out This Golden Tie" 实测宽约 2250px，
+  // 2048 画布会让 "Tie" 被裁掉 —— 用 2560 保证完整绘制
+  tieTitleCanvas.width = 2560;
   tieTitleCanvas.height = 512;
   {
     const ctx = tieTitleCanvas.getContext('2d')!;
@@ -460,7 +462,7 @@ export function createGoldenTieScene(
   tieTitleMat.toneMapped = false;
   tieTitleMat.side = THREE.DoubleSide;
   const TIE_TITLE_BASE_Y = 7;
-  const tieTitleMesh = new THREE.Mesh(new THREE.PlaneGeometry(40, 10), tieTitleMat);
+  const tieTitleMesh = new THREE.Mesh(new THREE.PlaneGeometry(50, 10), tieTitleMat);
   tieTitleMesh.position.set(0, TIE_TITLE_BASE_Y, -30);
   tieTitleMesh.renderOrder = 6;
   scene.add(tieTitleMesh);

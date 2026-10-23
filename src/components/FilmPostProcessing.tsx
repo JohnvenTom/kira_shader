@@ -75,7 +75,7 @@ export const DEFAULT_FILM_PARAMS: FilmFXParams = {
   // 想恢复：0.1 = 隐约自然档，0.35 = 中等，0.87 = shader.se 原版风格。
   noiseIntensity: 0,
   noiseVelocity: 1.0,
-  // 体积雾是本站自有功能（shader.se 无）；胶片页打开，走「淡档」：
+  // 2D 屏幕空间雾是本站自有功能（shader.se 无）；胶片页打开，走「淡档」：
   // fogDensity 控随深度累积的浓度、fogOpacity 是整体不透明度（0 = 完全关闭）。
   // 更浓 → 0.25~0.35；更淡 → 0.10~0.14；黑洞页自己把 fogOpacity 钉为 0（见其专用参数）
   fogDensity: 0.14,
