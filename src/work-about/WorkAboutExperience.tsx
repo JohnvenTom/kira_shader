@@ -22,7 +22,6 @@ import {
   bootStore,
 } from '../boot/bootStore';
 import type { AboutTheme } from './AboutUI';
-import type { ContactPhase } from './ContactUI';
 import './about.css';
 
 const T = TSL as any;
@@ -70,10 +69,13 @@ const ABOUT_UI_START = ABOUT_START - 0.35;
 const REVEAL_SCREENS = 1.7;
 /** golden-tie 页长度（原站 pagesConfig length: 6） */
 const TIE_SCREENS = 6;
-/** Contact 段总长度（屏数）：hello / info / 照片屏(CEO) / footer 四节拍 */
-const CONTACT_SCREENS = 4.2;
-/** 跳转/直链进入 Contact 时越过黑场过渡的距离（屏数） */
-const CONTACT_JUMP = 0.55;
+/**
+ * Contact 段长度：原站动态测高（列内容高/视口高，d−1 页滚动）。
+ * 场景未就绪时的兜底值 ≈ 桌面 1600×900 的列高（hello/info/卡片/footer）。
+ */
+const CONTACT_FALLBACK_SCREENS = 4.2;
+/** 跳转/直链进入 Contact 的落点（屏）：对齐原站 #contact 直链首帧（Hello 顶 ≈8% 视口，列滚 ≈0.8 页） */
+const CONTACT_JUMP = 0.05;
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
 const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
@@ -339,8 +341,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       snapLockUntil = performance.now() + ms;
     };
     const initialContactMode = mode === 'contact';
-    let contactUiOn = false;
     let wasEnding = false;
+    /** 上一帧 stage（veil 黑场只在 tie→contact 滚入时生效） */
+    let prevStage = '';
     let rtW = 1;
     let rtH = 1;
     // === 转场方向调试（?debugRT=film|office）：把页 RT 以两种 V 方向分屏直铺上屏 ===
@@ -379,11 +382,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const setViewState = (value: View) => {
       st.view = value;
     };
-    let contactPhaseNow: ContactPhase = 'hello';
-    const setContactPhaseState = (value: ContactPhase) => {
-      contactPhaseNow = value;
-    };
-    void contactPhaseNow;
     const setContactActiveState = (value: boolean) => {
       st.contactActive = value;
     };
@@ -469,12 +467,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       hero?.setFilmTarget(filmRT.texture, rtW, rtH);
     };
 
-    const resetContactUi = () => {
-      // Contact 文案已由 canvas UI 绘制，无 DOM 需要复位
-      setContactPhaseState('hello');
-      contactUiOn = false;
-    };
-
     const resetWorkInput = () => {
       work.pending = false;
       work.dragging = false;
@@ -524,7 +516,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       pendingContact = false;
       st.finalShown = false;
       setContactActiveState(false);
-      resetContactUi();
       setViewState('hero');
       setUiVisibleState(false);
       setThemeState('light');
@@ -553,7 +544,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       snapLockUntil = 0;
       st.finalShown = false;
       setContactActiveState(false);
-      resetContactUi();
       setViewState('work');
       setUiVisibleState(false);
       setThemeState('light');
@@ -585,7 +575,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       setThemeState('dark');
       setFinalState(false);
       setContactActiveState(false);
-      resetContactUi();
       hideHotspots();
       void ensurePaper();
     };
@@ -671,6 +660,22 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
       if (!bootStore.springDone) return;
+      // contact 段链接命中（3D 投影区域，优先于 canvas UI——原站 uikit 点击语义）
+      if (st.contactActive && contact) {
+        const hit = contact
+          .hitRegions()
+          .find((r) => e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h);
+        if (hit) {
+          e.preventDefault();
+          if (hit.key === 'ctEmail') window.location.href = 'mailto:hello@shader.se?subject=Book%20a%20call';
+          else if (hit.key === 'ctBook') window.open('https://cal.com/filip-kantedal-hd30xa/30min', '_blank', 'noopener,noreferrer');
+          else if (hit.key === 'ctCeo') window.location.href = 'mailto:ceo@shader.se';
+          else if (hit.key === 'ctLi') window.open('https://www.linkedin.com/company/shadersweden/', '_blank', 'noopener,noreferrer');
+          else if (hit.key === 'ctIg') window.open('https://www.instagram.com/shadersweden/', '_blank', 'noopener,noreferrer');
+          else if (hit.key === 'ctX') window.open('https://x.com/shadersweden', '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
       // canvas UI 命中分发（原件 uikit 区域表；箭头/提示/链接/菜单都在这里）。
       // 直呼 API 而非改 hash——避免与帧循环的 replaceState 同帧竞态
       if (ui) {
@@ -701,14 +706,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               apiRef.current?.jumpToContact();
               break;
             case 'book':
-            case 'ctEmail':
               window.location.href = 'mailto:hello@shader.se?subject=Book%20a%20call';
-              break;
-            case 'ctBook':
-              window.open('https://cal.com/filip-kantedal-hd30xa/30min', '_blank', 'noopener,noreferrer');
-              break;
-            case 'ctCeo':
-              window.location.href = 'mailto:ceo@shader.se';
               break;
             case 'burger':
               toggleMenu(!menuOpen);
@@ -947,7 +945,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const tieStart = revealStart + REVEAL_SCREENS;
           const tieEnd = tieStart + TIE_SCREENS;
           const contactStart = paper ? tieEnd : 1e9;
-          const maxS = paper ? contactStart + CONTACT_SCREENS : 1e9;
+          /** Contact 段长度（屏）：场景列动态测高，未就绪时用兜底值 */
+          const contactLen = contact?.length() ?? CONTACT_FALLBACK_SCREENS;
+          const maxS = paper ? contactStart + contactLen : 1e9;
 
           if (pendingContact && paper) {
             aim.s = contactStart + CONTACT_JUMP;
@@ -1085,8 +1085,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                     : scroll >= FADE_START_S
                       ? 'office'
                       : 'fade';
-          const contactP = inContact ? clamp((scroll - contactStart) / CONTACT_SCREENS, 0, 1) : 0;
-          /** 进入 Contact 的位移，单位：屏（scroll 本身是屏单位，不是像素） */
           const contactEnterScreens = inContact ? scroll - contactStart : 0;
           const shred = scroll >= shredStart ? clamp((scroll - shredStart) / ENDING_SCREENS, 0, 1) : 0;
           st.about.shred = shred;
@@ -1108,17 +1106,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, scroll);
           const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
           const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
-          // contact 三段透明度（canvas UI 用；contact stage 块里不再重复计算）
-          // contact 四节拍透明度（hello → info → 照片屏(CEO) → footer）：
-          // 各占 contactP 的 1/4，段首尾 0.06-0.08 宽度渐入渐出
-          const ctHello = inContact ? 1 - smoothstep(0.16, 0.28, contactP) : 0;
-          const ctInfo = inContact
-            ? smoothstep(0.2, 0.28, contactP) * (1 - smoothstep(0.44, 0.52, contactP))
-            : 0;
-          const ctPhoto = inContact
-            ? smoothstep(0.46, 0.54, contactP) * (1 - smoothstep(0.68, 0.76, contactP))
-            : 0;
-          const ctFooter = inContact ? smoothstep(0.72, 0.82, contactP) : 0;
 
             if (stage === 'fade') {
               // 原站 projects UI 在 fade 前已消失；office UI 从 office 页首才出现
@@ -1135,11 +1122,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             }
 
             setContactActiveState(inContact);
-            if (!inContact && contactUiOn) resetContactUi();
 
             let veil = 0;
+            // 黑场过渡只在「从 tie 段滚入 contact」时生效；直链/跳转落点无黑场（原站同款）
             if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, scroll);
-            else if (stage === 'contact') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
+            else if (stage === 'contact' && prevStage === 'tie') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
+            prevStage = stage;
             if (veilRef.current) veilRef.current.style.opacity = String(veil);
 
             // ---------- 各页场景逐帧更新（渲染进各自页 RT 的参数都在这里备好） ----------
@@ -1149,17 +1137,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
 
               contact?.update(dt, time, {
-                progress: contactP,
-                enter: clamp(contactEnterScreens / 0.35, 0, 1),
+                enterScreens: contactEnterScreens,
+                lengthScreens: contact?.length() ?? CONTACT_FALLBACK_SCREENS,
                 mouseX: mouse.x,
                 mouseY: mouse.y,
                 touch: 'ontouchstart' in window,
               });
-
-              contactUiOn = true;
-              setContactPhaseState(
-                contactP > 0.72 ? 'footer' : contactP > 0.5 ? 'photo' : contactP > 0.25 ? 'info' : 'hello'
-              );
             }
             if (stage === 'ending' || stage === 'reveal') {
               // reveal 段清 wasEnding：重新下滚进碎纸段时 shredder.reset 会再次触发（合并前语义）
@@ -1194,8 +1177,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               menuOpen,
               time,
               mode: uiModeDamped,
-              contact: { hello: ctHello, info: ctInfo, photo: ctPhoto, footer: ctFooter },
-              contactProgress: inContact ? contactP : 0,
               tieCopy: tieCopyOpacity,
             });
             const uiModeTarget = st.theme === 'dark' ? 1 : 0;
@@ -1296,8 +1277,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             if (tie && tieRT && scroll >= tieStart - 1.8 && scroll < dynTieEnd + 0.05) {
               if (contact && nextRT) {
                 contact.update(dt, time, {
-                  progress: 0,
-                  enter: 0,
+                  enterScreens: scroll - contactStart,
+                  lengthScreens: contact.length(),
                   mouseX: mouse.x,
                   mouseY: mouse.y,
                   touch: 'ontouchstart' in window,
@@ -1354,7 +1335,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   { ...HERO_PAGES[3], end: dynEnd },
                   { ...HERO_PAGES[4], start: dynEnd, end: dynRevealEnd },
                   { ...HERO_PAGES[5], start: dynRevealEnd, end: dynTieEnd },
-                  { ...HERO_PAGES[6], start: dynTieEnd, end: dynTieEnd + CONTACT_SCREENS },
+                  { ...HERO_PAGES[6], start: dynTieEnd, end: dynTieEnd + (contact?.length() ?? CONTACT_FALLBACK_SCREENS) },
                 ]
               : [...HERO_PAGES];
             let idx = pages.length - 1;

@@ -13,19 +13,18 @@ import * as THREE from 'three/webgpu';
  *  - 区域表（CSS px）：绘制位置与命中测试同源，着色器 hover 区域与它一致
  *  - hitTest：CSS 像素 → 区域 key（畸变反解的精确命中在交互层做二次校正）
  *
- * 与 DOM 版的数值对应关系见 selected-work.css / about.css / contact.css（同源照抄）。
+ * 与 DOM 版的数值对应关系见 selected-work.css / about.css（同源照抄）。
  */
 
 export type UiRegionKey =
   | 'logo' | 'navHome' | 'navWork' | 'navAbout' | 'navContact'
   | 'book' | 'burger' | 'prevArrow' | 'nextArrow' | 'hint'
-  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook'
-  | 'ctEmail' | 'ctBook' | 'ctCeo';
+  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook';
 
 export interface UiRect { x: number; y: number; w: number; h: number }
 
 export interface UiDrawState {
-  /** 当前页 UI 集：work（箭头+提示）/ about（纸页 chrome）/ tie（tie 文案）/ contact（三段文案） */
+  /** 当前页 UI 集：work（箭头+提示）/ about（纸页 chrome）/ tie（tie 文案）/ contact（仅 header，正文在 3D 长列） */
   page: 'work' | 'about' | 'tie' | 'contact';
   activeNav: string;
   mobile: boolean;
@@ -35,10 +34,6 @@ export interface UiDrawState {
   time: number;
   /** 显示主题阻尼值（0 light → 1 dark），决定命中表取哪一层 */
   mode: number;
-  /** contact 四节拍透明度（hello / info / 照片屏(CEO) / footer） */
-  contact: { hello: number; info: number; photo: number; footer: number };
-  /** contact 段内滚动进度 0..1（原站 nM(scroll, start, end)，驱动长列滚动） */
-  contactProgress: number;
   /** tie 文案透明度 */
   tieCopy: number;
 }
@@ -70,18 +65,12 @@ const ASSETS = {
   phoneDark: '/textures/icons/old_phone_dark.svg',
   arrow: '/textures/icons/arrow_right_white.svg',
   hand: '/textures/icons/pointing_hand_light.svg',
-  dashedFrame: '/textures/dashed_frame.svg',
-  cert: '/textures/footer_certificate.png',
-  copyright: '/textures/copyright_footer.png',
   filip: '/textures/about/filip_footer_5.webp',
-  simon: '/textures/about/simon_calling.webp',
-  a11y: '/textures/a11y.png',
 };
 
 const SERIF = "'STIX Two Text', 'Times New Roman', serif";
 /** UI 主题墨色：light 变体 = 亮字（深场景上），dark 变体 = 纸页深字 */
 const INK = { light: '#fdfdf5', dark: '#171310' };
-const INK_SOFT = { light: 'rgba(253,253,245,0.75)', dark: 'rgba(23,19,16,0.75)' };
 
 export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -322,97 +311,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   /** tie 页文案已迁至 goldenTieScene 的场景内 3D 平面（原站 uikit 机制：
    *  标题随相机 dolly 透视缩放上移，屏幕空间模拟无法还原该运动），此处不再绘制 */
 
-  /** contact 三段文案（hello / info / footer，透明度随滚动） */
-  /**
-   * contact 段（反编译自原站 04kr7kd5riobb.js 的 uikit 长列实现）：
-   * Hello / Good buy.+Info / 照片屏(CEO) / Footer 四块垂直堆叠成一列，
-   * 整列随 contactProgress 上移（原站：列位移 0.55×p×viewportHeight、相机同步
-   * 下移 p×viewportHeight，屏幕观感 = 每滚约 1 屏换下一块）。
-   * uikit 尺寸 1 uikit px ≈ 1 屏幕 px（sizeX=viewportWidth、pixelSize 1:1），
-   * 字号/间距直接用反编译数值（基础断点：Hello/Good buy. fontSize 80、
-   * Hello 块与 Info 块之间 0.95×viewportHeight 空隙 + paddingTop 200）。
-   */
-  const drawContact = (ctx: any, st: UiDrawState) => {
-    const ink = '#f4efe2';
-    const progress = Math.min(1, Math.max(0, st.contactProgress));
-    const offset = progress * 4.2 * H; // 列滚动位移（contactP=1 时 footer 块对齐视口）
-    ctx.save();
-    ctx.translate(0, -offset);
-
-    // ---- 块 0：Hello（fontSize 80 基础断点；列首屏中部）----
-    const helloSize = Math.max(56, H * 0.155);
-    text(ctx, '“Hello”', W / 2, H * 0.42, { size: helloSize, ink, align: 'center' });
-    // ---- 块 1：Info（原站：0.95×viewportHeight 空隙 + paddingTop 200 之后）----
-    const infoTop = H + H * 0.95 + 200;
-    const gSize = Math.max(56, H * 0.155);
-    text(ctx, 'Good buy.', W / 2, infoTop + gSize * 0.8, { size: gSize, ink, align: 'center' });
-    const lSize = Math.max(13, Math.min(18, W * 0.011));
-    text(ctx, 'Contact us about your digital project idea or general', W / 2, infoTop + gSize + lSize * 2.4, {
-      size: lSize, ink: INK_SOFT.light, align: 'center',
-    });
-    text(ctx, "enquires. Let's interface, call us today!", W / 2, infoTop + gSize + lSize * 4.2, {
-      size: lSize, ink: INK_SOFT.light, align: 'center',
-    });
-    const hSize = Math.max(15, Math.min(19, W * 0.0125)); // 原站 fontSize 19（lg 32）
-    const gY = infoTop + gSize + lSize * 4.2 + hSize * 3.4;
-    text(ctx, 'General Enquiries', W / 2, gY, { size: hSize, ink, align: 'center' });
-    text(ctx, 'hello@shader.se', W / 2, gY + hSize * 2.0, { size: hSize, ink, align: 'center', underline: true });
-    text(ctx, 'Book a call', W / 2, gY + hSize * 3.7, { size: hSize, ink, align: 'center', underline: true });
-    regions.ctEmail = { x: W / 2 - W * 0.12, y: gY + hSize * 2.0 - 16 - offset, w: W * 0.24, h: 24 };
-    regions.ctBook = { x: W / 2 - W * 0.12, y: gY + hSize * 3.7 - 16 - offset, w: W * 0.24, h: 24 };
-    const colY = gY + hSize * 6.2;
-    const colOff = Math.min(W * 0.2, 200);
-    text(ctx, 'Visit us', W / 2 - colOff, colY, { size: hSize, ink, align: 'center' });
-    ['Laxholmstorget 3', '602 21 Norrköping', 'Sweden'].forEach((line, j) =>
-      text(ctx, line, W / 2 - colOff, colY + hSize * 1.9 + j * hSize * 1.5, {
-        size: hSize * 0.85, ink: INK_SOFT.light, align: 'center',
-      })
-    );
-    text(ctx, 'Social', W / 2 + colOff, colY, { size: hSize, ink, align: 'center' });
-    ['LinkedIn', 'Instagram', 'X (Twitter)'].forEach((line, j) =>
-      text(ctx, line, W / 2 + colOff, colY + hSize * 1.9 + j * hSize * 1.5, {
-        size: hSize * 0.85, ink, align: 'center', underline: true,
-      })
-    );
-    // ---- 块 2：照片屏（反编译容器：width 640 height 180、marginTop 80、
-    // dashed_frame.svg 铺底 + simon_calling 150×150/lg:200 左 + New business 文案右，gap 24）----
-    const photoTop = 3.2 * H; // 块 2（Info 内容止于 ~2.9H，留 0.3H 空隙）
-    const boxW = Math.min(640, W * 0.88);
-    const boxH = Math.max(180, H * 0.46);
-    const boxX = W / 2 - boxW / 2;
-    const boxY = photoTop;
-    ctx.fillStyle = 'rgba(5, 5, 6, 0.55)';
-    ctx.fillRect(boxX, boxY, boxW, boxH);
-    drawImg(ctx, imgs.dashedFrame, boxX, boxY, boxW);
-    const simonS = Math.min(150, boxH * 0.82);
-    const simonX = boxX + 30;
-    const simonY = boxY + boxH / 2 - simonS / 2;
-    drawImg(ctx, imgs.simon, simonX, simonY, simonS);
-    const h2Size = Math.max(15, Math.min(19, W * 0.0125)); // 原站 19（lg 32）
-    const txX = simonX + simonS + 26;
-    text(ctx, 'New business', txX, simonY + simonS * 0.3, { size: h2Size, ink, align: 'left' });
-    text(ctx, 'Reach out today to our CEO for', txX, simonY + simonS * 0.56, {
-      size: h2Size * 0.68, ink: INK_SOFT.light, align: 'left',
-    });
-    text(ctx, 'new business enquiries at', txX, simonY + simonS * 0.56 + h2Size * 0.9, {
-      size: h2Size * 0.68, ink: INK_SOFT.light, align: 'left',
-    });
-    text(ctx, 'ceo@shader.se', txX, simonY + simonS * 0.56 + h2Size * 2.1, {
-      size: h2Size * 0.72, ink, align: 'left', underline: true,
-    });
-    regions.ctCeo = { x: txX - 10, y: simonY + simonS * 0.56 + h2Size * 1.9 - offset, w: W * 0.3, h: 26 };
-    // ---- 块 3：Footer（反编译容器：paddingY 96、row space-between；
-    // cert lg 160/xl 232、copyright lg 320/xl 384、a11y width 100% →
-    // 758 视口按实测 oc-8 取纵排居中）----
-    const footTop = 4.2 * H; // 块 3（列尾，contactP=1 时对齐视口）
-    const cx = W / 2;
-    const certW = Math.min(170, W * 0.13);
-    drawImg(ctx, imgs.cert, cx - certW / 2, footTop + 70, certW);
-    const a11yW = Math.min(150, W * 0.115);
-    drawImg(ctx, imgs.a11y, cx - a11yW / 2, footTop + 70 + certW * (156 / 406) + 44, a11yW);
-    const copyW = Math.min(300, W * 0.22);
-    drawImg(ctx, imgs.copyright, cx - copyW / 2, footTop + 70 + certW * (156 / 406) + 44 + a11yW * (156 / 406) + 52, copyW);
-  };
+  /** contact 正文已迁至 contactScene 的 3D 长列（CanvasTexture 平面，随相机滚动）——此处只保留 header */
 
   const drawLayer = (layer: { ctx: any }, theme: 'light' | 'dark', st: UiDrawState) => {
     const ctx = layer.ctx;
@@ -428,8 +327,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     }
     if (theme === 'light') {
       if (st.page === 'work') drawWorkExtras(ctx, st);
-      else if (st.page === 'contact') drawContact(ctx, st);
-      // tie 页：标题在 goldenTieScene 的 3D 平面里（随 dolly 透视），屏幕层不画
+      // tie/contact 页：正文在 3D 场景内（goldenTieScene 平面 / contactScene 长列），屏幕层只留 header
     }
     // dark（about 纸页）层没有屏幕空间正文（正文在 3D 纸纹理里），只保留 header 区域
   };
@@ -437,8 +335,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   const stateKey = (st: UiDrawState) =>
     [
       st.page, st.activeNav, st.mobile ? 1 : 0, st.menuOpen,
-      Math.round(st.fade * 50), Math.round(st.contact.hello * 40), Math.round(st.contact.info * 40),
-      Math.round(st.contact.footer * 40), Math.round(st.tieCopy * 40),
+      Math.round(st.fade * 50), Math.round(st.tieCopy * 40),
       assetsReady ? 1 : 0, W, H,
     ].join('|');
 
