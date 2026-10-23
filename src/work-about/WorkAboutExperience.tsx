@@ -1104,6 +1104,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               setContactPhaseState(contactP > 0.8 ? 'footer' : contactP > 0.32 ? 'info' : 'hello');
             }
             if (stage === 'ending' || stage === 'reveal') {
+              // reveal 段清 wasEnding：重新下滚进碎纸段时 shredder.reset 会再次触发（合并前语义）
+              if (stage === 'reveal') wasEnding = false;
               if (finalRef.current) finalRef.current.style.opacity = '0';
               setFinalState(false);
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
@@ -1196,6 +1198,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                     mouseX: mouse.x,
                     mouseY: mouse.y,
                   });
+                  // shredder.update 内部的 Verlet 模拟会自行 setRenderTarget 到模拟 RT，
+                  // 渲碎纸机场景前必须重新绑定 aboutRT（合并前显式重绑 shredderRT 的同款做法）
+                  renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+                  renderer.setRenderTarget(aboutRT);
                   await (renderer as any).renderAsync(shredder.scene, shredder.camera);
                 }
               }
@@ -1233,7 +1239,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               renderer.setRenderTarget(tieRT);
               await (renderer as any).renderAsync(tie.scene, tie.camera);
             }
-            // golden-tie-reveal 页 RT（星形窗口采样 tieRT）
+            // golden-tie-reveal 页 RT（星形窗口采样 tieRT；碎纸段窗口保持空采样——合并前语义）
             if (reveal && revealRT && scroll >= shredStart - 0.1 && scroll < dynRevealEnd + 0.05) {
               reveal.update({
                 text: revealText,
@@ -1242,7 +1248,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 mouseX: mouse.x,
                 mouseY: mouse.y,
               });
-              if (tieRT) reveal.setNextTexture(tieRT.texture, rtW, rtH);
+              reveal.setNextTexture(scroll >= tieStart - 1.8 && tieRT ? tieRT.texture : null, rtW, rtH);
               renderer.setClearColor(CLEAR_TRANSPARENT, 1);
               renderer.setRenderTarget(revealRT);
               await (renderer as any).renderAsync(reveal.scene, reveal.camera);
