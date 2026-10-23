@@ -1134,6 +1134,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               await (renderer as any).renderAsync(office.scene, office.camera);
             }
             if (filmRT && scroll < 2.0) {
+              // 胶片场景逐帧推进（弹簧/图集上传/蒙版 uniform 都在 update 里）
+              workScene.update(dt, time, {
+                mouseX: mouse.x,
+                mouseY: mouse.y,
+                selectedIndex: work.index,
+                dragPx: work.dragPx,
+                pageScroll: scroll,
+                exitProgress: mask,
+              });
               // 胶片蒙版：激活画格内按屏幕坐标混入 office 页 RT（原件 transitionTexture）
               workScene.setTransitionTexture(mask > 0 && officeRT ? officeRT.texture : null);
               renderer.setRenderTarget(filmRT);
@@ -1325,6 +1334,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         workScene,
         office,
         contact,
+        get filmRT() {
+          return filmRT;
+        },
+        get aboutRT() {
+          return aboutRT;
+        },
         get paper() {
           return paper;
         },
