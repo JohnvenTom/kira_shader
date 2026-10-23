@@ -354,6 +354,8 @@ export function createGoldenTieScene(
   crowdTex.generateMipmaps = false;
   const crowdPlayPromise = crowdVideo.play().catch(() => undefined);
   void crowdPlayPromise;
+  /** 人群整体透明度：握手全屏序列帧出现时人群退场（原站同节拍） */
+  const crowdOpacity = T.uniform(1);
 
   /**
    * 人群站位表（对照原站 tie 段满员帧目测的初排，逐节拍验收时再校）：
@@ -364,16 +366,16 @@ export function createGoldenTieScene(
    */
   type CrowdEntry = { cell: [number, number]; x: number; z: number; scale: number; flip?: boolean };
   const CROWD_LAYOUT: CrowdEntry[] = [
-    // 左列（由远及近）
-    { cell: [3, 0], x: -7.5, z: -26, scale: 7.5 },          // 青套装女（远排）
-    { cell: [1, 0], x: -6.5, z: -14, scale: 8.5 },          // 深蓝套装女
-    { cell: [0, 0], x: -5.4, z: -7, scale: 9.5, flip: true }, // 灰西装男（近排，朝右）
-    { cell: [1, 1], x: -6.2, z: -4.5, scale: 10, flip: true }, // 花裙女（最近）
-    // 右列
-    { cell: [4, 1], x: 7.2, z: -24, scale: 7.5 },           // 白格套装女（远排）
-    { cell: [2, 0], x: 6.6, z: -13, scale: 8.5 },           // 深灰西装男
-    { cell: [3, 1], x: 5.8, z: -6, scale: 9.5 },            // 棕西装男（近排）
-    { cell: [0, 1], x: 6.8, z: -3, scale: 10 },             // 粉套装女（最近）
+    // 左列（由远及近，近排贴画面边缘）。图集人物天然朝右 → 左列面向中央不翻转
+    { cell: [3, 0], x: -5.4, z: -30, scale: 6.2 },           // 青套装女（最远小）
+    { cell: [1, 0], x: -5.0, z: -18, scale: 8.2 },           // 深蓝套装女
+    { cell: [1, 1], x: -4.7, z: -8, scale: 11 },             // 花裙女（中近）
+    { cell: [0, 0], x: -5.8, z: -2, scale: 14.5 },           // 灰西装男（最近贴边）
+    // 右列：镜像翻转使人物朝左（面向中央领带）
+    { cell: [4, 1], x: 5.2, z: -30, scale: 6.2, flip: true }, // 白格套装女（最远小）
+    { cell: [2, 0], x: 4.9, z: -17, scale: 8.5, flip: true }, // 深灰西装男
+    { cell: [3, 1], x: 4.7, z: -7, scale: 11, flip: true },   // 棕西装男（中近）
+    { cell: [2, 1], x: 5.8, z: -1.5, scale: 14.5, flip: true }, // 灰套裙女（最近贴边）
   ];
   const crowdGroup = new THREE.Group();
   scene.add(crowdGroup);
@@ -393,11 +395,27 @@ export function createGoldenTieScene(
     mat.depthWrite = false;
     mat.transparent = true;
     // 黑底融入：亮度即覆盖度，纯黑像素完全透明（视频抠像本就黑底）
+    // 加法混合（原站同款）：黑底 rgb≈0 加到背景上不改变背景色，黑底矩形完全
+    // 隐形，人物呈"录影带透亮"质感（深色西装微微透出背景正是加法特征）。
+    // 底噪压零：H.264 黑底 rgb≈8-15，加法会让整块 plane 微微提亮背景形成
+    // "特别黑的方框"的反面——灰蒙框，先减掉底电平再加色
     const texNode = T.texture(crowdTex, uvWin);
-    mat.colorNode = texNode.rgb;
-    mat.opacityNode = texNode.rgb.r.add(texNode.rgb.g).add(texNode.rgb.b).mul(0.4);
+    mat.colorNode = T.max(texNode.rgb.sub(0.035), T.float(0)).mul(1.45);
+    mat.blending = THREE.AdditiveBlending;
+    // 不透明黑底（与原站同款）：视频黑底直接融入场景暗背景，不做亮度抠像——
+    // 抠像会把深色西装/裤装削成半透明，人物只剩亮色上身，视觉上"缺半截"。
+    // 边缘 alpha 渐隐：黑底矩形的四周平滑衰减，消除黑块与渐变背景板的接缝；
+    // opacityNode 整体再乘 crowdOpacity（握手序列帧出现时人群退场，update 驱动）
+    const fadeX = T.smoothstep(T.float(0), T.float(0.09), T.uv().x).mul(
+      T.smoothstep(T.float(0), T.float(0.09), T.oneMinus(T.uv().x))
+    );
+    const fadeY = T.smoothstep(T.float(0), T.float(0.07), T.uv().y).mul(
+      T.smoothstep(T.float(0), T.float(0.07), T.oneMinus(T.uv().y))
+    );
+    mat.opacityNode = crowdOpacity.mul(fadeX).mul(fadeY);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
-    const aspect = 1 / (CROWD_COLS / CROWD_ROWS) / 1.78; // 单格宽高比 ≈ 0.5625
+    // 单格宽高比 = (1518/5) / (1080/2) ≈ 0.562（人物竖条）
+    const aspect = (1518 / CROWD_COLS) / (1080 / CROWD_ROWS);
     mesh.scale.set(entry.scale * aspect, entry.scale, 1);
     mesh.position.set(entry.x, -entry.scale * 0.46, entry.z);
     mesh.renderOrder = 5;
@@ -605,6 +623,9 @@ export function createGoldenTieScene(
     clothUniform.array = clothArray;
     timeUniform.value = state.time;
     opacityUniform.value = Math.min(1, Math.max(0, 1 - (o - 0.6) / 0.3));
+    // 人群退场：握手序列帧开始推进后快速淡出，避免人群从握手画面的
+    // 亮度门控透明区（黑底 → alpha 0）透出来（层级高于握手观感）
+    crowdOpacity.value = 1 - Math.min(1, state.handshake * 4);
 
     // 背景板跟随相机
     const dist = 70 + 60 * o;
