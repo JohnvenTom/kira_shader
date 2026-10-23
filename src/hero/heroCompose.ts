@@ -74,11 +74,34 @@ export interface HeroComposeFrame {
   /**
    * 强制指定场景合成使用哪一页的 lens/border/saturation（默认按 pageScroll 自动取当前页）
    *
-   * WorkAbout 在同一个时刻分别渲染 projects 与 office 两页：两者共享 pageScroll，
-   * 但 office 必须用 office 页自己的镜头参数（原件 sceneMode=2 的 next section），
-   * 不能跟着当前页（projects）走。
+   * WorkAbout 里 projects→office 的淡入由外层 fadeMat 完成，两页各自单独过合成链；
+   * 若这里再混一次，office 会被重复淡入两次。
    */
   sectionPage?: number;
+  /**
+   * 直接指定本帧采样的页纹理（逐页 RT 架构）
+   *
+   * 逐页 RT 注册表生效后，宿主先把各页场景渲进**各自的 RT**，再把纹理递进来——
+   * 此时合成链跳过内部 sceneRT 渲染（scene/camera 参数被忽略），只跑场景合成 + 后期链。
+   */
+  curTexOverride?: THREE.Texture;
+  /** 配套的下一页纹理（缺省沿用构造时的 nextTexture） */
+  nextTexOverride?: THREE.Texture;
+  /**
+   * 转场（原件 sceneMode=2）：宿主按 `smoothstep(curEnd − nextTL, curEnd, scroll)` 算好 t，
+   * type 取**下一页**的 transitionType（0 fade / 1 direct / 2 overlay / 3 below）
+   *
+   * 反编译原文：`u = mix(a, s, l)`；type 2 → `u = mix(a, s, s.a)`（overlay：下一页 alpha 门控）；
+   * type 3 → `u = mix(s, a, a.a)`（below：当前页 alpha 门控）。
+   */
+  transition?: { t: number; type: number } | null;
+  /**
+   * 动态页表的逐页效果加权和（宿主用动态边界算好递入）
+   *
+   * about 以后的段边界按纸面高度动态算（原件同款公式），静态 HERO_PAGES 的权重会漂移；
+   * 缺省时仍按 pageScroll 查静态 HERO_PAGES。
+   */
+  effects?: HeroEffects;
 }
 
 /** 合成管线句柄 */
@@ -241,7 +264,8 @@ const gaussian = (x: any, mu: any, sigma: any) => {
  * 功能：对映射后的屏幕 uv 做桶形畸变，落在 [0,1] 内时采样并过圆角/四边渐隐；界外为黑。
  *
  * 参数：
- *  - tex        {any} projects 场景纹理（WebGPU RT，方向与原件 FBO 同语义）
+ *  - tex        {any} projects 场景纹理 —— **TextureNode**（可用 `.value` 换纹理）；
+ *               内部用 `tex.uv(...)` 采样，与场景合成 pass 的 sampleSection 同款约定
  *  - uv         {any} 已经过屏幕 contain 映射的 uv（原件 `d`，可超出 [0,1]）
  *  - distortion {any} 畸变（原件固定 `.16 * lensDistortionFactor`）
  *  - border     {any} 边框（原件固定 `1 * lensDistortionFactor`）
@@ -260,7 +284,7 @@ export const sampleScreenProjects = (tex: any, uv: any, distortion: any, border:
     .mul(N.step(warped.x, N.float(1)))
     .mul(N.step(N.float(0), warped.y))
     .mul(N.step(warped.y, N.float(1)));
-  const sampled = edgeFade(N.texture(tex, warped), warped, border, dimensions);
+  const sampled = edgeFade(tex.uv(warped), warped, border, dimensions);
   return N.mix(N.vec4(0, 0, 0, 0), sampled, inRange);
 };
 
@@ -449,6 +473,8 @@ export function createHeroCompose(
     nextTexture: N.texture(projectsTexture ?? sceneRT.texture),
     /** 当前页场景 RT → 下一页场景 RT 的交叉淡入权重（下一页 transitionLength 区间） */
     portalBlend: N.uniform(0),
+    /** 下一页的转场类型（原件 nextTransitionType：0 fade / 1 direct / 2 overlay / 3 below） */
+    nextTransitionType: N.uniform(0),
     /** 当前页 / 下一页各自的镜头参数（原件 sceneMode：逐页原值，不是加权和） */
     curLens: N.uniform(0),
     curBorder: N.uniform(0),
@@ -517,7 +543,15 @@ export function createHeroCompose(
     // 否则 HeroOneToOne 的胶片页在 scroll≥1 会突然闪回第一个场景。
     const curScene = sampleSection(u.curTexture, u.curLens, u.curBorder, u.curSaturation);
     const nextScene = sampleSection(u.nextTexture, u.nextLens, u.nextBorder, u.nextSaturation);
-    const mixedScene = N.mix(curScene, nextScene, u.portalBlend);
+    // 转场类型分支（原件场景 pass 原文）：默认 smoothstep mix；overlay 用下一页 alpha 门控、
+    // below 用当前页 alpha 门控。select 三路都求值（无副作用），避免 If/toVar 的 currentStack 问题。
+    const isOverlay = u.nextTransitionType.equal(N.float(2));
+    const isBelow = u.nextTransitionType.equal(N.float(3));
+    const mixedScene = N.select(
+      isOverlay,
+      N.mix(curScene, nextScene, nextScene.a),
+      N.select(isBelow, N.mix(nextScene, curScene, curScene.a), N.mix(curScene, nextScene, u.portalBlend))
+    );
     // loading 屏覆盖（原件 `isReadyToRender == 0` 分支）：按基准 uv 直采，**不吃畸变**
     const withLoading = N.mix(mixedScene, N.texture(bootTexture, uvB), u.loadingActive);
     // 暗角：`smoothstep(-s, s, radius - length(uv - 0.5))`
@@ -525,8 +559,13 @@ export function createHeroCompose(
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
     const vignetted = N.mix(withLoading.rgb, N.clamp(withLoading.rgb.mul(vf), 0, 1), u.vigIntensity);
     // alpha 随 portalBlend 过渡到下一页的门禁结果（0/1 硬边）：单页时保持 1 不变，
-    // 出界页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）
-    const alphaNow = N.mix(N.float(1), nextScene.a, u.portalBlend);
+    // 出界页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）。
+    // overlay/below 转场时 alpha 走类型分支的混合结果（原件 mix(a,s,s.a) 连 alpha 一起混）
+    const alphaNow = N.select(
+      isOverlay.or(isBelow),
+      mixedScene.a,
+      N.mix(N.float(1), nextScene.a, u.portalBlend)
+    );
     sceneComposeMat.colorNode = N.vec4(vignetted, alphaNow);
   }
 
@@ -767,25 +806,38 @@ export function createHeroCompose(
     // 原件：`e$ = eg*eg*(3-2*eg)`，eg = 1 - initialTransition
     const mixT = loadingMix <= 0 ? 0 : loadingMix >= 1 ? 1 : loadingMix * loadingMix * (3 - 2 * loadingMix);
     const L = HERO_LOADING_EFFECTS;
-    // 原件逐页权重 → 加权和；loading 期再按 smoothstep(1 - initialTransition) 混回 loading 表
-    const pageEffects = resolvePageEffects(pageScroll);
+    // 原件逐页权重 → 加权和；loading 期再按 smoothstep(1 - initialTransition) 混回 loading 表。
+    // about 以后的段边界按纸面高度动态算，宿主会用动态页表算好 effects 递入
+    const pageEffects = frame.effects ?? resolvePageEffects(pageScroll);
     /** 原件 `e = e*(1-e$) + loading*e$` */
     const eff = (k: keyof HeroEffects) => pageEffects[k] + (L[k] - pageEffects[k]) * mixT;
 
     // ---- 场景合成 pass：当前页 → 下一页（原件 sceneMode） ----
-    // sectionPage：WorkAbout 同一帧分别渲染 projects / office 两页，强制各自页参数
+    // sectionPage：宿主强制当前页（逐页 RT 架构）；curTexOverride/nextTexOverride：
+    // 页 RT 纹理由宿主直接递入；transition：宿主算好的 { t, type }。
     const forced = frame.sectionPage;
     const idx = forced ?? pageIndexAtScroll(pageScroll);
     const cur = HERO_PAGES[Math.min(HERO_PAGES.length - 1, Math.max(0, idx))];
-    const next = forced === undefined ? HERO_PAGES[idx + 1] : undefined;
-    // 第二页及以后：当前纹理回落到第二场景（本管线只有两张 RT）
+    const useOverride = frame.curTexOverride !== undefined;
+    const next = useOverride
+      ? HERO_PAGES[idx + 1]
+      : forced === undefined
+        ? HERO_PAGES[idx + 1]
+        : undefined;
     u.curTexture.value =
-      forced !== undefined || idx < 1 || !projectsTexture ? sceneRT.texture : projectsTexture;
+      frame.curTexOverride ??
+      (forced !== undefined || idx < 1 || !projectsTexture ? sceneRT.texture : projectsTexture);
+    if (frame.nextTexOverride) u.nextTexture.value = frame.nextTexOverride;
     u.curLens.value = cur.effects.lensDistortion;
     u.curBorder.value = cur.effects.lensDistortionBorders;
     u.curSaturation.value = cur.effects.saturation;
     let portal = 0;
-    if (next && frame.crossfade !== false) {
+    let transType = 0;
+    if (frame.transition) {
+      portal = frame.transition.t;
+      transType = frame.transition.type;
+    } else if (next && frame.crossfade !== false && !useOverride) {
+      // 内置公式只服务旧的内部 sceneRT 路径；override 模式下转场完全由宿主给出
       const r = next.transitionLength;
       if (r > 0) {
         const ft = Math.min(1, Math.max(0, (pageScroll - (cur.end - r)) / r));
@@ -797,6 +849,7 @@ export function createHeroCompose(
     u.nextBorder.value = nfx.lensDistortionBorders;
     u.nextSaturation.value = nfx.saturation;
     u.portalBlend.value = portal;
+    u.nextTransitionType.value = transType;
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');
     u.vigIntensity.value = eff('vignetteIntensity');
@@ -869,9 +922,11 @@ export function createHeroCompose(
     writeUniforms(frame);
     if (bootCanvas) bootTexture.needsUpdate = true;
 
-    // ① 3D 场景 → sceneRT
-    renderer.setRenderTarget(sceneRT);
-    await renderer.renderAsync(scene, camera);
+    // ① 3D 场景 → sceneRT（override 模式跳过：页 RT 已由宿主渲染）
+    if (frame.curTexOverride === undefined) {
+      renderer.setRenderTarget(sceneRT);
+      await renderer.renderAsync(scene, camera);
+    }
 
     // 注意：**不要**关 autoClear。three 0.169 的 WebGPU 后端在 `autoClear === false` 时不会给
     // 渲染通道写 depthLoadOp，Dawn 校验会直接判这个 CommandBuffer 非法并整个丢弃

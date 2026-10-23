@@ -216,6 +216,23 @@ export function resetBoot() {
   notify();
 }
 
+/**
+ * 跳过整段 boot（直链 / 从其他段返回 hero 时的语义：boot 每次页面加载只播一次）
+ *
+ * 功能：阶段直接置 done、弹簧置满、各门全开——相机随即跟随滚动（无入场拉远）。
+ *       与 resetBoot 互斥：只应在「本次加载不播 boot」时调用。
+ */
+export function skipBoot() {
+  state.phase = 'done';
+  state.assetProgress = 1;
+  state.warmupProgress = 1;
+  state.displayProgress = 100;
+  state.spring = 1;
+  state.springDone = true;
+  state.titleGate = true;
+  notify();
+}
+
 /** React 订阅：titleGate / springDone / audioOn / 阶段变化时触发 */
 export function subscribeBoot(fn: () => void) {
   listeners.add(fn);

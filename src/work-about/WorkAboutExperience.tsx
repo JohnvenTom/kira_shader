@@ -7,12 +7,20 @@ import SelectedWorkUI from '../selected-work/SelectedWorkUI';
 import { createAboutOfficeScene } from '../about/officeScene';
 import { createAboutContactScene, AboutContactHandle } from '../about/contactScene';
 import { createHeroCompose } from '../hero/heroCompose';
-import { HERO_TIMELINE } from '../hero/heroConfig';
+import { createHeroScene } from '../hero/heroScene';
+import {
+  HERO_PAGES,
+  resolvePageEffectsFor,
+  type HeroPageConfig,
+} from '../hero/heroConfig';
 import { createAboutPaper, disposeAboutPaper, AboutPaperResult } from './paperContent';
 import { createAboutPaperScene, PaperSceneHandle } from './paperScene';
 import { createShredderScene, ShredderSceneHandle } from './shredderScene';
 import { createGoldenTieRevealScene, GoldenTieRevealHandle } from './goldenTieRevealScene';
 import { createGoldenTieScene, GoldenTieSceneHandle } from './goldenTieScene';
+import {
+  bootStore,
+} from '../boot/bootStore';
 import AboutUI, { AboutTheme } from './AboutUI';
 import ContactUI, { ContactPhase } from './ContactUI';
 import './about.css';
@@ -22,32 +30,41 @@ const T = TSL as any;
 const SCROLL_LERP = 6;
 /** Lenis 行模式滚轮换算（100/6 px per line） */
 const LENIS_LINE_HEIGHT = 100 / 6;
-/** 本页时间轴的局部原点：原站全局 scroll 1.6（projects→office 的 fade 起点） */
-const S_ORIGIN = 1.6;
-/** Selected Work 停驻点：原站全局 scroll 1.0（projects 页起点）→ local −0.6 */
-const WORK_REST_S = -0.6;
-/** 原站 projects→office 页边界：全局 scroll 2.0（页配置 projects 终点）→ local 0.4 */
-const PAGE_SWITCH_S = 0.4;
+/**
+ * 全站统一滚动轴：s 即原站全局 scroll（单位屏，0 = hero 页首）。
+ * 原站页面划分（pagesConfig 静态值）：hero [0,1]、projects [1,2]、office [2,3.8]、
+ * about-us [3.8,11.1367…]、golden-tie-reveal [..,12.8367…]、golden-tie [..,18.8367…]、
+ * contact [..,22.1606…]；本组件的 about 以后各段边界按纸面高度动态算（原件同款公式）。
+ */
+/** Selected Work 停驻点：原站 projects 页起点（全局 scroll 1.0） */
+const WORK_REST_S = 1.0;
+/** 原站 projects→office 页边界（向下切 #about-us / 视图切换点） */
+const PAGE_SWITCH_S = 2.0;
+/** 向上回到胶片视图的边界：原站 projects 页窗口终点 = 2 − 0.7（pageOffset.end −.7） */
+const PAGE_BACK_S = 1.3;
+/** hero → projects 视图边界：向下 0.9（projects 页窗口起点）/ 向上 0.8（hero 页窗口终点） */
+const HERO_PAGE_DOWN_S = 0.9;
+const HERO_PAGE_UP_S = 0.8;
 /** 画格蒙版：原站 exitProgress 区间 scroll 1.3 → 1.5 */
 const MASK_START_SCROLL = 1.3;
 const MASK_END_SCROLL = 1.5;
-/** 顶部边界：向上滚过全局 0.8 后原站 snap 把页面交给 hero（本项目用路由衔接） */
-const HERO_HANDOFF_SCROLL = 0.8;
-/** 可滚动下限（局部）= 全局 0 */
-const TOP_LIMIT_S = -S_ORIGIN;
+/** 可滚动下限 = 全局 0（hero 页首） */
+const TOP_LIMIT_S = 0;
 /** 碎纸终幕滚动长度（屏）。原站 AS=4： shredder 每滚一屏上升一屏 */
 const ENDING_SCREENS = 4;
-/** 进入 About 前 projects→office 的通用 fade：原站 transitionLength 0.4（scroll 1.6→2.0） */
-const FADE_SCREENS = 0.4;
+/** projects→office 的通用 fade：原站 transitionLength 0.4（scroll 1.6→2.0），由 sceneMode type 0 承担 */
+const FADE_START_S = 1.6;
 /** office 页长度（原站 pagesConfig length 1.8） */
 const OFFICE_SCREENS = 1.8;
-/** About 内容起点；本时间轴 local s=0 = 原站 scroll 1.6（fade 起点） */
-const ABOUT_START = FADE_SCREENS + OFFICE_SCREENS;
-/** 纸卷 enterProgress 起点：原站 about.start − transitionLength = 1.8 → local 0.2 */
-const FOLD_LEAD_SCREENS = 0.2;
+/** office 页起点（全局 scroll 2.0）；office 场景进度 = (scroll − 2)/1.8 */
+const OFFICE_START_S = 2.0;
+/** About 内容起点 = office 页终点（原站 about-us.start 3.8） */
+const ABOUT_START = OFFICE_START_S + OFFICE_SCREENS;
+/** 纸卷 enterProgress 起点：原站 about.start − transitionLength = 1.8（折页在 office 页中后段就开始扫入） */
+const FOLD_LEAD_SCREENS = ABOUT_START - 2;
 /** 原站 enterProgress = nM(scroll, about.start−2, about.start+.6, 0, 1) 的跨度 */
 const FOLD_ENTER_SPAN = 2.6;
-/** 原站 about UI 起点 about.start−0.35 → local 1.85 */
+/** 原站 about UI 起点 about.start−0.35 → 3.45（uiPageOffset.start −.35） */
 const ABOUT_UI_START = ABOUT_START - 0.35;
 /** golden-tie-reveal 页长度（原站 pagesConfig length: 1.7） */
 const REVEAL_SCREENS = 1.7;
@@ -62,7 +79,7 @@ const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
 const CLEAR_TRANSPARENT = new THREE.Color(0x000000);
 
-type View = 'work' | 'about';
+type View = 'hero' | 'work' | 'about';
 type RouteMode = View | 'contact';
 
 interface ExperienceState {
@@ -201,28 +218,17 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
       .mul(v.y.negate());
     const shaded = T.mix(back, lit, v.y.greaterThan(0).toFloat());
     const mask = T.float(1).sub(v.x.lessThan(0).toFloat()).mul(paper.a);
+    // rgb：折痕外透出下层 office（作为当前页显示时正确）；alpha：纸覆盖度——
+    // 合成链 overlay 转场（type 2）按它门控，折页扫过处才露出本页
     const below = T.texture(officeTex, T.vec2(uv.x, T.float(1).sub(uv.y)));
-    return T.vec4(T.mix(below.rgb, shaded, mask), 1);
+    return T.vec4(T.mix(below.rgb, shaded, mask), mask);
   });
 
   mat.colorNode = build();
   return { mat, uEnter };
 }
 
-/** 原站通用 fade（transitionTypeMap.fade=0）：smoothstep 过渡两页已渲染纹理 */
-function makeFadeMaterial(workTex: THREE.Texture, officeTex: THREE.Texture) {
-  const mat = new THREE.MeshBasicNodeMaterial();
-  const uFade = T.uniform(0);
-  const uv = T.uv();
-  const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
-  const work = T.texture(workTex, ruv);
-  const office = T.texture(officeTex, ruv);
-  mat.colorNode = T.vec4(T.mix(work.rgb, office.rgb, uFade), 1.0);
-  mat.toneMapped = false;
-  mat.depthTest = false;
-  mat.depthWrite = false;
-  return { mat, uFade };
-}
+/** 原站通用 fade 已并入合成链 sceneMode（type 0），不再需要独立 fade 材质 */
 
 export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -235,15 +241,16 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const apiRef = useRef<{
     startAbout: (source?: 'scroll' | 'auto') => void;
     switchToWork: () => void;
+    jumpToHero: () => void;
     jumpToContact: () => void;
     jumpToAboutTop: () => void;
   } | null>(null);
 
-  const initialView: View = mode === 'work' ? 'work' : 'about';
+  const initialView: View = mode === 'hero' ? 'hero' : mode === 'work' ? 'work' : 'about';
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<View>(initialView);
-  const [workMounted, setWorkMounted] = useState(mode === 'work');
-  const [uiVisible, setUiVisible] = useState(mode !== 'work');
+  const [workMounted, setWorkMounted] = useState(mode === 'work' || mode === 'hero');
+  const [uiVisible, setUiVisible] = useState(mode === 'about' || mode === 'contact');
   const [theme, setTheme] = useState<AboutTheme>(mode === 'about' ? 'dark' : 'light');
   const [finalShown, setFinalShown] = useState(false);
   const [contactActive, setContactActive] = useState(mode === 'contact');
@@ -252,13 +259,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const stateRef = useRef<ExperienceState>({
     ready: false,
     view: initialView,
-    uiVisible: mode !== 'work',
+    uiVisible: mode === 'about' || mode === 'contact',
     theme: mode === 'about' ? 'dark' : 'light',
     contactActive: mode === 'contact',
     about: {
-      // #about-us 直链直接落在 About 内容页首；work/contact 从 Selected Work 停驻点进入
-      s: mode === 'about' ? ABOUT_START : WORK_REST_S,
-      target: mode === 'about' ? ABOUT_START : WORK_REST_S,
+      // 全局 0 基轴：#hero 从 0 起步（boot 播放）；#selected-work 落停驻点 1.0；
+      // #about-us 直链落 About 内容页首；contact 由 pendingContact 流程落黑场起点
+      s: mode === 'hero' ? 0 : mode === 'about' ? ABOUT_START : WORK_REST_S,
+      target: mode === 'hero' ? 0 : mode === 'about' ? ABOUT_START : WORK_REST_S,
       shred: 0,
       vel: 0,
       dir: 0,
@@ -292,8 +300,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       apiRef.current?.jumpToContact();
       return;
     }
+    if (mode === 'hero') {
+      // boot 每次页面加载只播一次：从其他段回到 #hero 不重播，轴瞬时回到 0
+      apiRef.current?.jumpToHero();
+      return;
+    }
     if (mode === 'about') {
-      if (st.view === 'work') apiRef.current?.startAbout('auto');
+      if (st.view === 'work' || st.view === 'hero') apiRef.current?.startAbout('auto');
       else if (prev === 'contact' || st.contactActive) apiRef.current?.jumpToAboutTop();
       return;
     }
@@ -312,6 +325,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const mouse = { x: 0, y: 0 };
     let renderer: THREE.WebGPURenderer | null = null;
     let compose: ReturnType<typeof createHeroCompose> | null = null;
+    let hero: ReturnType<typeof createHeroScene> | null = null;
     let workScene: ReturnType<typeof createSelectedWorkScene> | null = null;
     let office: ReturnType<typeof createAboutOfficeScene> | null = null;
     let contact: AboutContactHandle | null = null;
@@ -321,9 +335,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let reveal: GoldenTieRevealHandle | null = null;
     let tie: GoldenTieSceneHandle | null = null;
     let revealRT: THREE.RenderTarget | null = null;
-    let shredderRT: THREE.RenderTarget | null = null;
     let nextRT: THREE.RenderTarget | null = null;
-    let belowMat: THREE.MeshBasicNodeMaterial | null = null;
     let paperPromise: Promise<void> | null = null;
     let paperToken = 0;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -338,13 +350,16 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let wasEnding = false;
     let rtW = 1;
     let rtH = 1;
+    /** 逐页 RT（原件 sceneMode 的 c[0..6]）：每页场景渲进自己的 RT，合成链统一采样 */
+    let heroRT: THREE.RenderTarget | null = null;
+    let filmRT: THREE.RenderTarget | null = null;
     let officeRT: THREE.RenderTarget | null = null;
-    /** 未过后期的 office 原始渲染（原件 projects 页画格蒙版采样的就是这层） */
-    let officeRawRT: THREE.RenderTarget | null = null;
+    let aboutRT: THREE.RenderTarget | null = null;
+    let tieRT: THREE.RenderTarget | null = null;
+    let contactRT: THREE.RenderTarget | null = null;
     let paperRT: THREE.RenderTarget | null = null;
-    let workRT: THREE.RenderTarget | null = null;
     let composite: ReturnType<typeof createFullscreenQuad> | null = null;
-    let fadeMat: ReturnType<typeof makeFadeMaterial> | null = null;
+    /** 折页 quad：办公室在下、纸面在上、alpha=纸覆盖度——渲进 aboutRT（原件 overlay 页 RT 语义） */
     let entryMat: ReturnType<typeof makeFoldMaterial> | null = null;
 
     const setUiVisibleState = (value: boolean) => {
@@ -419,24 +434,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       return shredStart + ENDING_SCREENS + REVEAL_SCREENS + TIE_SCREENS;
     };
 
-    const workFrame = (
-      time: number,
-      dt: number,
-      pageScroll: number = HERO_TIMELINE.total,
-      sectionPage?: number
-    ) => ({
-      time,
-      dt,
-      portrait: window.innerHeight > window.innerWidth,
-      loadingActive: false,
-      loadingMix: 0,
-      pageScroll,
-      // 本页的跨页淡入由外层 fadeMat 负责；合成链只处理单页
-      crossfade: false,
-      // projects / office 共用同一条时间轴，但场景合成参数必须各取自己那一页
-      sectionPage,
-    });
-
     const officeFrame = (time: number, dt: number, progress: number) => {
       if (!office) return;
       office.update(dt, time, {
@@ -451,41 +448,31 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       rtW = Math.max(1, Math.floor(host.clientWidth * dpr));
       rtH = Math.max(1, Math.floor(host.clientHeight * dpr));
-      if (officeRT) officeRT.dispose();
-      if (officeRawRT) officeRawRT.dispose();
-      if (paperRT) paperRT.dispose();
-      if (workRT) workRT.dispose();
-      if (revealRT) revealRT.dispose();
-      if (shredderRT) shredderRT.dispose();
-      if (nextRT) nextRT.dispose();
-      officeRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      officeRawRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      paperRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      workRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      revealRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      shredderRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      nextRT = new THREE.RenderTarget(rtW, rtH, { depthBuffer: true });
-      if (composite && fadeMat) {
-        fadeMat.mat.dispose();
-      }
-      if (composite && entryMat) {
-        entryMat.mat.dispose();
-      }
+      heroRT?.dispose();
+      filmRT?.dispose();
+      officeRT?.dispose();
+      paperRT?.dispose();
+      aboutRT?.dispose();
+      revealRT?.dispose();
+      tieRT?.dispose();
+      contactRT?.dispose();
+      nextRT?.dispose();
+      // 真实场景页 RT 开 4x MSAA（胶片画格/齿孔是 alphaTest 硬边；其余页同待遇保持一致）
+      const pageRT = () =>
+        new THREE.RenderTarget(rtW, rtH, { type: THREE.HalfFloatType, depthBuffer: true, samples: 4 });
+      heroRT = pageRT();
+      filmRT = pageRT();
+      officeRT = pageRT();
+      aboutRT = pageRT();
+      revealRT = pageRT();
+      tieRT = pageRT();
+      contactRT = pageRT();
+      paperRT = new THREE.RenderTarget(rtW, rtH, { type: THREE.HalfFloatType, depthBuffer: true });
+      nextRT = new THREE.RenderTarget(rtW, rtH, { type: THREE.HalfFloatType, depthBuffer: true });
+      entryMat?.mat.dispose();
       if (!composite) composite = createFullscreenQuad();
-      fadeMat = makeFadeMaterial(workRT.texture, officeRT.texture);
       entryMat = makeFoldMaterial(officeRT.texture, paperRT.texture);
-      belowMat?.dispose();
-      belowMat = new THREE.MeshBasicNodeMaterial();
-      {
-        const uv = T.uv();
-        const ruv = T.vec2(uv.x, T.float(1).sub(uv.y));
-        const rv = T.texture(revealRT.texture, ruv);
-        const sh = T.texture(shredderRT.texture, ruv);
-        belowMat.colorNode = T.vec4(T.mix(rv.rgb, sh.rgb, sh.a), 1);
-        belowMat.toneMapped = false;
-        belowMat.depthTest = false;
-        belowMat.depthWrite = false;
-      }
+      hero?.setFilmTarget(filmRT.texture, rtW, rtH);
     };
 
     const resetContactUi = () => {
@@ -507,6 +494,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       document.body.style.cursor = '';
     };
 
+    /** 输入回调里读当前轴位（全局 0 基 = 原站 scroll） */
+    const scrollNow = () => stateRef.current.about.s;
+
     /**
      * 从 Selected Work 进入 office/About（点击提示、导航或路由直达）
      *
@@ -514,13 +504,47 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
      *      显示位置仍由 6/s 阻尼推进，途中自然经过 1.3–1.5 的画格蒙版与 1.6–2.0 的 fade。
      */
     const startAbout = (_source: 'scroll' | 'auto' = 'auto') => {
-      if (!st.ready || st.view !== 'work') return;
+      if (!st.ready || (st.view !== 'work' && st.view !== 'hero')) return;
       resetWorkInput();
       // 跳转期间抑制 snap（原站为程序化滚动设置 snapLockTarget）
       lockSnap(2600);
       st.about.target = Math.max(st.about.target, ABOUT_START);
       pendingContact = false;
       void ensurePaper();
+    };
+
+    const jumpToHero = () => {
+      if (!st.ready) return;
+      resetWorkInput();
+      const aim = st.about;
+      // boot 不重播：轴瞬时回 0（原站从 about 滚回 hero 只是同一条轴反向）
+      aim.s = 0;
+      aim.target = 0;
+      aim.shred = 0;
+      aim.vel = 0;
+      aim.dir = 0;
+      aim.inputMultiplier = 1;
+      snapLockUntil = 0;
+      pendingContact = false;
+      st.finalShown = false;
+      setFinalShown(false);
+      setContactActiveState(false);
+      resetContactUi();
+      if (finalRef.current) finalRef.current.style.opacity = '0';
+      setViewState('hero');
+      setWorkMounted(true);
+      setUiVisibleState(false);
+      setThemeState('light');
+      hideHotspots();
+      work.dragPx = 0;
+      work.pending = false;
+      work.dragging = false;
+      work.dragAxis = null;
+      work.wheelAcc = 0;
+      if (work.wheelResetTimer !== null) {
+        window.clearTimeout(work.wheelResetTimer);
+        work.wheelResetTimer = null;
+      }
     };
 
     const switchToWork = () => {
@@ -606,13 +630,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       hideHotspots();
     };
 
-    apiRef.current = { startAbout, switchToWork, jumpToContact, jumpToAboutTop };
+    apiRef.current = { startAbout, switchToWork, jumpToHero, jumpToContact, jumpToAboutTop };
 
     const onWheel = (e: WheelEvent) => {
       if (!st.ready) return;
       if (document.body.dataset.aboutMenu === '1') return;
       e.preventDefault();
       if (pendingContact) return;
+      // boot 弹簧收敛前锁滚动（与 bootInteractionUnlocked 同一意图）
+      if (!bootStore.springDone) return;
       let dx = e.deltaX;
       let dy = e.deltaY;
       // 原站 Lenis 1.3.3 的滚轮归一化：行模式 ×100/6，页模式 × 视口尺寸
@@ -624,8 +650,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         dy *= window.innerHeight;
       }
 
-      // Selected Work 的横向滚轮 = 胶片翻帧（原站 FilmReel 同款手势）
-      if (st.view === 'work' && Math.abs(dx) > Math.abs(dy)) {
+      // 横向滚轮 = 胶片翻帧（film 段 scroll > 0.9 起生效，原站 FilmReel 同款手势）
+      if (scrollNow() > 0.9 && Math.abs(dx) > Math.abs(dy)) {
         if (work.dragging || work.pending) return;
         const now = performance.now();
         if (now < work.wheelLockUntil) return;
@@ -642,7 +668,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         }
         return;
       }
-      if (st.view === 'about' && Math.abs(dx) > Math.abs(dy) * 1.4) return;
+      if (scrollNow() > OFFICE_START_S && Math.abs(dx) > Math.abs(dy) * 1.4) return;
 
       // 纵向：统一滚动轴。原站 snap 插件在 onVirtualScroll 里先乘 inputMultiplier
       const aim = st.about;
@@ -656,10 +682,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
+      if (!bootStore.springDone) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('[data-sw-ui],[data-ab-ui],.ab-hotspot,.ab-menu,.ab-final')) return;
       if (e.button !== 0) return;
-      if (st.view === 'work') {
+      if (scrollNow() > 0.9) {
+        // film 段：横拖翻帧 / 纵拖滚动轴（原件同款双意图判定）
+        const yRatio = e.clientY / window.innerHeight;
+        if (yRatio < 0.15 || yRatio > 0.85) return;
         work.pending = true;
         work.dragging = false;
         work.dragAxis = null;
@@ -668,6 +698,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         work.dragStartTarget = st.about.target;
         work.lastD = 0;
       } else {
+        // hero 段：纵向拖拽 = 同一条滚动轴
         work.pending = true;
         work.dragging = false;
         work.dragAxis = 'y';
@@ -677,7 +708,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const onPointerMove = (e: PointerEvent) => {
       if (!work.pending) return;
-      if (st.view === 'work') {
+      if (work.dragAxis !== 'y') {
         const dx = e.clientX - work.startX;
         const dy = e.clientY - work.startY;
         if (!work.dragging) {
@@ -712,18 +743,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (!work.pending) return;
       work.pending = false;
       document.body.style.cursor = '';
-      if (st.view === 'work') {
-        if (!work.dragging) {
-          work.dragPx = 0;
-          return;
-        }
+      if (work.dragging && work.dragAxis === 'x') {
         work.dragging = false;
         work.dragPx = 0;
-        if (work.dragAxis === 'x' && Math.abs(work.lastD) > 0.1 * window.innerWidth) {
+        if (Math.abs(work.lastD) > 0.1 * window.innerWidth) {
           work.index += work.lastD > 0 ? -1 : 1;
         }
       } else {
         work.dragging = false;
+        work.dragPx = 0;
       }
     };
 
@@ -731,16 +759,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (!st.ready) return;
       if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
       const aim = st.about;
-      if (st.view === 'work') {
+      if (scrollNow() > 0.9 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         if (e.key === 'ArrowLeft') work.index -= 1;
-        else if (e.key === 'ArrowRight') work.index += 1;
-        else if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
-          e.preventDefault();
-          aim.target += 0.65;
-        } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
-          e.preventDefault();
-          aim.target -= 0.65;
-        }
+        else work.index += 1;
         return;
       }
       if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
@@ -750,7 +771,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         e.preventDefault();
         aim.target -= 0.65;
       } else if (e.key === 'Home') {
-        aim.target = WORK_REST_S;
+        aim.target = 0;
       } else if (e.key === 'End') {
         aim.target = 1e6;
       }
@@ -766,6 +787,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       const w = host.clientWidth;
       const h = host.clientHeight;
       renderer.setSize(w, h);
+      hero?.setSize(w, h);
       workScene.setSize(w, h);
       office.setSize(w, h);
       contact?.setSize(w, h);
@@ -824,6 +846,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       cleanups.push(contact.dispose);
       cleanups.push(reveal.dispose);
       cleanups.push(tie.dispose);
+      // hero 段场景（boot 只在 #hero 首载播放；直链/回访 skipBoot）
+      try {
+        hero = createHeroScene(r, host, host.clientWidth, host.clientHeight, { playBoot: mode === 'hero' });
+        cleanups.push(hero.dispose);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[WorkAbout] hero 场景创建失败：', err);
+      }
       try {
         compose = createHeroCompose(host.clientWidth, host.clientHeight);
         cleanups.push(compose.dispose);
@@ -873,18 +903,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             pendingContact = false;
           }
 
-          // 顶部边界：原站从 projects 向上越过全局 0.8 后由 snap 交给 hero（这里走路由）
-          if (st.view === 'work' && !pendingContact && aim.dir < 0 && aim.target + S_ORIGIN < HERO_HANDOFF_SCROLL) {
-            window.location.hash = '#hero';
-          }
           aim.target = clamp(aim.target, TOP_LIMIT_S, maxS);
 
           // 原站 snap 插件逐帧逻辑（snap-zone.txt）：只保留带 range 的 start / projects 两个锚点
           const c = Math.abs(aim.vel);
           const dir = aim.dir;
           if (!pendingContact && performance.now() >= snapLockUntil) {
-            const display = aim.s + S_ORIGIN;
-            const target = aim.target + S_ORIGIN;
+            // 全局 0 基轴：display 即原站 scroll
+            const display = aim.s;
+            const target = aim.target;
             const affected = SNAPS.flatMap((p) => {
               const cfg = dir === -1 ? p.backward : p.forward;
               const lo = p.position + cfg.range[0];
@@ -923,7 +950,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 // 甩出吸附区间：抑制输入直到速度衰减（原站 inputMultiplier=0）
                 aim.inputMultiplier = 0;
                 const edge = dir === 1 ? last.rangeRaw[1] : last.rangeRaw[0];
-                aim.target = last.position + (edge * c) / 150 - S_ORIGIN;
+                aim.target = last.position + (edge * c) / 150;
               } else if (d !== 0) {
                 aim.target += d;
               }
@@ -947,131 +974,84 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             aim.dir = Math.sign(aim.s - prevS);
           }
 
-          const s = aim.s;
-          /** 原站全局 scroll（屏） */
-          const scroll = s + S_ORIGIN;
+          /** 原站全局 scroll（屏，0 = hero 页首）—— 本组件唯一的滚动真值 */
+          const scroll = aim.s;
           /** projects 页画格蒙版：scroll 1.3 → 1.5 */
           const mask = clamp((scroll - MASK_START_SCROLL) / (MASK_END_SCROLL - MASK_START_SCROLL), 0, 1);
           /** office 页滚动进度（原站 nM(scroll, office.start, office.end, 0, 1)，fade 期间可为负） */
-          const officeProgress = (s - FADE_SCREENS) / OFFICE_SCREENS;
-          const fadeT = clamp(s / FADE_SCREENS, 0, 1);
+          const officeProgress = (scroll - OFFICE_START_S) / OFFICE_SCREENS;
 
-          // projects ↔ office 页边界（原站 scroll 2.0）：切换视图并同步 hash（不触发路由重挂载）
+          // ---- 视图切换与 hash 窗口（pageOffset 滞回：向下 0.9/2.0，向上 0.8/1.3）----
           if (!pendingContact) {
-            if (st.view === 'work' && s >= PAGE_SWITCH_S) {
-              setViewState('about');
-              setWorkMounted(false);
-              setUiVisibleState(true);
-              setThemeState('light');
-              if (window.location.hash.split('?')[0] !== '#about-us') {
-                history.replaceState(null, '', `${window.location.pathname}${window.location.search}#about-us`);
-              }
-            } else if (st.view === 'about' && s < PAGE_SWITCH_S) {
-              setViewState('work');
-              setWorkMounted(true);
-              setUiVisibleState(false);
-              setThemeState('light');
-              if (window.location.hash.split('?')[0] !== '#selected-work') {
-                history.replaceState(null, '', `${window.location.pathname}${window.location.search}#selected-work`);
-              }
+            if (st.view === 'hero' && scroll >= HERO_PAGE_DOWN_S) setViewState('work');
+            else if (st.view === 'work' && scroll >= PAGE_SWITCH_S) setViewState('about');
+            else if (st.view === 'work' && scroll < HERO_PAGE_UP_S) setViewState('hero');
+            else if (st.view === 'about' && scroll < PAGE_BACK_S) setViewState('work');
+            const wantHash = st.contactActive
+              ? '#contact'
+              : st.view === 'hero'
+                ? '#hero'
+                : st.view === 'work'
+                  ? '#selected-work'
+                  : '#about-us';
+            if (window.location.hash.split('?')[0] !== wantHash) {
+              history.replaceState(null, '', `${window.location.pathname}${window.location.search}${wantHash}`);
             }
           }
 
-          if (st.view === 'work') {
+          // hero 段推进（相机路径/烟/百叶幕/屏幕内容）——页窗口 [0, 1)
+          if (hero && scroll < 1.05) {
+            hero.update({ dt, time, scroll, mouseX: mouse.x, mouseY: mouse.y });
+          }
+
+          // projects UI 淡入淡出：uiPageOffset 窗口 [0.7, 2)，实际淡入 [0.7,0.9]、在蒙版前淡出 [1.1,1.3]
+          if (st.view === 'hero' || st.view === 'work') {
             const uiEl = workUiHostRef.current?.firstElementChild as HTMLElement | null;
             if (uiEl) {
-              // 原站 projects UI 的 uiPageOffset [0.9, 1.3]：向下滚动时在 mask 前淡出
-              const fade = 1 - smoothstep(-0.5, -0.3, s);
+              const fade = smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
               uiEl.style.setProperty('--sw-ui-fade', String(fade));
               uiEl.toggleAttribute('data-ui-hidden', fade < 0.05);
             }
-            workScene.update(dt, time, {
-              mouseX: mouse.x,
-              mouseY: mouse.y,
-              selectedIndex: work.index,
-              dragPx: work.dragPx,
-              pageScroll: scroll,
-              exitProgress: mask,
-            });
+          }
 
-            // 原件 film shader 在激活画格里按屏幕坐标采样 office 原始渲染
-            if (mask > 0 && office && officeRawRT) {
-              officeFrame(time, dt, officeProgress);
-              renderer.setClearColor(CLEAR_PAPER, 1);
-              renderer.setRenderTarget(officeRawRT);
-              await (renderer as any).renderAsync(office.scene, office.camera);
-              renderer.setRenderTarget(null);
-              workScene.setTransitionTexture(officeRawRT.texture);
-            } else {
-              workScene.setTransitionTexture(null);
-            }
+          // ---------- about 段时间轴（纸页/碎纸/reveal/tie/contact 共用的派生量） ----------
+          const inContact = !!paper && scroll >= contactStart;
+          const stage: 'fade' | 'office' | 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
+            ? 'contact'
+            : scroll >= tieStart
+              ? 'tie'
+              : scroll >= revealStart
+                ? 'reveal'
+                : scroll >= shredStart
+                  ? 'ending'
+                  : scroll >= ABOUT_START
+                    ? 'paper'
+                    : scroll >= FADE_START_S
+                      ? 'office'
+                      : 'fade';
+          const contactP = inContact ? clamp((scroll - contactStart) / CONTACT_SCREENS, 0, 1) : 0;
+          /** 进入 Contact 的位移，单位：屏（scroll 本身是屏单位，不是像素） */
+          const contactEnterScreens = inContact ? scroll - contactStart : 0;
+          const shred = scroll >= shredStart ? clamp((scroll - shredStart) / ENDING_SCREENS, 0, 1) : 0;
+          st.about.shred = shred;
+          // 原站 enterProgress：about.start−2 → about.start+.6（2.6 屏）；
+          // 可见折痕扫过约 1.27 屏，铺满后内容仍停在页首，直到 about.start。
+          const foldEnter = clamp((scroll - FOLD_LEAD_SCREENS) / FOLD_ENTER_SPAN, 0, 1);
+          const paperTop = scroll < ABOUT_START ? 0 : -(scroll - ABOUT_START) * h;
 
-            if (s > 0.0001 && compose && workRT && officeRT && fadeMat && composite && office) {
-              // 原站 projects→office 通用 fade（transition fade .2~.4，这里按页配置 0.4）
-              await compose.renderToTarget(
-                renderer,
-                workScene.scene,
-                workScene.camera,
-                workFrame(time, dt, scroll, 1),
-                workRT
-              );
-              officeFrame(time, dt, officeProgress);
-              await compose.renderToTarget(
-                renderer,
-                office.scene,
-                office.camera,
-                workFrame(time, dt, scroll, 2),
-                officeRT
-              );
-              fadeMat.uFade.value = smoothstep(0, 1, fadeT);
-              composite.mesh.material = fadeMat.mat;
-              renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-              renderer.setRenderTarget(null);
-              await (renderer as any).renderAsync(composite.scene, composite.camera);
-            } else if (compose) {
-              await compose.render(renderer, workScene.scene, workScene.camera, workFrame(time, dt, scroll));
-            } else {
-              renderer.setRenderTarget(null);
-              await (renderer as any).renderAsync(workScene.scene, workScene.camera);
-            }
-          } else {
-            const inContact = !!paper && s >= contactStart;
-            const stage: 'fade' | 'office' | 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
-              ? 'contact'
-              : s >= tieStart
-                ? 'tie'
-                : s >= revealStart
-                  ? 'reveal'
-                  : s >= shredStart
-                    ? 'ending'
-                    : s >= ABOUT_START
-                      ? 'paper'
-                      : s >= FADE_SCREENS
-                        ? 'office'
-                        : 'fade';
-            const contactP = inContact ? clamp((s - contactStart) / CONTACT_SCREENS, 0, 1) : 0;
-            /** 进入 Contact 的位移，单位：屏（s 本身是屏单位，不是像素） */
-            const contactEnterScreens = inContact ? s - contactStart : 0;
-            const shred = s >= shredStart ? clamp((s - shredStart) / ENDING_SCREENS, 0, 1) : 0;
-            st.about.shred = shred;
-            // 原站 enterProgress：about.start−2 → about.start+.6（2.6 屏）；
-            // 可见折痕扫过约 1.27 屏，铺满后内容仍停在页首，直到 about.start。
-            const foldEnter = clamp((s - FOLD_LEAD_SCREENS) / FOLD_ENTER_SPAN, 0, 1);
-            const paperTop = s < ABOUT_START ? 0 : -(s - ABOUT_START) * h;
+          // golden-tie-reveal 时间轴（原站：文案 l = (scroll-start+4)/5.6；
+          // 卡片 n_((scroll-(start-3))/(end-(start-3)))，end-start=1.7）
+          const revealText = clamp((scroll - shredStart) / 5.6, 0, 1);
+          const revealCards = smootherstep(shredStart + 1, shredStart + 5.7, scroll);
 
-            // golden-tie-reveal 时间轴（原站：文案 l = (scroll-start+4)/5.6；
-            // 卡片 n_((scroll-(start-3))/(end-(start-3)))，end-start=1.7）
-            const revealText = clamp((s - shredStart) / 5.6, 0, 1);
-            const revealCards = smootherstep(shredStart + 1, shredStart + 5.7, s);
-
-            // golden-tie 页（原站 pagesConfig: start-2 → end-.5 相机推进；
-            // 握手 A = (end-3.6 → end-.7)；墨迹 (end-1.6 → end+.5)）
-            const tieDolly = clamp((s - (tieStart - 2)) / (tieEnd - 0.5 - (tieStart - 2)), 0, 1);
-            const tieHandshake = clamp((s - (tieEnd - 3.6)) / 2.9, 0, 1);
-            const tieTransition = smootherstep(tieEnd - 1.6, tieEnd + 0.5, s);
-            const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, s);
-            const tiePin = clamp((s - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
-            const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
+          // golden-tie 页（原站 pagesConfig: start-2 → end-.5 相机推进；
+          // 握手 A = (end-3.6 → end-.7)；墨迹 (end-1.6 → end+.5)）
+          const tieDolly = clamp((scroll - (tieStart - 2)) / (tieEnd - 0.5 - (tieStart - 2)), 0, 1);
+          const tieHandshake = clamp((scroll - (tieEnd - 3.6)) / 2.9, 0, 1);
+          const tieTransition = smootherstep(tieEnd - 1.6, tieEnd + 0.5, scroll);
+          const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, scroll);
+          const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
+          const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
 
             if (stage === 'fade') {
               // 原站 projects UI 在 fade 前已消失；office UI 从 office 页首才出现
@@ -1081,7 +1061,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               setUiVisibleState(true);
               if (stage === 'office' || stage === 'paper') {
                 // 原站 office uiMode=light、about uiMode=dark；about UI 从 about.start−0.35 起
-                setThemeState(s >= ABOUT_UI_START ? 'dark' : 'light');
+                setThemeState(scroll >= ABOUT_UI_START ? 'dark' : 'light');
               } else {
                 setThemeState('light');
               }
@@ -1091,16 +1071,16 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             if (!inContact && contactUiOn) resetContactUi();
 
             let veil = 0;
-            if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, s);
+            if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, scroll);
             else if (stage === 'contact') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
             if (veilRef.current) veilRef.current.style.opacity = String(veil);
             if (tieCopyRef.current) tieCopyRef.current.style.opacity = String(tieCopyOpacity);
 
+            // ---------- 各页场景逐帧更新（渲染进各自页 RT 的参数都在这里备好） ----------
             if (stage === 'contact') {
               wasEnding = false;
               setFinalState(false);
               if (finalRef.current) finalRef.current.style.opacity = '0';
-              host.style.background = '#040405';
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
 
               contact?.update(dt, time, {
@@ -1122,52 +1102,83 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               }
               contactUiOn = true;
               setContactPhaseState(contactP > 0.8 ? 'footer' : contactP > 0.32 ? 'info' : 'hello');
-
-              renderer.setClearColor(CLEAR_CONTACT, 1);
-              renderer.setRenderTarget(null);
-              if (contact) await renderer.renderAsync(contact.scene, contact.camera);
-              else renderer.clear();
-            } else if (stage === 'ending') {
-              if (!wasEnding) {
-                shredder?.reset();
-                wasEnding = true;
-              }
+            }
+            if (stage === 'ending' || stage === 'reveal') {
               if (finalRef.current) finalRef.current.style.opacity = '0';
               setFinalState(false);
-              host.style.background = '#000000';
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+            }
+            if (stage === 'tie') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+            }
+            if (stage === 'fade' || stage === 'office' || stage === 'paper') {
+              wasEnding = false;
+              if (finalRef.current) finalRef.current.style.opacity = '0';
+              setFinalState(false);
+              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+            }
 
-              if (shredder && reveal && revealRT && shredderRT && belowMat && composite) {
-                // 原站 "below" 转场：golden-tie-reveal 场景垫在碎纸页下面，
-                // 碎纸页以自身 alpha 叠在上面（纸被切掉的区域会透出下一场景）
-                reveal.update({
-                  text: revealText,
-                  cards: revealCards,
-                  time,
-                  mouseX: mouse.x,
-                  mouseY: mouse.y,
-                });
-                reveal.setNextTexture(null, rtW, rtH);
-                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                renderer.setRenderTarget(revealRT);
-                await renderer.renderAsync(reveal.scene, reveal.camera);
+            // ---------- 逐页 RT 渲染（renderRange ≈ start − max(beforeStart, 转场 TL)，stale 尾部同原站） ----------
+            // 依赖顺序：office → film（蒙版按屏幕坐标采样）/ about（折页下层）；contact → tie → reveal
+            const dynEnd = shredStart + ENDING_SCREENS;
+            const dynRevealEnd = dynEnd + REVEAL_SCREENS;
+            const dynTieEnd = dynRevealEnd + TIE_SCREENS;
 
-                await shredder.update(renderer, {
-                  shred,
-                  time,
-                  dt,
-                  mouseX: mouse.x,
-                  mouseY: mouse.y,
-                });
+            if (office && officeRT && scroll >= 1.25 && scroll < 4.45) {
+              officeFrame(time, dt, officeProgress);
+              renderer.setClearColor(CLEAR_PAPER, 1);
+              renderer.setRenderTarget(officeRT);
+              await (renderer as any).renderAsync(office.scene, office.camera);
+            }
+            if (filmRT && scroll < 2.0) {
+              // 胶片蒙版：激活画格内按屏幕坐标混入 office 页 RT（原件 transitionTexture）
+              workScene.setTransitionTexture(mask > 0 && officeRT ? officeRT.texture : null);
+              renderer.setRenderTarget(filmRT);
+              await (renderer as any).renderAsync(workScene.scene, workScene.camera);
+            }
+            if (hero && heroRT && scroll < 1.0) {
+              renderer.setRenderTarget(heroRT);
+              await (renderer as any).renderAsync(hero.scene, hero.camera);
+            }
+            // about-us 页 RT：折页 quad（office 在下、纸面在上、alpha=覆盖度）→ 纸页 → 碎纸机
+            if (aboutRT && scroll >= FOLD_LEAD_SCREENS - 0.05 && scroll < dynEnd + 0.05) {
+              renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+              renderer.setRenderTarget(aboutRT);
+              if (entryMat && composite && paperRT && paperScene && scroll < ABOUT_START) {
+                // 折页期间 paperScene 渲纸面源纹理（enterProgress 驱动折痕）
+                paperScene.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
+                renderer.setRenderTarget(paperRT);
+                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
                 renderer.setClearColor(CLEAR_TRANSPARENT, 0);
-                renderer.setRenderTarget(shredderRT);
-                await renderer.renderAsync(shredder.scene, shredder.camera);
-
-                composite.mesh.material = belowMat;
-                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                renderer.setRenderTarget(null);
-                await renderer.renderAsync(composite.scene, composite.camera);
-              } else {
+                renderer.setRenderTarget(aboutRT);
+                entryMat.uEnter.value = foldEnter;
+                composite.mesh.material = entryMat.mat;
+                await (renderer as any).renderAsync(composite.scene, composite.camera);
+              } else if (paperScene && scroll >= ABOUT_START && scroll < shredStart) {
+                paperScene.update({ stage: 'paper', paperTop, shred: 0, ctaTop: 0, time });
+                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
+                const hotspot = paper?.hotspots[0];
+                if (hotspot && hotspotRef.current) {
+                  const x = hotspot.x * scale;
+                  const y = paperTop + hotspot.y * scale;
+                  const hw = hotspot.w * scale;
+                  const hh = hotspot.h * scale;
+                  const visible = y + hh > 0 && y < h && paperTop <= 0;
+                  const el = hotspotRef.current;
+                  el.style.display = visible ? 'block' : 'none';
+                  el.style.left = `${x}px`;
+                  el.style.top = `${y}px`;
+                  el.style.width = `${hw}px`;
+                  el.style.height = `${hh}px`;
+                }
+              } else if (scroll >= shredStart) {
+                if (!wasEnding && shredder) {
+                  shredder.reset();
+                  wasEnding = true;
+                }
                 if (shredder) {
                   await shredder.update(renderer, {
                     shred,
@@ -1176,61 +1187,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                     mouseX: mouse.x,
                     mouseY: mouse.y,
                   });
+                  await (renderer as any).renderAsync(shredder.scene, shredder.camera);
                 }
-                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                renderer.setRenderTarget(null);
-                if (shredder) await renderer.renderAsync(shredder.scene, shredder.camera);
-                else renderer.clear();
               }
-            } else if (stage === 'reveal') {
-              wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#000000';
-              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
-
-              reveal?.update({
-                text: revealText,
-                cards: revealCards,
-                time,
-                mouseX: mouse.x,
-                mouseY: mouse.y,
-              });
-
-              // 星形窗口采样 golden-tie 页场景
-              if (tie && nextRT && reveal) {
-                tie.update({
-                  dolly: tieDolly,
-                  handshake: tieHandshake,
-                  transition: 0,
-                  flash: 0,
-                  pin: tiePin,
-                  time,
-                  dt,
-                  mouseX: mouse.x,
-                  mouseY: mouse.y,
-                  contactTexture: null,
-                  contactW: rtW,
-                  contactH: rtH,
-                });
-                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                renderer.setRenderTarget(nextRT);
-                await renderer.renderAsync(tie.scene, tie.camera);
-                reveal.setNextTexture(nextRT.texture, rtW, rtH);
-                renderer.setRenderTarget(null);
-              }
-
-              renderer.setClearColor(CLEAR_TRANSPARENT, 1);
               renderer.setRenderTarget(null);
-              if (reveal) await renderer.renderAsync(reveal.scene, reveal.camera);
-              else renderer.clear();
-            } else if (stage === 'tie') {
-              wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#000000';
-              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
-
+            }
+            // golden-tie 页 RT（内部用 nextRT 采样 contact 页做转场；又被 reveal 的星形窗口采样）
+            if (tie && tieRT && scroll >= tieStart - 1.8 && scroll < dynTieEnd + 0.05) {
               if (contact && nextRT) {
                 contact.update(dt, time, {
                   progress: 0,
@@ -1241,11 +1204,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 });
                 renderer.setClearColor(CLEAR_CONTACT, 1);
                 renderer.setRenderTarget(nextRT);
-                await renderer.renderAsync(contact.scene, contact.camera);
-                renderer.setRenderTarget(null);
+                await (renderer as any).renderAsync(contact.scene, contact.camera);
               }
-
-              tie?.update({
+              tie.update({
                 dolly: tieDolly,
                 handshake: tieHandshake,
                 transition: tieTransition,
@@ -1260,118 +1221,96 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 contactH: rtH,
               });
               renderer.setClearColor(CLEAR_CONTACT, 1);
-              renderer.setRenderTarget(null);
-              if (tie) await renderer.renderAsync(tie.scene, tie.camera);
-              else renderer.clear();
-            } else if (stage === 'fade') {
-              wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#0b0b0b';
-              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
-
-              // 同一根轴上的 projects → office fade（view 尚未跨过页边界时的兜底分支）
-              workScene.update(dt, time, {
+              renderer.setRenderTarget(tieRT);
+              await (renderer as any).renderAsync(tie.scene, tie.camera);
+            }
+            // golden-tie-reveal 页 RT（星形窗口采样 tieRT）
+            if (reveal && revealRT && scroll >= shredStart - 0.1 && scroll < dynRevealEnd + 0.05) {
+              reveal.update({
+                text: revealText,
+                cards: revealCards,
+                time,
                 mouseX: mouse.x,
                 mouseY: mouse.y,
-                selectedIndex: work.index,
-                dragPx: work.dragPx,
-                pageScroll: scroll,
-                exitProgress: mask,
               });
-              if (mask > 0 && officeRawRT) {
-                officeFrame(time, dt, officeProgress);
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                renderer.setRenderTarget(officeRawRT);
-                await (renderer as any).renderAsync(office.scene, office.camera);
-                renderer.setRenderTarget(null);
-                workScene.setTransitionTexture(officeRawRT.texture);
-              } else {
-                workScene.setTransitionTexture(null);
-              }
-              officeFrame(time, dt, officeProgress);
-              if (compose && workRT && officeRT && fadeMat && composite) {
-                await compose.renderToTarget(renderer, workScene.scene, workScene.camera, workFrame(time, dt, scroll, 1), workRT);
-                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt, scroll, 2), officeRT);
-                fadeMat.uFade.value = smoothstep(0, 1, fadeT);
-                composite.mesh.material = fadeMat.mat;
-                renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(composite.scene, composite.camera);
-              } else {
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(office.scene, office.camera);
-              }
-            } else if (stage === 'office') {
-              wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#000000';
-              if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+              if (tieRT) reveal.setNextTexture(tieRT.texture, rtW, rtH);
+              renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+              renderer.setRenderTarget(revealRT);
+              await (renderer as any).renderAsync(reveal.scene, reveal.camera);
+            }
+            // contact 页 RT
+            if (contact && contactRT && inContact) {
+              renderer.setClearColor(CLEAR_CONTACT, 1);
+              renderer.setRenderTarget(contactRT);
+              await (renderer as any).renderAsync(contact.scene, contact.camera);
+            }
 
-              officeFrame(time, dt, officeProgress);
-              paperScene?.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
-
-              // 原站 office→about overlay：office 在底，纸质折痕按 enterProgress 覆盖
-              if (paperScene && compose && officeRT && paperRT && entryMat && composite) {
-                renderer.setClearColor(CLEAR_TRANSPARENT, 0);
-                renderer.setRenderTarget(paperRT);
-                await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                await compose.renderToTarget(renderer, office.scene, office.camera, workFrame(time, dt, scroll, 2), officeRT);
-                entryMat.uEnter.value = foldEnter;
-                composite.mesh.material = entryMat.mat;
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(composite.scene, composite.camera);
-              } else if (compose) {
-                await compose.render(renderer, office.scene, office.camera, workFrame(time, dt, scroll, 2));
-              } else {
-                renderer.setClearColor(CLEAR_PAPER, 1);
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(office.scene, office.camera);
-              }
-            } else if (paperScene && paper) {
-              wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
-              setFinalState(false);
-              host.style.background = '#0b0b0b';
-              paperScene.update({
-                stage: 'paper',
-                paperTop,
-                shred: 0,
-                ctaTop: 0,
-                time,
-              });
-
-              const hotspot = paper.hotspots[0];
-              if (hotspot && hotspotRef.current) {
-                const x = hotspot.x * scale;
-                const y = paperTop + hotspot.y * scale;
-                const hw = hotspot.w * scale;
-                const hh = hotspot.h * scale;
-                const visible = y + hh > 0 && y < h && paperTop <= 0;
-                const el = hotspotRef.current;
-                el.style.display = visible ? 'block' : 'none';
-                el.style.left = `${x}px`;
-                el.style.top = `${y}px`;
-                el.style.width = `${hw}px`;
-                el.style.height = `${hh}px`;
-              }
-              renderer.setClearColor(CLEAR_PAPER, 1);
-              renderer.setRenderTarget(null);
-              await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
-            } else {
-              wasEnding = false;
-              officeFrame(time, dt, officeProgress);
-              if (compose) {
-                await compose.render(renderer, office.scene, office.camera, workFrame(time, dt, scroll, 2));
-              } else {
-                renderer.setRenderTarget(null);
-                await (renderer as any).renderAsync(office.scene, office.camera);
+            // ---------- sceneMode 合成（原件 c[0..6] + 转场类型，动态页表） ----------
+            const pages: HeroPageConfig[] = paper
+              ? [
+                  HERO_PAGES[0],
+                  HERO_PAGES[1],
+                  HERO_PAGES[2],
+                  { ...HERO_PAGES[3], end: dynEnd },
+                  { ...HERO_PAGES[4], start: dynEnd, end: dynRevealEnd },
+                  { ...HERO_PAGES[5], start: dynRevealEnd, end: dynTieEnd },
+                  { ...HERO_PAGES[6], start: dynTieEnd, end: dynTieEnd + CONTACT_SCREENS },
+                ]
+              : [...HERO_PAGES];
+            let idx = pages.length - 1;
+            for (let e = 0; e < pages.length; e++) {
+              if (scroll <= pages[e].end) {
+                idx = e;
+                break;
               }
             }
-          }
+            const pageRTs = [heroRT, filmRT, officeRT, aboutRT, revealRT, tieRT, contactRT];
+            const curPage = pages[idx];
+            const nextPage = pages[idx + 1];
+            const tl = nextPage ? nextPage.transitionLength : 0;
+            const tt = nextPage ? smoothstep(curPage.end - tl, curPage.end, scroll) : 0;
+            const tType = nextPage
+              ? nextPage.transition === 'overlay'
+                ? 2
+                : nextPage.transition === 'below'
+                  ? 3
+                  : nextPage.transition === 'direct'
+                    ? 1
+                    : 0
+              : 0;
+            const pageEffects = resolvePageEffectsFor(pages, scroll);
+            const bootActive = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
+            if (compose) {
+              await compose.render(renderer, (hero ?? workScene).scene, (hero ?? workScene).camera, {
+                time,
+                dt,
+                portrait: window.innerHeight > window.innerWidth,
+                loadingActive: bootActive,
+                loadingMix: 1 - Math.min(1, Math.max(0, bootStore.spring)),
+                pageScroll: scroll,
+                curTexOverride: pageRTs[idx]?.texture,
+                nextTexOverride: pageRTs[idx + 1]?.texture,
+                sectionPage: idx,
+                transition: nextPage ? { t: tt, type: tType } : null,
+                effects: pageEffects,
+              });
+            } else {
+              // 无合成链兜底：直渲当前页场景
+              const fallback: Array<[THREE.Object3D, THREE.Camera] | null> = [
+                hero ? [hero.scene, hero.camera] : null,
+                [workScene.scene, workScene.camera],
+                office ? [office.scene, office.camera] : null,
+                composite && entryMat ? [composite.scene, composite.camera] : null,
+                reveal ? [reveal.scene, reveal.camera] : null,
+                tie ? [tie.scene, tie.camera] : null,
+                contact ? [contact.scene, contact.camera] : null,
+              ];
+              const pair = fallback[idx] ?? fallback[1];
+              renderer.setRenderTarget(null);
+              renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+              if (pair) await (renderer as any).renderAsync(pair[0], pair[1]);
+              else renderer.clear();
+            }
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error('[WorkAbout] 渲染循环抛错：', err);
@@ -1382,6 +1321,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
       (window as unknown as { __workAboutProbe?: unknown }).__workAboutProbe = {
         renderer,
+        hero,
         workScene,
         office,
         contact,
@@ -1421,17 +1361,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       for (const fn of cleanups) fn();
       shredder?.dispose();
       paperScene?.dispose();
+      heroRT?.dispose();
+      filmRT?.dispose();
       officeRT?.dispose();
-      officeRawRT?.dispose();
+      aboutRT?.dispose();
+      tieRT?.dispose();
+      contactRT?.dispose();
       paperRT?.dispose();
-      workRT?.dispose();
       revealRT?.dispose();
-      shredderRT?.dispose();
       nextRT?.dispose();
-      belowMat?.dispose();
-      fadeMat?.mat.dispose();
       entryMat?.mat.dispose();
       composite?.geometry.dispose();
+      composite?.mesh.material.dispose();
       const canvas = host.querySelector('canvas');
       if (canvas) canvas.remove();
     };
@@ -1460,7 +1401,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         touchAction: 'none',
       }}
     >
-      {view === 'work' && workMounted && (
+      {(view === 'work' || view === 'hero') && workMounted && (
         <div ref={workUiHostRef}>
           <SelectedWorkUI
             onPrev={() => {

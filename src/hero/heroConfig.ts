@@ -662,7 +662,7 @@ const smoothRange = (x: number, a: number, b: number) => {
 };
 
 /**
- * 原件的逐页效果权重（`effects-zone.txt` 里的 `q[e]`）
+ * 原件的逐页效果权重（`effects-zone.txt` 里的 `q[e]`）—— 任意页表版本
  *
  * 规则（照抄反编译）：
  *  - scroll ≤ 0：只有第 0 页
@@ -671,11 +671,13 @@ const smoothRange = (x: number, a: number, b: number) => {
  *  - 退出段 `[end − a + s, end + s]` 用 1 − smoothstep 淡出
  *
  * 注意：这些区间在页边界处恰好互补（权重和为 1），因此加权和不会被「压暗」。
+ *
+ * about 以后的段边界按纸面高度动态算（原件同款公式），所以权重同样按动态页表求。
  */
-export function resolvePageEffectWeights(scroll: number): number[] {
-  const q = new Array<number>(HERO_PAGES.length).fill(0);
-  for (let e = 0; e < HERO_PAGES.length; e++) {
-    const p = HERO_PAGES[e];
+export function resolvePageEffectWeightsFor(pages: readonly HeroPageConfig[], scroll: number): number[] {
+  const q = new Array<number>(pages.length).fill(0);
+  for (let e = 0; e < pages.length; e++) {
+    const p = pages[e];
     if (scroll <= 0) {
       q[e] = e === 0 ? 1 : 0;
       continue;
@@ -686,7 +688,7 @@ export function resolvePageEffectWeights(scroll: number): number[] {
       q[e] = smoothRange(scroll, p.start - r + i, p.start + i);
       continue;
     }
-    const n = HERO_PAGES[e + 1];
+    const n = pages[e + 1];
     const a = n ? (n.effectTransitionLength ?? n.transitionLength) : 0;
     const s = n ? (n.effectOffset ?? 0) : 0;
     if (scroll >= p.start + i && scroll <= p.end - a + s) {
@@ -700,16 +702,26 @@ export function resolvePageEffectWeights(scroll: number): number[] {
   return q;
 }
 
-/** 逐页效果参数的加权和（原件最终 pass 的 `let $=0, X=0, …` 那一段） */
-export function resolvePageEffects(scroll: number): HeroEffects {
-  const q = resolvePageEffectWeights(scroll);
+/** 逐页效果参数的加权和（原件最终 pass 的 `let $=0, X=0, …` 那一段）—— 任意页表版本 */
+export function resolvePageEffectsFor(pages: readonly HeroPageConfig[], scroll: number): HeroEffects {
+  const q = resolvePageEffectWeightsFor(pages, scroll);
   const out = {} as HeroEffects;
   for (const key of Object.keys(HERO_EFFECTS) as (keyof HeroEffects)[]) {
     let sum = 0;
-    for (let e = 0; e < HERO_PAGES.length; e++) sum += q[e] * HERO_PAGES[e].effects[key];
+    for (let e = 0; e < pages.length; e++) sum += q[e] * pages[e].effects[key];
     out[key] = sum;
   }
   return out;
+}
+
+/** 静态页表便捷封装（效果权重只看效果表本身，与动态边界无关的场景用） */
+export function resolvePageEffectWeights(scroll: number): number[] {
+  return resolvePageEffectWeightsFor(HERO_PAGES, scroll);
+}
+
+/** 逐页效果参数的加权和（原件最终 pass 的 `let $=0, X=0, …` 那一段） */
+export function resolvePageEffects(scroll: number): HeroEffects {
+  return resolvePageEffectsFor(HERO_PAGES, scroll);
 }
 
 /**

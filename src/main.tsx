@@ -6,7 +6,6 @@ import TraceDetailPage from './components/trace/TraceDetailPage';
 import { TapePage } from './components/tape/TapePage';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
 import BadgePage from './components/badge/BadgePage';
-import HeroOneToOne from './hero/HeroOneToOne';
 import WorkAboutExperience from './work-about/WorkAboutExperience';
 import './styles.css';
 
@@ -65,9 +64,9 @@ function Root() {
   const hash = useHashRoute();
   const isTape = hash.split('?')[0] === '#tape';
   const isBadge = hash.split('?')[0] === '#badge';
-  // #hero：shader.se 首页 1:1 复刻页（three/webgpu + TSL 合成管线）
+  // #hero：shader.se 首页（全站 experience 的 hero 段；boot 仅首载播放）
   const isHero = hash.split('?')[0] === '#hero';
-  // #selected-work：Selected Work 视口独立页（也作为 hero 穿越终点的落地页）
+  // #selected-work：Selected Work 视口（全站 experience 的 projects 段停驻点）
   const isSelectedWork = hash.split('?')[0] === '#selected-work';
   // #about-us：About Us 页（与线上一致）；#about 作为别名重定向
   const isAboutUs = hash.split('?')[0] === '#about-us';
@@ -81,17 +80,13 @@ function Root() {
   const isFilm =
     hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
   // 页面本体：互斥
-  const page = isHero
-    // #hero：不套 StrictMode —— 它会手动创建 WebGPURenderer 并在 effect 里 await init()，
-    // 双挂载会并发建两个设备；资源释放由组件自身的 cleanup 负责
-    ? <HeroOneToOne key="hero" />
-    : isSelectedWork || isAboutUs || isContact
-      // Selected Work / About Us / Contact 共用一个稳定的 experience：渲染器、合成链和
-      // 3D 场景跨路由常驻，孔洞转场与碎纸后的 Contact 衔接期间不会重新初始化 WebGPU
-      ? (
+  const page = isHero || isSelectedWork || isAboutUs || isContact
+    ? // 全站统一 experience：一根全局 0→22.16 的轴、一块画布、一个渲染器，
+      // hash 只做模式映射（mode 决定初始轴位），路由间不重挂载（key 恒定）
+      (
           <WorkAboutExperience
             key="work-about"
-            mode={isSelectedWork ? 'work' : isContact ? 'contact' : 'about'}
+            mode={isHero ? 'hero' : isSelectedWork ? 'work' : isContact ? 'contact' : 'about'}
           />
         )
       : hash.split('?')[0] === '#about'
