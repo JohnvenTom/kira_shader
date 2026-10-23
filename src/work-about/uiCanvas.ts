@@ -299,21 +299,8 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     ctx.restore();
   };
 
-  /** tie 页文案（原站 golden-tie 页的大标题，屏幕上 28% 高度处） */
-  const drawTieCopy = (ctx: any, st: UiDrawState) => {
-    if (st.tieCopy <= 0.01) {
-      delete regions.hint;
-      return;
-    }
-    ctx.save();
-    ctx.globalAlpha = st.tieCopy;
-    const size = Math.max(30, Math.min(56, W * 0.038));
-    text(ctx, 'Check Out This Golden Tie', W / 2, H * 0.22, { size, ink: '#fdfdf5', align: 'center' });
-    text(ctx, 'You made it this far. You deserve a tie-break.', W / 2, H * 0.22 + size * 1.1, {
-      size: Math.max(15, size * 0.38), ink: INK_SOFT.light, align: 'center',
-    });
-    ctx.restore();
-  };
+  /** tie 页文案已迁至 goldenTieScene 的场景内 3D 平面（原站 uikit 机制：
+   *  标题随相机 dolly 透视缩放上移，屏幕空间模拟无法还原该运动），此处不再绘制 */
 
   /** contact 三段文案（hello / info / footer，透明度随滚动） */
   const drawContact = (ctx: any, st: UiDrawState) => {
@@ -400,8 +387,8 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     }
     if (theme === 'light') {
       if (st.page === 'work') drawWorkExtras(ctx, st);
-      else if (st.page === 'tie') drawTieCopy(ctx, st);
       else if (st.page === 'contact') drawContact(ctx, st);
+      // tie 页：标题在 goldenTieScene 的 3D 平面里（随 dolly 透视），屏幕层不画
     }
     // dark（about 纸页）层没有屏幕空间正文（正文在 3D 纸纹理里），只保留 header 区域
   };

@@ -429,6 +429,43 @@ export function createGoldenTieScene(
   // 上部、仅随相机推进放大，属屏幕空间元素而非场景内平面。
 
   // ---------------------------------------------------------------------------
+  // 标题平面（原站 uikit：3D 场景内元素，非屏幕空间 UI）
+  // 运动规律（原站采样）：tie 段前段小而稳（屏上 1/5）→ 相机推进持续放大、
+  // 上移出画 → 握手全屏接管；静止时叠加 ±3-5px（屏幕投影）的慢速漂浮。
+  // 载体：CanvasTexture 平面（STIX serif 同款字体），随相机 dolly 自然透视。
+  // ---------------------------------------------------------------------------
+  const tieTitleCanvas = document.createElement('canvas');
+  tieTitleCanvas.width = 2048;
+  tieTitleCanvas.height = 512;
+  {
+    const ctx = tieTitleCanvas.getContext('2d')!;
+    ctx.clearRect(0, 0, tieTitleCanvas.width, tieTitleCanvas.height);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '300 190px "STIX Two Text", "Times New Roman", serif';
+    ctx.fillText('Check Out This Golden Tie', tieTitleCanvas.width / 2, 210);
+    ctx.font = '300 72px "STIX Two Text", "Times New Roman", serif';
+    ctx.fillText('You made it this far. You deserve a tie-break.', tieTitleCanvas.width / 2, 356);
+  }
+  const tieTitleTex = new THREE.CanvasTexture(tieTitleCanvas);
+  tieTitleTex.colorSpace = THREE.SRGBColorSpace;
+  tieTitleTex.minFilter = THREE.LinearFilter;
+  tieTitleTex.magFilter = THREE.LinearFilter;
+  tieTitleTex.generateMipmaps = false;
+  const tieTitleMat = new THREE.MeshBasicNodeMaterial();
+  tieTitleMat.map = tieTitleTex as any;
+  tieTitleMat.transparent = true;
+  tieTitleMat.depthWrite = false;
+  tieTitleMat.toneMapped = false;
+  tieTitleMat.side = THREE.DoubleSide;
+  const TIE_TITLE_BASE_Y = 7;
+  const tieTitleMesh = new THREE.Mesh(new THREE.PlaneGeometry(40, 10), tieTitleMat);
+  tieTitleMesh.position.set(0, TIE_TITLE_BASE_Y, -30);
+  tieTitleMesh.renderOrder = 6;
+  scene.add(tieTitleMesh);
+
+  // ---------------------------------------------------------------------------
   // 握手序列帧 + 墨迹揭示
   // ---------------------------------------------------------------------------
   const fallbackSheet = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
@@ -626,6 +663,8 @@ export function createGoldenTieScene(
     // 人群退场：握手序列帧开始推进后快速淡出，避免人群从握手画面的
     // 亮度门控透明区（黑底 → alpha 0）透出来（层级高于握手观感）
     crowdOpacity.value = 1 - Math.min(1, state.handshake * 4);
+    // 标题慢速漂浮（原站 idle 微动：屏幕投影 ±3-5px，周期约 7s）
+    tieTitleMesh.position.y = TIE_TITLE_BASE_Y + Math.sin(state.time * 0.9) * 0.35;
 
     // 背景板跟随相机
     const dist = 70 + 60 * o;
@@ -690,6 +729,9 @@ export function createGoldenTieScene(
       (mesh.material as THREE.Material).dispose();
       mesh.geometry.dispose();
     }
+    tieTitleMat.dispose();
+    tieTitleTex.dispose();
+    tieTitleMesh.geometry.dispose();
   };
 
   return { scene, camera, setSize, update, dispose };
