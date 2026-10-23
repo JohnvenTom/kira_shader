@@ -335,6 +335,82 @@ export function createGoldenTieScene(
   );
 
   // ---------------------------------------------------------------------------
+  // 人群（原站 f8：Mux 抽帧视频 tie_crowd.mp4，10 位鼓掌人物 5×2 图集，
+  // 每位一个 UV 裁窗 sprite，黑底融入场景背景）+ 标题平面（CanvasTexture）
+  // ---------------------------------------------------------------------------
+  const CROWD_COLS = 5;
+  const CROWD_ROWS = 2;
+  const crowdVideo = document.createElement('video');
+  crowdVideo.src = '/videos/tie_crowd.mp4';
+  crowdVideo.muted = true;
+  crowdVideo.loop = true;
+  crowdVideo.playsInline = true;
+  crowdVideo.preload = 'auto';
+  crowdVideo.crossOrigin = 'anonymous';
+  const crowdTex = new THREE.VideoTexture(crowdVideo);
+  crowdTex.colorSpace = THREE.SRGBColorSpace;
+  crowdTex.minFilter = THREE.LinearFilter;
+  crowdTex.magFilter = THREE.LinearFilter;
+  crowdTex.generateMipmaps = false;
+  const crowdPlayPromise = crowdVideo.play().catch(() => undefined);
+  void crowdPlayPromise;
+
+  /**
+   * 人群站位表（对照原站 tie 段满员帧目测的初排，逐节拍验收时再校）：
+   *  - cell [col, row]：图集内人物格位（row 0 = 上行 5 人，row 1 = 下行 5 人）
+   *  - x/z：世界坐标（相机 z 7→-18 推进，z 越负越远越先进入画面）
+   *  - scale：sprite 高度（世界单位），人物竖条宽 = 高 × 0.5625
+   *  - flip：水平镜像（让人物朝向匹配原站站位）
+   */
+  type CrowdEntry = { cell: [number, number]; x: number; z: number; scale: number; flip?: boolean };
+  const CROWD_LAYOUT: CrowdEntry[] = [
+    // 左列（由远及近）
+    { cell: [3, 0], x: -7.5, z: -26, scale: 7.5 },          // 青套装女（远排）
+    { cell: [1, 0], x: -6.5, z: -14, scale: 8.5 },          // 深蓝套装女
+    { cell: [0, 0], x: -5.4, z: -7, scale: 9.5, flip: true }, // 灰西装男（近排，朝右）
+    { cell: [1, 1], x: -6.2, z: -4.5, scale: 10, flip: true }, // 花裙女（最近）
+    // 右列
+    { cell: [4, 1], x: 7.2, z: -24, scale: 7.5 },           // 白格套装女（远排）
+    { cell: [2, 0], x: 6.6, z: -13, scale: 8.5 },           // 深灰西装男
+    { cell: [3, 1], x: 5.8, z: -6, scale: 9.5 },            // 棕西装男（近排）
+    { cell: [0, 1], x: 6.8, z: -3, scale: 10 },             // 粉套装女（最近）
+  ];
+  const crowdGroup = new THREE.Group();
+  scene.add(crowdGroup);
+  const crowdPlanes = CROWD_LAYOUT.map((entry) => {
+    const [col, row] = entry.cell;
+    // 单格 UV 窗口：每格宽 1/5、高 1/2；flip 时水平镜像窗口
+    const uWin = 1 / CROWD_COLS;
+    const vWin = 1 / CROWD_ROWS;
+    const u0 = T.uv().x.mul(uWin);
+    const v0 = T.uv().y.mul(vWin);
+    const vBase = (CROWD_ROWS - 1 - row) * vWin;
+    const uvWin = entry.flip
+      ? T.vec2(T.float((col + 1) * uWin).sub(u0), v0.add(vBase))
+      : T.vec2(u0.add(col * uWin), v0.add(vBase));
+    const mat = new THREE.MeshBasicNodeMaterial();
+    mat.toneMapped = false;
+    mat.depthWrite = false;
+    mat.transparent = true;
+    // 黑底融入：亮度即覆盖度，纯黑像素完全透明（视频抠像本就黑底）
+    const texNode = T.texture(crowdTex, uvWin);
+    mat.colorNode = texNode.rgb;
+    mat.opacityNode = texNode.rgb.r.add(texNode.rgb.g).add(texNode.rgb.b).mul(0.4);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+    const aspect = 1 / (CROWD_COLS / CROWD_ROWS) / 1.78; // 单格宽高比 ≈ 0.5625
+    mesh.scale.set(entry.scale * aspect, entry.scale, 1);
+    mesh.position.set(entry.x, -entry.scale * 0.46, entry.z);
+    mesh.renderOrder = 5;
+    crowdGroup.add(mesh);
+    return mesh;
+  });
+  crowdTex.needsUpdate = true;
+
+  // 标题不在此实现：tie 文案由 uiCanvas 烘焙层绘制（tieCopy 透明度控制、
+  // 字号随 dolly 缩放），见 uiCanvas.ts 的 tie 分支——原站标题位置固定屏幕
+  // 上部、仅随相机推进放大，属屏幕空间元素而非场景内平面。
+
+  // ---------------------------------------------------------------------------
   // 握手序列帧 + 墨迹揭示
   // ---------------------------------------------------------------------------
   const fallbackSheet = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
@@ -584,6 +660,15 @@ export function createGoldenTieScene(
     for (const s of sheets) s.dispose();
     scene.environment = null;
     if (tieMesh) tieMesh.geometry.dispose();
+    // 人群视频与标题：停播、释放纹理与几何
+    crowdVideo.pause();
+    crowdVideo.removeAttribute('src');
+    crowdVideo.load();
+    crowdTex.dispose();
+    for (const mesh of crowdPlanes) {
+      (mesh.material as THREE.Material).dispose();
+      mesh.geometry.dispose();
+    }
   };
 
   return { scene, camera, setSize, update, dispose };

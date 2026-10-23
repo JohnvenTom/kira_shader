@@ -331,6 +331,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let paperToken = 0;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
     let pendingContact = mode === 'contact';
+    /** ?jump=tie 调试直链：纸页就绪后落到 tie 段（起点 +0.5 屏，标题/人群/领带同框） */
+    let pendingJumpTie = new URLSearchParams(window.location.search).get('jump') === 'tie';
     /** 程序化跳转期间暂停 snap（原站 snapLockTarget 的等价物） */
     let snapLockUntil = 0;
     const lockSnap = (ms = 1400) => {
@@ -948,6 +950,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             aim.vel = 0;
             aim.dir = 0;
             pendingContact = false;
+          }
+          if (pendingJumpTie && paper) {
+            aim.s = tieStart + 0.5;
+            aim.target = aim.s;
+            aim.vel = 0;
+            aim.dir = 0;
+            pendingJumpTie = false;
+            st.view = 'about';
+            history.replaceState(null, '', `${window.location.pathname}${window.location.search}#about-us`);
           }
 
           aim.target = clamp(aim.target, TOP_LIMIT_S, maxS);
