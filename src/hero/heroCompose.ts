@@ -95,13 +95,19 @@ export interface HeroComposeFrame {
    * type 3 → `u = mix(s, a, a.a)`（below：当前页 alpha 门控）。
    */
   transition?: { t: number; type: number } | null;
-  /**
-   * 动态页表的逐页效果加权和（宿主用动态边界算好递入）
-   *
-   * about 以后的段边界按纸面高度动态算（原件同款公式），静态 HERO_PAGES 的权重会漂移；
-   * 缺省时仍按 pageScroll 查静态 HERO_PAGES。
-   */
+  /** 动态页表的逐页效果加权和（宿主用动态边界算好递入） */
   effects?: HeroEffects;
+  /** UI 烘焙层逐帧输入（缺省 uiTransition=0，不画 UI） */
+  ui?: {
+    /** light=0 → dark=1 */
+    mode: number;
+    transition: number;
+    /** 加权和镜头原始值（着色器内换算） */
+    lens: number;
+    border: number;
+    logoHover: number;
+    pageActionHover: number;
+  };
 }
 
 /** 合成管线句柄 */
@@ -112,6 +118,8 @@ export interface HeroComposeHandle {
   setSize: (cssWidth: number, cssHeight: number) => void;
   /** 执行整条合成链并把最终结果上屏 */
   render: (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => Promise<void>;
+  /** 注入 UI 烘焙纹理（宿主 uiCanvas 的 light/dark 两张） */
+  setUiTextures: (lightTex: THREE.Texture, darkTex: THREE.Texture) => void;
   /** 执行同一条合成链，但把结果写进离屏 RT（用于转场冻结帧） */
   renderToTarget: (
     renderer: any,
@@ -475,6 +483,19 @@ export function createHeroCompose(
     portalBlend: N.uniform(0),
     /** 下一页的转场类型（原件 nextTransitionType：0 fade / 1 direct / 2 overlay / 3 below） */
     nextTransitionType: N.uniform(0),
+    // ---- UI 烘焙层（原件 uikit：场景 pass 内按畸变 uv 采样并 over 合成） ----
+    uiLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    uiDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    /** light=0 → dark=1（原件 uiModeTransition） */
+    uiMode: N.uniform(0),
+    /** UI 显隐标量（原件 uiTransition，spring 驱动） */
+    uiTransition: N.uniform(0),
+    /** 加权和镜头原始值（着色器内换算 0.2d+0.1 / 0.5+0.2b，与场景同畸变） */
+    uiLens: N.uniform(0.16),
+    uiBorder: N.uniform(1),
+    /** 解析 hover 提亮（原件 logoHoverTransition / pageActionHoverTransition） */
+    logoHover: N.uniform(0),
+    pageActionHover: N.uniform(0),
     /** 当前页 / 下一页各自的镜头参数（原件 sceneMode：逐页原值，不是加权和） */
     curLens: N.uniform(0),
     curBorder: N.uniform(0),
@@ -566,7 +587,34 @@ export function createHeroCompose(
       mixedScene.a,
       N.mix(N.float(1), nextScene.a, u.portalBlend)
     );
-    sceneComposeMat.colorNode = N.vec4(vignetted, alphaNow);
+    // ---- UI 烘焙层（原件场景 pass 内的 uikit 合成） ----
+    // 与场景同一畸变换算（0.2d+0.1 / 0.5+0.2b，用加权镜头），桶形 uv 出界处不采 UI；
+    // light/dark 按 uiModeTransition 混合，整体乘 uiTransition；logo / pageAction 两个
+    // 角落区域按 hover 提亮 1+0.25·hover；最后 over 到场景色上。
+    const uiLensC = u.uiLens.mul(0.2).add(0.1);
+    const uiBorderC = u.uiBorder.mul(0.2).add(0.5);
+    const uiA = barrel(uvB, uiLensC, uiBorderC);
+    const uiIn = N.step(N.float(0), uiA.x)
+      .mul(N.step(uiA.x, N.float(1)))
+      .mul(N.step(N.float(0), uiA.y))
+      .mul(N.step(uiA.y, N.float(1)));
+    // TextureNode 的采样必须走 `.uv()`（N.texture() 只吃 THREE 纹理对象——
+    // 传 TextureNode 会抛 "TextureNode: Need a three.js texture."）
+    const uiRaw = N.mix(u.uiLight.uv(uiA), u.uiDark.uv(uiA), u.uiMode);
+    // hover 区域（CSS px、y 向下）：logo 左上 240×96，pageAction 右上 220×96；
+    // bool 节点必须 .toFloat() 才能参与乘加（直接 mul 会编译出 bool*bool 的非法 GLSL）
+    const uiPxX = uiA.x.mul(u.dimensions.x);
+    const uiPxY = N.float(1).sub(uiA.y).mul(u.dimensions.y);
+    const logoRegion = uiPxX.lessThan(240).and(uiPxY.lessThan(96)).toFloat();
+    const actionRegion = uiPxX.greaterThan(u.dimensions.x.sub(220)).and(uiPxY.lessThan(96)).toFloat();
+    const uiBoost = logoRegion
+      .mul(u.logoHover.mul(0.25))
+      .add(actionRegion.mul(u.pageActionHover.mul(0.25)))
+      .add(1);
+    const uiT = N.clamp(u.uiTransition, 0, 1).mul(uiIn);
+    const uiCol = N.vec4(uiRaw.rgb.mul(uiBoost).mul(uiT), uiRaw.a.mul(uiT));
+    const composited = N.mix(vignetted, uiCol.rgb, uiCol.a);
+    sceneComposeMat.colorNode = N.vec4(composited, alphaNow);
   }
 
   // ---------- ② mip 金字塔 ----------
@@ -850,6 +898,15 @@ export function createHeroCompose(
     u.nextSaturation.value = nfx.saturation;
     u.portalBlend.value = portal;
     u.nextTransitionType.value = transType;
+    // UI 烘焙层
+    if (frame.ui) {
+      u.uiMode.value = frame.ui.mode;
+      u.uiTransition.value = frame.ui.transition;
+      u.uiLens.value = frame.ui.lens;
+      u.uiBorder.value = frame.ui.border;
+      u.logoHover.value = frame.ui.logoHover;
+      u.pageActionHover.value = frame.ui.pageActionHover;
+    }
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');
     u.vigIntensity.value = eff('vignetteIntensity');
@@ -976,6 +1033,12 @@ export function createHeroCompose(
   const render = (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) =>
     renderInner(renderer, scene, camera, frame, null);
 
+  /** 注入 UI 烘焙纹理（宿主的 canvas light/dark 两张） */
+  const setUiTextures = (lightTex: THREE.Texture, darkTex: THREE.Texture) => {
+    u.uiLight.value = lightTex;
+    u.uiDark.value = darkTex;
+  };
+
   const renderToTarget = (
     renderer: any,
     scene: THREE.Object3D,
@@ -1039,6 +1102,7 @@ export function createHeroCompose(
     sceneRT,
     setSize,
     render,
+    setUiTextures,
     renderToTarget,
     dispose,
     debugRTs: {

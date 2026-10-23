@@ -18,6 +18,10 @@ import { PianoDetailPage } from './components/piano/PianoDetailPage';
 import { CanvasContextGuard } from './components/CanvasContextGuard';
 import FeaturedWorkOverlay from './components/lusion/FeaturedWorkOverlay';
 import gsap from 'gsap';
+// hash 映射数据已抽到独立模块（main.tsx 懒加载本组件时无需加载本模块即可路由判定），
+// 这里 re-export 维持既有导入路径兼容
+export { FILM_SECTION_BY_HASH } from './filmSectionMap';
+import { FILM_SECTION_BY_HASH } from './filmSectionMap';
 
 /**
  * 顶部导航锚点 → 胶片页帧索引
@@ -36,12 +40,6 @@ import gsap from 'gsap';
  *    因此这里只接管这四个锚点，不影响默认入口
  *  - '#film'（带 sessionStorage 恢复语义）不在表内：它交给 initialRestore 决定初始帧
  */
-export const FILM_SECTION_BY_HASH: Record<string, number> = {
-  '#home': 0,
-  '#work': 1,
-  '#about': 2,
-  '#contact': 3,
-};
 
 /**
  * === 镜头推进输入模型（1:1 复刻 shader.se / Lenis 1.3.3 + snap 插件）===

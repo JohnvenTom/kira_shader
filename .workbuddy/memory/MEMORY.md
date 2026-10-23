@@ -7,13 +7,16 @@
 - WAAPI clamp 分发语义坑（通用）：滚动 scrubbing 按 `clamp(t, delay, delay+dur)` 写 currentTime 时，**t<delay 必须写 0（before 相位）而非 delay**——写 delay 会把 forwards 填充动画强制推进活动相位起点、from 帧生效（曾致 trace 页 ink from{opacity:.38} 在 0% 显示彩色底稿）。both 填充动画两种写法视觉一致。
 - **EffectComposer 中段通道采样共享深度纹理 = 反馈环**（2026-09-27 computer 页踩坑）：往挂着深度纹理的 rt 里写、同时采样它读深度 → GL 静默拒绝（INVALID_OPERATION，零报错），整页画布全黑。症状特征：全黑+零 console 错误+gl.getError()=1282。修法：读深度的通道必须最终 renderToScreen（钢琴 Grade、computer DofPass 都放链尾），或写往未挂该纹理的目标。排障：先 getError()，git stash 做对照。另：SpotLight.map 锥角别扫到屏幕主体；灯贴脸时 decay 会平方级放大近场强度。
 - **CSS 动画要起跑，必须先有一次样式提交**（2026-09-27 磁带页踩坑）：layout effect 设置动画+类之后若同任务同步跑重 boot（编着色器），浏览器没机会提交样式 → 动画从未上合成器，醒来后直接 Snap 到终态。修法：boot 推迟到 double-rAF 之后（首帧画完+动画上合成器才交主线程）；"隐式起点 keyframes + delay + both 填充"可让展开完全在合成器线程跑。另：挂载首帧的姿态要用 useLayoutEffect 摆（useEffect 绘制后才跑，会闪一帧终态）。
+- **StrictMode 双挂载在 SwiftShader/受限 GPU 环境下杀死 WebGL 上下文**（2026-10-23 首页踩坑）：main.tsx 首页/胶片页曾包 React.StrictMode，dev 双挂载让 R3F Canvas 在启动瞬间挂载→卸载(forceContextLoss)→重挂，SwiftShader 下频繁上下文创建销毁会连带杀死新上下文 → CanvasContextGuard 轮询兜底 reload → "丢失→刷新→再丢失"无限刷新循环（页面加载 5-6s 必丢，最小 WebGL 页面却稳定）。修法：去掉 StrictMode（TapePage/BadgePage 本就因双挂载副作用不套）；另给 Guard 加 canAutoReload 防死循环（15s 窗口最多自动刷新 2 次，超限显式报错停止刷新）。排障工具：`scripts/diag-boot.mjs`（新 page 收集 console/pageerror/requestfailed/404）、`scripts/webgl-soak.html`（最小 WebGL 稳定性对照）、`scripts/cleanup-pages.mjs`（清理 CDP 旧页面——多页面并存会放大软件渲染资源压力）。
+- **main.tsx 已页面级懒加载**（2026-10-23）：入口曾静态 import 全部 7 个页面，首页被迫同时加载 three（WebGL）+ three/webgpu（WebGPU）双构建（控制台 "Multiple instances of Three.js" 警告、内存翻倍）。现 React.lazy + Suspense fallback=null 按路由分包；`FILM_SECTION_BY_HASH` 因懒加载无法同步引用，已抽到 `src/filmSectionMap.ts`（KiraFilmDemo re-export 保持兼容）。**注意：给 main.tsx 加新页面时用 lazy，别回退成静态 import**。
+- 首页 ComputerScene GIF 解码的 compose canvas 已加 willReadFrequently（消除 Canvas2D getImageData 性能警告）；GIF 全帧 ImageData 驻留内存约 185MB（400x224x12 + 890x713x15 + 720x425x79 + 320x160x223），资源压力参考值。
 
 ## 用户偏好
 - 修视觉问题要求浏览器交互式实测截图目检（拒绝一次性固化验证脚本）。
 - 决策风格：给推荐项+讲清取舍，快速拍板（景深修复四轮、hover 修复一轮 grill 均选推荐项）。
 
 ## 既有问题备忘
-- `FilmPostProcessing.tsx` 有 5 个既有 TS 错误（阻塞 tsc -b，与钢琴页无关）。
+- ~~`FilmPostProcessing.tsx` 有 5 个既有 TS 错误~~（2026-10-23 复查已消失，tsc -b 全绿）。
 - 钢琴 HUD "三角面 0k" 计数没接对数据源（显示 bug，未修）。
 - 磁带页 post.js 与钢琴页旧配置同款（共享深度+autoClear+MSAA）隐患，AO 通道后深度仍会被清，待统一修复。
 - 收藏柜 `playFocusRing`（mouseenter 光圈）无拖拽守卫，拖拽经过卡片也会播光圈（既有行为，未修）。

@@ -1,6 +1,49 @@
 import { useEffect, useRef } from 'react';
 import { useThree } from '@react-three/fiber';
 
+// === 自动刷新防死循环守卫（模块级：同一页面的多个 Canvas 实例共享计数） ===
+// 背景：WebGL 上下文丢失 → reload → 新页面再次丢失 → 再 reload 会形成
+// 无限刷新死循环（受限 GPU 环境 / SwiftShader 软件渲染 / GPU 进程反复
+// 崩溃时都会出现），表现为浏览器无限重载、控制台警告刷屏。
+// 策略：时间窗口内限制自动刷新次数，超过阈值停止刷新并给出显式报错。
+const RELOAD_GUARD_KEY = 'ccg:auto-reload-guard';
+const RELOAD_GUARD_WINDOW_MS = 15000; // 统计窗口：从首次刷新起 15s
+const RELOAD_GUARD_MAX = 2;           // 窗口内最多自动刷新 2 次
+
+/**
+ * 自动刷新额度检查
+ *
+ * 功能：判定本次"上下文丢失自动刷新"是否放行。sessionStorage 记录
+ *      { count, firstAt }，窗口过期自动重置；放行时计数 +1。
+ *
+ * 返回值：true=允许刷新；false=窗口内额度耗尽，拒绝刷新
+ * 异常：sessionStorage 不可用（隐私模式）时返回 true（保持原行为）
+ */
+function canAutoReload(): boolean {
+  try {
+    const raw = sessionStorage.getItem(RELOAD_GUARD_KEY);
+    const now = Date.now();
+    let entry: { count: number; firstAt: number } | null =
+      raw ? JSON.parse(raw) : null;
+    if (!entry || now - entry.firstAt > RELOAD_GUARD_WINDOW_MS) {
+      entry = { count: 0, firstAt: now };
+    }
+    entry.count += 1;
+    sessionStorage.setItem(RELOAD_GUARD_KEY, JSON.stringify(entry));
+    if (entry.count > RELOAD_GUARD_MAX) {
+      console.error(
+        `[CanvasContextGuard] ${RELOAD_GUARD_WINDOW_MS / 1000}s 内已因 WebGL 上下文丢失自动刷新 ` +
+        `${entry.count - 1} 次，判定为持续丢失（GPU 驱动/显存问题或场景资源超限），` +
+        '停止自动刷新以避免死循环。请修复根因后手动刷新页面。'
+      );
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * WebGL 上下文守卫（CanvasContextGuard）
  *
@@ -20,6 +63,10 @@ import { useThree } from '@react-three/fiber';
  *     只会留下 forceContextLoss 时的 "context already lost" 警告）。
  *     因此每 1s 轮询一次 isContextLost()，发现上下文已死立即刷新，
  *     保障任何情况下页面都能自动恢复，而非永久黑屏。
+ *  4. 防死循环：所有自动刷新（恢复路径 + 轮询兜底）都经 canAutoReload()
+ *     额度检查——15s 窗口内最多自动刷新 2 次，超过说明上下文持续丢失
+ *     （GPU 驱动/显存问题、软件渲染环境），停止刷新并显式报错，避免
+ *     "丢失→刷新→再丢失"无限重载循环。
  *
  * 参数：无（内部通过 useThree 获取 R3F 渲染器）
  *
@@ -57,7 +104,7 @@ export function CanvasContextGuard() {
     // 上下文恢复：刷新页面，让所有 GPU 资源（纹理/Shader/RT）从零重建
     const onRestored = () => {
       console.warn('[CanvasContextGuard] WebGL 上下文已恢复，刷新页面重建渲染资源');
-      if (!unmountingRef.current) window.location.reload();
+      if (!unmountingRef.current && canAutoReload()) window.location.reload();
     };
 
     // 轮询兜底：GPU 进程崩溃时 webglcontextlost 事件可能不派发，
@@ -65,7 +112,7 @@ export function CanvasContextGuard() {
     const timer = window.setInterval(() => {
       if (ctx && typeof ctx.isContextLost === 'function' && ctx.isContextLost()) {
         console.warn('[CanvasContextGuard] 检测到 WebGL 上下文已丢失（轮询兜底），刷新页面');
-        window.location.reload();
+        if (canAutoReload()) window.location.reload();
       }
     }, 1000);
 

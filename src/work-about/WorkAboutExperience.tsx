@@ -3,11 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { createSelectedWorkScene } from '../selected-work/scene';
-import SelectedWorkUI from '../selected-work/SelectedWorkUI';
 import { createAboutOfficeScene } from '../about/officeScene';
 import { createAboutContactScene, AboutContactHandle } from '../about/contactScene';
 import { createHeroCompose } from '../hero/heroCompose';
 import { createHeroScene } from '../hero/heroScene';
+import { createUiCanvas, type UiCanvasHandle, type UiDrawState } from './uiCanvas';
 import {
   HERO_PAGES,
   resolvePageEffectsFor,
@@ -21,8 +21,8 @@ import { createGoldenTieScene, GoldenTieSceneHandle } from './goldenTieScene';
 import {
   bootStore,
 } from '../boot/bootStore';
-import AboutUI, { AboutTheme } from './AboutUI';
-import ContactUI, { ContactPhase } from './ContactUI';
+import type { AboutTheme } from './AboutUI';
+import type { ContactPhase } from './ContactUI';
 import './about.css';
 
 const T = TSL as any;
@@ -232,12 +232,8 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
 
 export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const workUiHostRef = useRef<HTMLDivElement>(null);
-  const finalRef = useRef<HTMLDivElement>(null);
-  const tieCopyRef = useRef<HTMLDivElement>(null);
   const hotspotRef = useRef<HTMLAnchorElement>(null);
   const veilRef = useRef<HTMLDivElement>(null);
-  const contactUiRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{
     startAbout: (source?: 'scroll' | 'auto') => void;
     switchToWork: () => void;
@@ -248,13 +244,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
   const initialView: View = mode === 'hero' ? 'hero' : mode === 'work' ? 'work' : 'about';
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<View>(initialView);
-  const [workMounted, setWorkMounted] = useState(mode === 'work' || mode === 'hero');
-  const [uiVisible, setUiVisible] = useState(mode === 'about' || mode === 'contact');
-  const [theme, setTheme] = useState<AboutTheme>(mode === 'about' ? 'dark' : 'light');
-  const [finalShown, setFinalShown] = useState(false);
-  const [contactActive, setContactActive] = useState(mode === 'contact');
-  const [contactPhase, setContactPhase] = useState<ContactPhase>('hello');
+  // chrome UI 已全部由 canvas 烘焙层绘制：视图/主题/阶段只活在 stateRef 里，不再驱动 React 渲染
+  void initialView;
 
   const stateRef = useRef<ExperienceState>({
     ready: false,
@@ -322,7 +313,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const st = stateRef.current;
     const work = workRef.current;
-    const mouse = { x: 0, y: 0 };
+    const mouse = { x: 0, y: 0, cssX: -1, cssY: -1 };
     let renderer: THREE.WebGPURenderer | null = null;
     let compose: ReturnType<typeof createHeroCompose> | null = null;
     let hero: ReturnType<typeof createHeroScene> | null = null;
@@ -361,37 +352,33 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let composite: ReturnType<typeof createFullscreenQuad> | null = null;
     /** 折页 quad：办公室在下、纸面在上、alpha=纸覆盖度——渲进 aboutRT（原件 overlay 页 RT 语义） */
     let entryMat: ReturnType<typeof makeFoldMaterial> | null = null;
+    /** canvas 烘焙 UI（原件 uikit 路径）：light/dark 纹理 + 区域表 + 命中测试 */
+    let ui: UiCanvasHandle | null = null;
+    let uiModeDamped = 0;
+    let uiTransitionDamped = 0;
+    let logoHoverDamped = 0;
+    let actionHoverDamped = 0;
+    let menuOpen = false;
 
     const setUiVisibleState = (value: boolean) => {
-      if (st.uiVisible === value) return;
       st.uiVisible = value;
-      setUiVisible(value);
     };
     const setThemeState = (value: AboutTheme) => {
-      if (st.theme === value) return;
       st.theme = value;
-      setTheme(value);
     };
     const setFinalState = (value: boolean) => {
-      if (st.finalShown === value) return;
       st.finalShown = value;
-      setFinalShown(value);
     };
     const setViewState = (value: View) => {
-      if (st.view === value) return;
       st.view = value;
-      setView(value);
     };
     let contactPhaseNow: ContactPhase = 'hello';
     const setContactPhaseState = (value: ContactPhase) => {
-      if (contactPhaseNow === value) return;
       contactPhaseNow = value;
-      setContactPhase(value);
     };
+    void contactPhaseNow;
     const setContactActiveState = (value: boolean) => {
-      if (st.contactActive === value) return;
       st.contactActive = value;
-      setContactActive(value);
     };
     const hideHotspots = () => {
       if (hotspotRef.current) hotspotRef.current.style.display = 'none';
@@ -476,12 +463,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
 
     const resetContactUi = () => {
-      const root = contactUiRef.current;
-      if (root) {
-        root.style.setProperty('--ct-hello', '0');
-        root.style.setProperty('--ct-info', '0');
-        root.style.setProperty('--ct-footer', '0');
-      }
+      // Contact 文案已由 canvas UI 绘制，无 DOM 需要复位
       setContactPhaseState('hello');
       contactUiOn = false;
     };
@@ -496,6 +478,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     /** 输入回调里读当前轴位（全局 0 基 = 原站 scroll） */
     const scrollNow = () => stateRef.current.about.s;
+
+    /** canvas 菜单开关（原站 menu 浮层的状态移出 DOM） */
+    const toggleMenu = (open: boolean) => {
+      menuOpen = open;
+      if (open) document.body.dataset.aboutMenu = '1';
+      else delete document.body.dataset.aboutMenu;
+    };
 
     /**
      * 从 Selected Work 进入 office/About（点击提示、导航或路由直达）
@@ -527,12 +516,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       snapLockUntil = 0;
       pendingContact = false;
       st.finalShown = false;
-      setFinalShown(false);
       setContactActiveState(false);
       resetContactUi();
-      if (finalRef.current) finalRef.current.style.opacity = '0';
       setViewState('hero');
-      setWorkMounted(true);
       setUiVisibleState(false);
       setThemeState('light');
       hideHotspots();
@@ -559,12 +545,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       aim.inputMultiplier = 1;
       snapLockUntil = 0;
       st.finalShown = false;
-      setFinalShown(false);
       setContactActiveState(false);
       resetContactUi();
-      if (finalRef.current) finalRef.current.style.opacity = '0';
       setViewState('work');
-      setWorkMounted(true);
       setUiVisibleState(false);
       setThemeState('light');
       hideHotspots();
@@ -591,13 +574,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       snapLockUntil = 0;
       pendingContact = false;
       setViewState('about');
-      setWorkMounted(false);
       setUiVisibleState(true);
       setThemeState('dark');
       setFinalState(false);
       setContactActiveState(false);
       resetContactUi();
-      if (finalRef.current) finalRef.current.style.opacity = '0';
       hideHotspots();
       void ensurePaper();
     };
@@ -621,12 +602,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         pendingContact = false;
       }
       setViewState('about');
-      setWorkMounted(false);
       setUiVisibleState(true);
       setThemeState('light');
       setFinalState(false);
       setContactActiveState(true);
-      if (finalRef.current) finalRef.current.style.opacity = '0';
       hideHotspots();
     };
 
@@ -678,11 +657,64 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     const onMouseMove = (e: MouseEvent) => {
       mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
       mouse.y = 1 - (e.clientY / window.innerHeight) * 2;
+      mouse.cssX = e.clientX;
+      mouse.cssY = e.clientY;
     };
 
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
       if (!bootStore.springDone) return;
+      // canvas UI 命中分发（原件 uikit 区域表；箭头/提示/链接/菜单都在这里）。
+      // 直呼 API 而非改 hash——避免与帧循环的 replaceState 同帧竞态
+      if (ui) {
+        const hit = ui.hitTest(e.clientX, e.clientY);
+        if (hit) {
+          e.preventDefault();
+          switch (hit) {
+            case 'logo':
+            case 'navHome':
+            case 'menuHome':
+              if (menuOpen) toggleMenu(false);
+              apiRef.current?.jumpToHero();
+              break;
+            case 'navWork':
+            case 'menuWork':
+              if (menuOpen) toggleMenu(false);
+              apiRef.current?.switchToWork();
+              break;
+            case 'navAbout':
+            case 'menuAbout':
+              if (menuOpen) toggleMenu(false);
+              startAbout('auto');
+              break;
+            case 'navContact':
+            case 'menuContact':
+            case 'menuBook':
+              if (menuOpen) toggleMenu(false);
+              apiRef.current?.jumpToContact();
+              break;
+            case 'book':
+            case 'ctEmail':
+            case 'ctBook':
+              window.location.href = 'mailto:hello@shader.se?subject=Book%20a%20call';
+              break;
+            case 'burger':
+              toggleMenu(!menuOpen);
+              break;
+            case 'prevArrow':
+              work.index -= 1;
+              break;
+            case 'nextArrow':
+              work.index += 1;
+              break;
+            case 'hint':
+              startAbout('scroll');
+              break;
+          }
+          return;
+        }
+        if (menuOpen) toggleMenu(false);
+      }
       const target = e.target as HTMLElement | null;
       if (target?.closest('[data-sw-ui],[data-ab-ui],.ab-hotspot,.ab-menu,.ab-final')) return;
       if (e.button !== 0) return;
@@ -788,6 +820,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       const h = host.clientHeight;
       renderer.setSize(w, h);
       hero?.setSize(w, h);
+      ui?.setSize(w, h);
       workScene.setSize(w, h);
       office.setSize(w, h);
       contact?.setSize(w, h);
@@ -860,6 +893,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[WorkAbout] 合成管线创建失败，退化为直渲：', err);
+      }
+      // canvas UI（原件 uikit 路径）；纹理注入合成链
+      try {
+        ui = createUiCanvas(host.clientWidth, host.clientHeight);
+        compose?.setUiTextures(ui.lightTexture, ui.darkTexture);
+        cleanups.push(ui.dispose);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[WorkAbout] UI 画布创建失败：', err);
       }
       buildTargets();
       void ensurePaper();
@@ -1005,14 +1047,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           }
 
           // projects UI 淡入淡出：uiPageOffset 窗口 [0.7, 2)，实际淡入 [0.7,0.9]、在蒙版前淡出 [1.1,1.3]
-          if (st.view === 'hero' || st.view === 'work') {
-            const uiEl = workUiHostRef.current?.firstElementChild as HTMLElement | null;
-            if (uiEl) {
-              const fade = smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
-              uiEl.style.setProperty('--sw-ui-fade', String(fade));
-              uiEl.toggleAttribute('data-ui-hidden', fade < 0.05);
-            }
-          }
+          const swFade = smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
 
           // ---------- about 段时间轴（纸页/碎纸/reveal/tie/contact 共用的派生量） ----------
           const inContact = !!paper && scroll >= contactStart;
@@ -1052,6 +1087,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, scroll);
           const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
           const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
+          // contact 三段透明度（canvas UI 用；contact stage 块里不再重复计算）
+          const ctHello = inContact ? 1 - smoothstep(0.22, 0.44, contactP) : 0;
+          const ctInfo = inContact ? smoothstep(0.28, 0.5, contactP) * (1 - smoothstep(0.66, 0.84, contactP)) : 0;
+          const ctFooter = inContact ? smoothstep(0.72, 0.92, contactP) : 0;
 
             if (stage === 'fade') {
               // 原站 projects UI 在 fade 前已消失；office UI 从 office 页首才出现
@@ -1074,13 +1113,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, scroll);
             else if (stage === 'contact') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
             if (veilRef.current) veilRef.current.style.opacity = String(veil);
-            if (tieCopyRef.current) tieCopyRef.current.style.opacity = String(tieCopyOpacity);
 
             // ---------- 各页场景逐帧更新（渲染进各自页 RT 的参数都在这里备好） ----------
             if (stage === 'contact') {
               wasEnding = false;
               setFinalState(false);
-              if (finalRef.current) finalRef.current.style.opacity = '0';
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
 
               contact?.update(dt, time, {
@@ -1091,36 +1128,53 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 touch: 'ontouchstart' in window,
               });
 
-              const hello = 1 - smoothstep(0.22, 0.44, contactP);
-              const info = smoothstep(0.28, 0.5, contactP) * (1 - smoothstep(0.66, 0.84, contactP));
-              const footer = smoothstep(0.72, 0.92, contactP);
-              const root = contactUiRef.current;
-              if (root) {
-                root.style.setProperty('--ct-hello', String(hello));
-                root.style.setProperty('--ct-info', String(info));
-                root.style.setProperty('--ct-footer', String(footer));
-              }
               contactUiOn = true;
               setContactPhaseState(contactP > 0.8 ? 'footer' : contactP > 0.32 ? 'info' : 'hello');
             }
             if (stage === 'ending' || stage === 'reveal') {
               // reveal 段清 wasEnding：重新下滚进碎纸段时 shredder.reset 会再次触发（合并前语义）
               if (stage === 'reveal') wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
               setFinalState(false);
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
             }
             if (stage === 'tie') {
               wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
               setFinalState(false);
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
             }
             if (stage === 'fade' || stage === 'office' || stage === 'paper') {
               wasEnding = false;
-              if (finalRef.current) finalRef.current.style.opacity = '0';
               setFinalState(false);
               if (hotspotRef.current) hotspotRef.current.style.display = 'none';
+            }
+
+            // ---------- canvas UI（原件 uikit）：逐帧绘制 + 主题/显隐/hover 阻尼 ----------
+            const uiPage: UiDrawState['page'] = st.contactActive
+              ? 'contact'
+              : stage === 'tie'
+                ? 'tie'
+                : st.view === 'work' || st.view === 'hero'
+                  ? 'work'
+                  : 'about';
+            ui?.draw({
+              page: uiPage,
+              activeNav: st.contactActive ? 'contact' : st.view === 'about' ? 'about' : 'work',
+              mobile: w < 1024,
+              fade: swFade,
+              menuOpen,
+              time,
+              mode: uiModeDamped,
+              contact: { hello: ctHello, info: ctInfo, footer: ctFooter },
+              tieCopy: tieCopyOpacity,
+            });
+            const uiModeTarget = st.theme === 'dark' ? 1 : 0;
+            uiModeDamped += (uiModeTarget - uiModeDamped) * Math.min(1, dt * 8);
+            const uiTransTarget = st.uiVisible || st.view === 'hero' || st.view === 'work' ? 1 : 0;
+            uiTransitionDamped += (uiTransTarget - uiTransitionDamped) * Math.min(1, dt * 8);
+            if (ui) {
+              const hit = ui.hitTest(mouse.cssX, mouse.cssY);
+              logoHoverDamped += ((hit === 'logo' ? 1 : 0) - logoHoverDamped) * Math.min(1, dt * 10);
+              actionHoverDamped += ((hit === 'book' || hit === 'burger' ? 1 : 0) - actionHoverDamped) * Math.min(1, dt * 10);
             }
 
             // ---------- 逐页 RT 渲染（renderRange ≈ start − max(beforeStart, 转场 TL)，stale 尾部同原站） ----------
@@ -1308,6 +1362,14 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 sectionPage: idx,
                 transition: nextPage ? { t: tt, type: tType } : null,
                 effects: pageEffects,
+                ui: {
+                  mode: uiModeDamped,
+                  transition: uiTransitionDamped,
+                  lens: pageEffects.lensDistortion,
+                  border: pageEffects.lensDistortionBorders,
+                  logoHover: logoHoverDamped,
+                  pageActionHover: actionHoverDamped,
+                },
               });
             } else {
               // 无合成链兜底：直渲当前页场景
@@ -1340,6 +1402,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         workScene,
         office,
         contact,
+        ui,
         get filmRT() {
           return filmRT;
         },
@@ -1399,17 +1462,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
   }, []);
 
-  const handleAboutNav = (key: 'about' | 'contact') => {
-    const target = key === 'contact' ? '#contact' : '#about-us';
-    // 真正改 hash（而不是 replaceState），让前进/后退和直达链接都成立；
-    // 内部跳转本身是幂等的，hashchange 再次触发不会把滚动位置打回去
-    if (window.location.hash.split('?')[0] !== target) {
-      window.location.hash = target;
-    }
-    if (key === 'contact') apiRef.current?.jumpToContact();
-    else apiRef.current?.jumpToAboutTop();
-  };
-
   return (
     <div
       ref={hostRef}
@@ -1422,59 +1474,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         touchAction: 'none',
       }}
     >
-      {(view === 'work' || view === 'hero') && workMounted && (
-        <div ref={workUiHostRef}>
-          <SelectedWorkUI
-            onPrev={() => {
-              workRef.current.index -= 1;
-            }}
-            onNext={() => {
-              workRef.current.index += 1;
-            }}
-            onScrollHint={() => apiRef.current?.startAbout()}
-            onAbout={() => apiRef.current?.startAbout()}
-          />
-        </div>
-      )}
-
-      {view === 'about' && (
-        <>
-          <AboutUI
-            theme={theme}
-            visible={uiVisible}
-            activeKey={contactActive ? 'contact' : 'about'}
-            onNav={handleAboutNav}
-          />
-          <ContactUI ref={contactUiRef} phase={contactPhase} active={contactActive} />
-        </>
-      )}
-
-      <div ref={finalRef} className="ab-final" aria-hidden={!finalShown}>
-        <h2>
-          <span className="ab-line-desktop">
-            Still Not
-            <br />
-            Convinced We&apos;re
-            <br />
-            Serious About
-            <br />
-            Business?
-          </span>
-          <span className="ab-line-mobile">
-            Still Not Convinced
-            <br />
-            We&apos;re Serious About
-            <br />
-            Business?
-          </span>
-        </h2>
-        <p>We&apos;ve got one last trick up our sleeve.</p>
-      </div>
-
-      <div ref={tieCopyRef} className="ab-tie-copy" aria-hidden="true">
-        <h2>Check Out This Golden Tie</h2>
-        <p>You made it this far. You deserve a tie-break.</p>
-      </div>
+      {/* chrome UI（header/导航/箭头/提示/菜单/Contact 文案）全部由 canvas 烘焙层绘制
+          （原件 uikit 路径，随场景一起过桶形畸变）；此处只留内容性覆盖层 */}
 
       <div ref={veilRef} className="ab-veil" aria-hidden="true" />
 

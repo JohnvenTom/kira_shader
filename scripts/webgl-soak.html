@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>webgl soak</title></head>
+<body style="margin:0">
+<canvas id="c" width="1280" height="800"></canvas>
+<div id="log" style="font:12px monospace;white-space:pre"></div>
+<script>
+// 最小 WebGL 压力测试：持续绘制 + 每 500ms 检查 isContextLost
+// 用于区分"Chrome 环境本身不稳" vs "项目场景超载"
+const canvas = document.getElementById('c');
+const log = document.getElementById('log');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+function p(msg) { log.textContent += msg + '\n'; console.log(msg); }
+if (!gl) { p('NO WEBGL2 CONTEXT'); }
+else {
+  p('webgl2 created ok, renderer=' + gl.getParameter(gl.RENDERER));
+  // 简单旋转三角形持续渲染
+  const vs = `attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}`;
+  const fs = `precision highp float;void main(){gl_FragColor=vec4(.3,.6,.9,1.);}`;
+  function sh(t, s) { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,.8,-.8,-.8,.8,-.8]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'a');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  let frames = 0;
+  const t0 = performance.now();
+  function frame() {
+    if (gl.isContextLost()) { p('CONTEXT LOST @ ' + ((performance.now()-t0)/1000).toFixed(1) + 's after ' + frames + ' frames'); return; }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.05, 0.05, 0.05, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    frames++;
+    requestAnimationFrame(frame);
+  }
+  frame();
+  setInterval(() => { p('alive ' + ((performance.now()-t0)/1000).toFixed(1) + 's, frames=' + frames + ', lost=' + gl.isContextLost()); }, 2000);
+}
+window.addEventListener('webglcontextlost', (e) => { e.preventDefault(); p('EVENT webglcontextlost'); });
+</script>
+</body>
+</html>

@@ -775,10 +775,13 @@ async function loadGif(url: string, onProgress?: (p: number) => void): Promise<G
   }
 
   // 临时合成 canvas（GIF 逻辑尺寸）+ 单帧 patch canvas
+  // willReadFrequently：解码循环每帧 getImageData 读回合成结果（CPU 读回路径），
+  // 提示 Chrome 用软件后端存储该画布，消除 "Multiple readback operations
+  // using getImageData are faster with willReadFrequently" 性能警告
   const composeCanvas = document.createElement('canvas');
   composeCanvas.width = gifW;
   composeCanvas.height = gifH;
-  const composeCtx = composeCanvas.getContext('2d')!;
+  const composeCtx = composeCanvas.getContext('2d', { willReadFrequently: true })!;
 
   const patchCanvas = document.createElement('canvas');
   patchCanvas.width = gifW;

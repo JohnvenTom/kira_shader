@@ -1,13 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import { Suspense, lazy, useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
-import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
-import TraceDetailPage from './components/trace/TraceDetailPage';
-import { TapePage } from './components/tape/TapePage';
+import { FILM_SECTION_BY_HASH } from './filmSectionMap';
 import { MusicBoxDock } from './components/tape/MusicBoxDock';
-import BadgePage from './components/badge/BadgePage';
-import WorkAboutExperience from './work-about/WorkAboutExperience';
 import './styles.css';
+
+// === 页面级懒加载 ===
+// 各页面组件按 hash 路由互斥渲染，改为 React.lazy 按需加载：
+// 首页（无 hash）不再静态打包其余页面代码。此前 WorkAboutExperience 及其
+// hero/selected-work/about 场景静态 import 了 'three/webgpu' + 'three/tsl'
+// （WebGPU 构建），与首页使用的 'three'（WebGL 构建）形成两份完整 three
+// 内核同时加载——控制台 "WARNING: Multiple instances of Three.js" 即由此来，
+// 内存占用翻倍且加大 GPU 进程压力，受限环境（集显/软件渲染）下易触发
+// WebGL 上下文丢失。懒加载后任一时刻只加载一个 three 构建。
+const App = lazy(() => import('./App'));
+const KiraFilmDemo = lazy(() => import('./KiraFilmDemo'));
+const TraceDetailPage = lazy(() => import('./components/trace/TraceDetailPage'));
+const TapePage = lazy(() => import('./components/tape/TapePage').then((m) => ({ default: m.TapePage })));
+const BadgePage = lazy(() => import('./components/badge/BadgePage'));
+const WorkAboutExperience = lazy(() => import('./work-about/WorkAboutExperience'));
 
 /**
  * 根据 URL hash 选择渲染的根组件
@@ -103,17 +113,23 @@ function Root() {
       : hash === '#trace'
         ? <TraceDetailPage key="trace" />
         : (
-          // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
-          <React.StrictMode>
-            {isFilm ? (
-              <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
-            ) : (
-              <App key="app" />
-            )}
-          </React.StrictMode>
+          // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染。
+          // 不套 StrictMode：dev 双挂载会让 R3F Canvas 在启动瞬间经历
+          // 挂载→卸载(forceContextLoss)→重挂，SwiftShader/受限 GPU 环境
+          // 下频繁的上下文创建销毁会连带杀死新上下文（页面加载秒丢
+          // WebGL context → 触发 CanvasContextGuard 自动刷新循环）。
+          // TapePage/BadgePage 出于同样理由也不走 StrictMode
+          isFilm ? (
+            <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
+          ) : (
+            <App key="app" />
+          )
         );
   return (
-    <>
+    // Suspense：lazy 页面 chunk 加载期间渲染 null。
+    // 跨页 hash 切换本就有白闪/转场掩盖，首载的空白窗口由各页 boot 屏接管，
+    // 无需骨架屏；各页代码分包后仅当前路由的 chunk 会被拉取
+    <Suspense fallback={null}>
       {page}
       {/* 音乐盒角标：全站常驻（#tape 自身除外，那页里它没有意义）。
           放在这里是为了让它跨路由保持在同一个位置、不被卸载 —— 它订阅的是
@@ -121,7 +137,7 @@ function Root() {
           BGM 开屏引导已融合进首页 boot 屏（BIOS 文字行，见 App.tsx），
           其他页面直链的首次交互由 tapeAudio 全局钩子兜底 */}
       {!isTape && !isBadge && !isHero && !isSelectedWork && !isAboutUs && !isContact && <MusicBoxDock />}
-    </>
+    </Suspense>
   );
 }
 
