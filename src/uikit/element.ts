@@ -1,0 +1,242 @@
+/**
+ * uikit 元素树（yoga 封装）—— 语义对照原站 lT/lW/l1/l6 + o_（_bundles/full/04kr7kd5riobb.js）。
+ * 关键实证：yoga 节点用 CONTENT-BOX（离线探针 1600×1200 vs 原站静态页长 −0.12%）；
+ * 断点 {sm:640, md:768, lg:1024, xl:1280, "2xl":1536}（04kr:21681），min-width 语义。
+ */
+import YGPackage from 'yoga-layout';
+import { createTextMeasurer, MeasureMode, type TextMeasurer } from './text.ts';
+import type { UIKitFont } from './font.ts';
+
+const YG = (YGPackage as any).default ?? YGPackage;
+
+export const BREAKPOINTS = { sm: 640, md: 768, lg: 1024, xl: 1280, '2xl': 1536 } as const;
+export type BreakpointKey = keyof typeof BREAKPOINTS;
+
+export type Responsive<T> = T | { base?: T; sm?: T; md?: T; lg?: T; xl?: T; '2xl'?: T };
+
+export function resolveResponsive<T>(value: Responsive<T> | undefined, width: number): T | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value) || !('base' in (value as any) || 'sm' in (value as any) || 'md' in (value as any) || 'lg' in (value as any) || 'xl' in (value as any) || '2xl' in (value as any))) {
+    return value as T;
+  }
+  const layers = value as { base?: T; sm?: T; md?: T; lg?: T; xl?: T; '2xl'?: T };
+  let out: T | undefined = layers.base;
+  for (const key of ['sm', 'md', 'lg', 'xl', '2xl'] as const) {
+    if (width >= BREAKPOINTS[key] && layers[key] != null) out = { ...(out as any), ...(layers[key] as any) } as T;
+  }
+  return out;
+}
+
+export interface StyleProps {
+  flexDirection?: 'column' | 'row' | 'column-reverse' | 'row-reverse';
+  justifyContent?: 'flex-start' | 'center' | 'flex-end' | 'space-between' | 'space-around';
+  alignItems?: 'flex-start' | 'center' | 'flex-end' | 'stretch';
+  flexGrow?: number;
+  flexShrink?: number;
+  gap?: number;
+  width?: number | 'auto';
+  height?: number | 'auto';
+  maxWidth?: number;
+  minWidth?: number;
+  minHeight?: number;
+  padding?: number;
+  paddingTop?: number;
+  paddingBottom?: number;
+  paddingLeft?: number;
+  paddingRight?: number;
+  paddingX?: number;
+  paddingY?: number;
+  margin?: number;
+  marginTop?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  marginRight?: number;
+  borderWidth?: number;
+  borderTopWidth?: number;
+  borderBottomWidth?: number;
+  borderLeftWidth?: number;
+  borderRightWidth?: number;
+  positionType?: 'relative' | 'absolute';
+  display?: 'flex' | 'none';
+}
+
+export interface MeasureResult {
+  width: number;
+  height: number;
+}
+
+type SizeListener = (size: { width: number; height: number }) => void;
+
+export class UIElement {
+  readonly node: any;
+  style: StyleProps;
+  children: UIElement[] = [];
+  parent: UIElement | null = null;
+  measurer: TextMeasurer | null = null;
+  private sizeListeners = new Set<SizeListener>();
+  private lastSize: { width: number; height: number } = { width: 0, height: 0 };
+
+  constructor(style: StyleProps = {}, measurer: TextMeasurer | null = null) {
+    this.style = style;
+    this.measurer = measurer;
+    this.node = YG.Node.create();
+    this.node.setBoxSizing(YG.BOX_SIZING_CONTENT_BOX);
+  }
+
+  static container(style: StyleProps = {}): UIElement {
+    return new UIElement(style);
+  }
+
+  static text(
+    text: string,
+    opts: { font: UIKitFont; fontSize: Responsive<number>; letterSpacing?: Responsive<number>; lineHeight?: Responsive<number | string> },
+    style: StyleProps = {},
+  ): UIElement {
+    const el = new UIElement(style, null);
+    el.__text = { text, ...opts };
+    return el;
+  }
+
+  /** 图片：内容宽 w、纵横比 aspect → 高度 = w*aspect 直接写死（contact 全部为定宽图片） */
+  static image(contentWidth: number, aspect: number, style: StyleProps = {}): UIElement {
+    return new UIElement({ ...style, height: contentWidth * aspect }, null);
+  }
+
+  __text?: {
+    text: string;
+    font: UIKitFont;
+    fontSize: Responsive<number>;
+    letterSpacing?: Responsive<number>;
+    lineHeight?: Responsive<number | string>;
+  };
+
+  add(...children: UIElement[]): this {
+    for (const c of children) {
+      c.parent = this;
+      this.children.push(c);
+      this.node.insertChild(c.node, this.children.length - 1);
+    }
+    return this;
+  }
+
+  onSize(cb: SizeListener): () => void {
+    this.sizeListeners.add(cb);
+    return () => this.sizeListeners.delete(cb);
+  }
+
+  /** 以视口宽 W 构建/重建样式与 measure（断点解析）；返回是否需要重排 */
+  applyViewport(width: number): void {
+    applyStyle(this, width);
+    if (this.__text) {
+      const fontSize = resolveResponsive(this.__text.fontSize, width)!;
+      const letterSpacing = resolveResponsive(this.__text.letterSpacing, width) ?? 0;
+      const lineHeight = resolveResponsive(this.__text.lineHeight, width);
+      const m = createTextMeasurer({ text: this.__text.text, font: this.__text.font, fontSize, letterSpacing, lineHeight });
+      this.measurer = m;
+      this.node.setMeasureFunc((w: number, wm: number) => {
+        const mode = wm === 0 ? MeasureMode.UNDEFINED : wm === 1 ? MeasureMode.EXACTLY : MeasureMode.AT_MOST;
+        return m.measure(w, mode);
+      });
+    } else {
+      this.node.setMeasureFunc(null);
+    }
+    for (const c of this.children) c.applyViewport(width);
+  }
+
+  calculateLayout(width: number | undefined, height?: number | undefined): void {
+    this.node.calculateLayout(width ?? undefined, height ?? undefined, YG.DIRECTION_LTR);
+    this.propagateSize();
+  }
+
+  private propagateSize(): void {
+    const w = this.node.getComputedWidth();
+    const h = this.node.getComputedHeight();
+    if (w !== this.lastSize.width || h !== this.lastSize.height) {
+      this.lastSize = { width: w, height: h };
+      for (const cb of this.sizeListeners) cb(this.lastSize);
+    }
+    for (const c of this.children) (c as any).propagateSize?.();
+  }
+
+  get size(): { width: number; height: number } {
+    return { width: this.node.getComputedWidth(), height: this.node.getComputedHeight() };
+  }
+
+  /** 布局后的字形几何占位（M3 渲染层消费）；此处仅尺寸语义 */
+  getComputedHeight(): number {
+    return this.node.getComputedHeight();
+  }
+  getComputedWidth(): number {
+    return this.node.getComputedWidth();
+  }
+}
+
+function num(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function applyStyle(el: UIElement, viewportWidth: number): void {
+  const s = el.style;
+  const n = el.node;
+  const S = YG;
+  const r = <T,>(v: Responsive<T> | undefined): T | undefined => resolveResponsive(v, viewportWidth);
+
+  n.setFlexDirection(
+    s.flexDirection === 'row' ? S.FLEX_DIRECTION_ROW
+    : s.flexDirection === 'column-reverse' ? S.FLEX_DIRECTION_COLUMN_REVERSE
+    : s.flexDirection === 'row-reverse' ? S.FLEX_DIRECTION_ROW_REVERSE
+    : S.FLEX_DIRECTION_COLUMN,
+  );
+  if (s.justifyContent) n.setJustifyContent({ 'flex-start': S.JUSTIFY_FLEX_START, center: S.JUSTIFY_CENTER, 'flex-end': S.JUSTIFY_FLEX_END, 'space-between': S.JUSTIFY_SPACE_BETWEEN, 'space-around': S.JUSTIFY_SPACE_AROUND }[s.justifyContent]);
+  if (s.alignItems) n.setAlignItems({ 'flex-start': S.ALIGN_FLEX_START, center: S.ALIGN_CENTER, 'flex-end': S.ALIGN_FLEX_END, stretch: S.ALIGN_STRETCH }[s.alignItems]);
+  if (num(s.flexGrow)) n.setFlexGrow(s.flexGrow!);
+  if (num(s.flexShrink)) n.setFlexShrink(s.flexShrink!);
+  const gap = r(s.gap as any) ?? s.gap;
+  if (num(gap)) n.setGap(S.GUTTER_ALL, gap);
+  if (s.positionType === 'absolute') n.setPositionType(S.POSITION_TYPE_ABSOLUTE);
+  else n.setPositionType(S.POSITION_TYPE_RELATIVE);
+  if (s.display === 'none') n.setDisplay(S.DISPLAY_NONE);
+  else n.setDisplay(S.DISPLAY_FLEX);
+
+  // 尺寸（数字直接定；图片 '100%' 由 measure 动态给）
+  const width = r(s.width as any) ?? s.width;
+  if (num(width)) n.setWidth(width);
+  else n.setWidthAuto();
+  const height = r(s.height as any) ?? s.height;
+  if (num(height)) n.setHeight(height);
+  else n.setHeightAuto();
+  const maxWidth = r(s.maxWidth as any) ?? s.maxWidth;
+  if (num(maxWidth)) n.setMaxWidth(maxWidth);
+  const minWidth = r(s.minWidth as any) ?? s.minWidth;
+  if (num(minWidth)) n.setMinWidth(minWidth);
+  const minHeight = r(s.minHeight as any) ?? s.minHeight;
+  if (num(minHeight)) n.setMinHeight(minHeight);
+
+  // padding：先 ALL 再具体边覆盖（与原站属性覆盖序一致）
+  const pad = (edge: number, v: unknown) => num(v) && n.setPadding(edge, v);
+  const p = s.padding;
+  pad(S.EDGE_ALL, p);
+  pad(S.EDGE_TOP, s.paddingTop ?? s.paddingY);
+  pad(S.EDGE_BOTTOM, s.paddingBottom ?? s.paddingY);
+  pad(S.EDGE_LEFT, s.paddingLeft ?? s.paddingX);
+  pad(S.EDGE_RIGHT, s.paddingRight ?? s.paddingX);
+  // margin（允许负值）
+  const marg = (edge: number, v: unknown) => num(v) && n.setMargin(edge, v);
+  marg(S.EDGE_ALL, s.margin);
+  marg(S.EDGE_TOP, s.marginTop);
+  marg(S.EDGE_BOTTOM, s.marginBottom);
+  marg(S.EDGE_LEFT, s.marginLeft);
+  marg(S.EDGE_RIGHT, s.marginRight);
+  // border
+  const bord = (edge: number, v: unknown) => num(v) && n.setBorder(edge, v);
+  bord(S.EDGE_ALL, s.borderWidth);
+  bord(S.EDGE_TOP, s.borderTopWidth);
+  bord(S.EDGE_BOTTOM, s.borderBottomWidth);
+  bord(S.EDGE_LEFT, s.borderLeftWidth);
+  bord(S.EDGE_RIGHT, s.borderRightWidth);
+}
+
+/** uN 等价物：订阅元素尺寸（04kr:31845） */
+export function onElementSize(el: UIElement, cb: (size: { width: number; height: number }) => void): () => void {
+  return el.onSize(cb);
+}
