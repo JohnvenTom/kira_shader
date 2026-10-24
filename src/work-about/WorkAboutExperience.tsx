@@ -1071,7 +1071,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const swFade = smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
 
           // ---------- about 段时间轴（纸页/碎纸/reveal/tie/contact 共用的派生量） ----------
-          const inContact = !!paper && scroll >= contactStart;
+          // 页激活（原站 pageOffset.start = -0.9：contact 段提前 0.9 屏激活 stage/update/UI）
+          const inContact = !!paper && scroll >= contactStart - 0.9;
+          // RT 渲染窗（原站 renderOffset.beforeStart = 1.25：contactRT 提前 1.25 屏开始渲染，
+          // 保证 tie→contact 的合成 crossfade 期间 next 纹理是活帧——否则 fade 叠印冻结帧造成重影）
+          const inContactRender = !!paper && scroll >= contactStart - 1.25;
           const stage: 'fade' | 'office' | 'paper' | 'ending' | 'reveal' | 'tie' | 'contact' = inContact
             ? 'contact'
             : scroll >= tieStart
@@ -1104,6 +1108,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const tieHandshake = clamp((scroll - (tieEnd - 3.6)) / 2.9, 0, 1);
           // 原站 n_/nF 均为 clamp 包装（非缓动）：火花窗口线性扩张、白闪线性淡出
           const tieTransition = clamp((scroll - (tieEnd - 1.6)) / 2.1, 0, 1);
+          // contact.update 每帧去重标记（tie 转场分支与 contact RT 分支可能同帧命中）
+          let contactUpdated = false;
           const tieFlash = clamp((scroll - (tieEnd - 1.56)) / 0.96, 0, 1);
           const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
           const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
@@ -1279,13 +1285,16 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             // golden-tie 页 RT（内部用 nextRT 采样 contact 页做转场；又被 reveal 的星形窗口采样）
             if (tie && tieRT && scroll >= tieStart - 1.8 && scroll < dynTieEnd + 0.05) {
               if (contact && nextRT) {
-                contact.update(dt, time, {
-                  enterScreens: scroll - contactStart,
-                  lengthScreens: contact.length(),
-                  mouseX: mouse.x,
-                  mouseY: mouse.y,
-                  touch: 'ontouchstart' in window,
-                });
+                if (!contactUpdated) {
+                  contact.update(dt, time, {
+                    enterScreens: scroll - contactStart,
+                    lengthScreens: contact.length(),
+                    mouseX: mouse.x,
+                    mouseY: mouse.y,
+                    touch: 'ontouchstart' in window,
+                  });
+                  contactUpdated = true;
+                }
                 renderer.setClearColor(CLEAR_CONTACT, 1);
                 renderer.setRenderTarget(nextRT);
                 await (renderer as any).renderAsync(contact.scene, contact.camera);
@@ -1323,14 +1332,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               await (renderer as any).renderAsync(reveal.scene, reveal.camera);
             }
             // contact 页 RT
-            if (contact && contactRT && inContact) {
-              contact.update(dt, time, {
-                enterScreens: scroll - contactStart,
-                lengthScreens: contact.length(),
-                mouseX: mouse.x,
-                mouseY: mouse.y,
-                touch: 'ontouchstart' in window,
-              });
+            if (contact && contactRT && inContactRender) {
+              // update 每帧一次：tie 转场分支（1284 窗口）已更新过则跳过，防烟雾双速/弹簧双步
+              if (!contactUpdated) {
+                contact.update(dt, time, {
+                  enterScreens: scroll - contactStart,
+                  lengthScreens: contact.length(),
+                  mouseX: mouse.x,
+                  mouseY: mouse.y,
+                  touch: 'ontouchstart' in window,
+                });
+                contactUpdated = true;
+              }
               renderer.setClearColor(CLEAR_CONTACT, 1);
               renderer.setRenderTarget(contactRT);
               await (renderer as any).renderAsync(contact.scene, contact.camera);
