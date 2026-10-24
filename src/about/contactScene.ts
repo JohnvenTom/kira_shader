@@ -169,24 +169,18 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   // =====================================================================
   const phonesGroup = new THREE.Group();
   phonesGroup.position.set(0.9, 0, -3.5); // 原站 cf 值（bundle 1:1）
-  scene.add(phonesGroup);
+  // ★ bundle 38248-38345 结构：cf 与 uk 列同级，都在 y=−VH·d/2+VH/2 的滚动居中组内。
+  // 此前挂在 scene 根上 = 比原站高 9.14 世界单位（1.4 屏），话机首帧顶到 Hello 后面
+  // 且视角/离场节奏全错（用户报告"地面亮面朝下"+电话段"滚动变短"的共因）。
+  uikitRootGroup.add(phonesGroup);
 
   phonesGroup.add(new THREE.AmbientLight(0xffffff, 2.4));
   const keyPoint = new THREE.PointLight(0xffccdd, 300, 0, 2);
   keyPoint.position.set(0, 5, 0);
   phonesGroup.add(keyPoint);
-  // cS 形状光（F=.4·lightsIntensity，默认 1）：ring/box 近似为点光
-  const addLight = (color: number, intensity: number, dist: number, x: number, y: number, z: number) => {
-    const l = new THREE.PointLight(color, intensity, dist, 2);
-    l.position.set(x, y, z);
-    scene.add(l);
-    return l;
-  };
-  addLight(0xf5f0dc, 15 * 0.4, 60, 2, 3, -2); // ring beige [2,3,-2] scale3
-  addLight(0xffffff, 80 * 0.4, 60, -14, 10, 8);
-  addLight(0xffffff, 80 * 0.4 * 2, 28, -14, 14, -4); // light{100,dist28,decay2}
-  addLight(0xffffff, 23 * 0.4 * 2, 28, 14, 12, 0);
-  addLight(0xffffff, 16 * 0.4, 60, 0, 9, 14);
+  // 注意：cf 只有以上两盏灯（bundle 04kr:38166-38173）。2026-10-24 曾误把 reveal 段
+  // cS/Lightformer 的 5 盏形状光近似成点光加进 contact（z=8/14 正对近处地面轰击，
+  // 造成用户报告的"地面亮面朝下"），已删除。
 
   // =====================================================================
   // phones.glb（cf 1:1：材质名覆盖 + 背景 TSL shader + 变换）

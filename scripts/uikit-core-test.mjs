@@ -29,7 +29,7 @@ for (const [W, H] of [[1600, 1200], [1440, 900], [1920, 1080]]) {
     expect('helloBlock', helloBlock.getComputedHeight(), 2580); // pt1200+行高240+spacer1140
     const goodbuy = contentCol.children[1];
     const [gbWrap, footer] = goodbuy.children;
-    expect('footer(xl)', footer.getComputedHeight(), 379.2); // 1 + 96*2 + max(186.2, 89.3, 65.6)
+    expect('footer(xl)', footer.getComputedHeight(), 358.0); // 1 + 96*2 + max(图片 100% 语义: cert 内容宽 200→h133.2, copy 384→h107.1, a11y 230→h88.4)（2026-10-24 修正后实测 358）
     const blackBox = gbWrap.children[1];
     expect('ci', blackBox.children[0].getComputedHeight(), 690.4); // 60+86.4+(40+224)+(80+200)
   }

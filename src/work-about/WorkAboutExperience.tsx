@@ -75,7 +75,7 @@ const TIE_SCREENS = 6;
  */
 const CONTACT_FALLBACK_SCREENS = 4.2;
 /** 跳转/直链进入 Contact 的落点（屏）：对齐原站 #contact 直链首帧（Hello 顶 ≈8% 视口，列滚 ≈0.8 页） */
-const CONTACT_JUMP = 0.02; // 原站 #contact 首帧 Hello 文字顶 127px 反推 enter≈0.02（h 窗口 -1.12 起列滚=h·(d-1)，2026-10-24 实测）
+const CONTACT_JUMP = 0; // 原站 #contact 跳转 = contact.range.start 精确值（运行时 store 实测 scroll=20.1078=start，2026-10-24 fiber 探针取证；旧值 0.02 来自粗测量 127px，实为 141px）
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
 const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
@@ -588,7 +588,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         void ensurePaper();
       } else {
         // 直接落到黑场起点，再让阻尼把镜头带进 Hello（避免从 projects 页一路快滚过去）
-        aim.s = contactStart + 0.02;
+        aim.s = contactStart + CONTACT_JUMP;
         aim.target = contactStart + CONTACT_JUMP;
         aim.vel = 0;
         aim.dir = 1;
