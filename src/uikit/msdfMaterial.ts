@@ -37,7 +37,7 @@ export function createMsdfMaterial(opts: MsdfMaterialOptions): THREE.MeshBasicNo
   const uvOffset = T.attribute('instanceUVOffset', 'vec4');
   const rgba = T.attribute('instanceRGBA', 'vec4');
   const clipRect = T.attribute('instanceClipRect', 'vec4');
-  const renderSolid = T.attribute('instanceRenderSolid', 'float');
+  // renderSolid 简化为恒 0（STIX 图集 89 字符全可渲染，fallback 字形不触发；见 glyphBatch 注释）
 
   // 采样坐标（04kr:25534）：offset.xy + uv()*offset.zw
   const l = uvOffset.xy.add(T.uv().mul(uvOffset.zw));
@@ -69,8 +69,8 @@ export function createMsdfMaterial(opts: MsdfMaterialOptions): THREE.MeshBasicNo
   const screenPx = T.clamp(T.length(T.fwidth(l.mul(pagePx))).mul(0.5), 0, opts.distanceRange * 0.5);
   const alpha = T.smoothstep(screenPx.negate(), screenPx, dist);
 
-  // 锐化 1.3（04kr:25561-25564）：renderSolid 直通
-  const sharpened = T.select(renderSolid.greaterThan(0.5), T.float(1), T.pow(alpha, T.float(1).div(1.3)));
+  // 锐化 1.3（04kr:25561-25564；renderSolid 分支恒走 pow 路径）
+  const sharpened = T.pow(alpha, T.float(1).div(1.3));
 
   mat.colorNode = rgba.xyz;
   mat.opacityNode = rgba.w.mul(clip4).mul(sharpened);

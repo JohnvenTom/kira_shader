@@ -83,8 +83,13 @@ export class UIKitRenderer {
   mount(root: UIElement): void {
     this.dispose();
     this.mountedRoot = root;
+    // 先序号 = DOM 绘制序语义（原站 uM ol 透明排序）：无显式 renderOrder 时按先序画，
+    // 保证父面板（背景）先于子内容，文字批次永远晚于其父面板
+    this.preorderCounter = 0;
     this.buildRecord(root, null);
   }
+
+  private preorderCounter = 0;
 
   private buildRecord(el: UIElement, parent: NodeRecord | null): NodeRecord {
     const rec: NodeRecord = {
@@ -113,7 +118,8 @@ export class UIKitRenderer {
       mesh.matrixAutoUpdate = false;
       mesh.frustumCulled = false;
       mesh.visible = false;
-      mesh.renderOrder = (el.style.renderOrder ?? el.style.zIndex ?? 0) as number;
+      // DOM 序：显式 renderOrder 优先，否则先序号（父先于子、先兄弟先画）
+      mesh.renderOrder = (el.style.renderOrder as number) ?? this.preorderCounter++;
       const depthTest = el.style.depthTest ?? false;
       material.depthTest = depthTest;
       material.depthWrite = false;
@@ -134,7 +140,7 @@ export class UIKitRenderer {
           distanceRange: font.distanceRange,
           depthTest,
           depthWrite: false,
-          renderOrder: (el.style.renderOrder ?? el.style.zIndex ?? 0) as number,
+          renderOrder: (el.style.renderOrder as number) ?? this.preorderCounter++,
         },
         slots: [],
         lines: [],
@@ -155,6 +161,12 @@ export class UIKitRenderer {
     const identity = new THREE.Matrix4();
     this.updateRecursive(rec, identity, null);
     this.batches.update();
+  }
+
+  /** px→世界换算系数更新（视口变化时；原站 uU：pixelSize = viewportWidth/width ≈ 0.007）。
+   *  update() 每帧读 this.pixelSize 重算，无需额外置脏。 */
+  setPixelSize(ps: number): void {
+    this.pixelSize = ps;
   }
 
   private updateRecursive(rec: NodeRecord, parentChain: THREE.Matrix4, inheritedClip: WorldRect | null): void {
@@ -427,6 +439,25 @@ export class UIKitRenderer {
       );
     }
     return null;
+  }
+
+  /** 元素面板 uniforms（动态改 backgroundColor 等；非面板/未挂载 → null） */
+  getPanelUniforms(el: UIElement): PanelMaterialUniforms | null {
+    return this.records.get(el)?.uniforms ?? null;
+  }
+
+  /** 元素世界矩形（中心 + 宽高，世界单位；布局未算 → null） */
+  getElementWorldRect(el: UIElement): { cx: number; cy: number; w: number; h: number } | null {
+    const rec = this.records.get(el);
+    if (rec == null || rec.el.size.width === 0) return null;
+    const e = rec.globalMatrix.elements;
+    // 无旋转（uikit 常态）：平移 = [12,13]，尺寸 = el.size × ps
+    return {
+      cx: e[12],
+      cy: e[13],
+      w: rec.el.size.width * this.pixelSize,
+      h: rec.el.size.height * this.pixelSize,
+    };
   }
 
   dispose(): void {

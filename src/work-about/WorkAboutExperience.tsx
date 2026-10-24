@@ -75,7 +75,7 @@ const TIE_SCREENS = 6;
  */
 const CONTACT_FALLBACK_SCREENS = 4.2;
 /** 跳转/直链进入 Contact 的落点（屏）：对齐原站 #contact 直链首帧（Hello 顶 ≈8% 视口，列滚 ≈0.8 页） */
-const CONTACT_JUMP = 0.05;
+const CONTACT_JUMP = 0.02; // 原站 #contact 首帧 Hello 文字顶 127px 反推 enter≈0.02（h 窗口 -1.12 起列滚=h·(d-1)，2026-10-24 实测）
 const BOOK_URL = 'mailto:hello@shader.se?subject=Book%20a%20call';
 const CLEAR_PAPER = new THREE.Color(0x0b0b0b);
 const CLEAR_CONTACT = new THREE.Color(0x040405);
@@ -876,10 +876,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       r.toneMapping = THREE.NeutralToneMapping;
       r.toneMappingExposure = 1;
       host.appendChild(r.domElement);
+      (window as any).__r3 = r; // 调试句柄（CDP eval 用）
 
       workScene = createSelectedWorkScene(host.clientWidth, host.clientHeight);
       office = createAboutOfficeScene(host.clientWidth, host.clientHeight);
       contact = createAboutContactScene(host.clientWidth, host.clientHeight);
+      (window as any).__contact = contact; // 调试句柄（CDP eval 用）
       reveal = createGoldenTieRevealScene(r, host.clientWidth, host.clientHeight);
       tie = createGoldenTieScene(r, host.clientWidth, host.clientHeight);
       cleanups.push(workScene.dispose);
@@ -1322,6 +1324,13 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             }
             // contact 页 RT
             if (contact && contactRT && inContact) {
+              contact.update(dt, time, {
+                enterScreens: scroll - contactStart,
+                lengthScreens: contact.length(),
+                mouseX: mouse.x,
+                mouseY: mouse.y,
+                touch: 'ontouchstart' in window,
+              });
               renderer.setClearColor(CLEAR_CONTACT, 1);
               renderer.setRenderTarget(contactRT);
               await (renderer as any).renderAsync(contact.scene, contact.camera);
