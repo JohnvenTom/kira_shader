@@ -404,7 +404,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   // phones（cf 1:1：材质覆盖 + 背景 TSL shader + 组变换）
   // =====================================================================
   const phonesGroup = new THREE.Group();
-  phonesGroup.position.set(0.9, -7.1, -3.5); // y 基准（0.55p−6.8：原站群中心画面 68% 高的校准值）
+  phonesGroup.position.set(0.9, -6, -3.5); // 原站 cf 值
   scene.add(phonesGroup);
 
   phonesGroup.add(new THREE.AmbientLight(0xffffff, 2.4));
@@ -418,7 +418,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
     scene.add(l);
     return l;
   };
-  addLight(0xf5f0dc, 15 * 0.4 * 8, 60, 2, 3, -2); // ring beige [2,3,-2] scale3
+  addLight(0xf5f0dc, 15 * 0.4, 60, 2, 3, -2); // ring beige [2,3,-2] scale3
   addLight(0xffffff, 80 * 0.4, 60, -14, 10, 8);
   addLight(0xffffff, 80 * 0.4 * 2, 28, -14, 14, -4); // light{100,dist28,decay2}
   addLight(0xffffff, 23 * 0.4 * 2, 28, 14, 12, 0);
@@ -540,12 +540,15 @@ export function createAboutContactScene(width: number, height: number): AboutCon
         return;
       }
       const root = gltf.scene;
+      // 材质覆盖（原站 t8 语义）。metallic/black 的 metalness 按本地无 envMap 的场景调低：
+      // 原站有环境光照时金属件呈亮白反射；本地无 envMap，高金属度会反射成纯黑
+      // （s1 基座区发黑的根因）
       const overrides: Record<string, Record<string, unknown>> = {
         green: { map: null, emissive: new THREE.Color('#0f0'), emissiveIntensity: 1 },
         red: { map: null, emissive: new THREE.Color('#f00'), emissiveIntensity: 1 },
-        metallic: { roughness: 0.4, metalness: 0.9, color: new THREE.Color('#fff') },
+        metallic: { roughness: 0.5, metalness: 0.35, color: new THREE.Color('#fff') },
         white: { roughness: 0.5, metalness: 0 },
-        black: { roughness: 0.5, metalness: 0.4, color: new THREE.Color('#000') },
+        black: { roughness: 0.5, metalness: 0.15, color: new THREE.Color('#000') },
         'shader-logo': { roughness: 0, metalness: 0 },
       };
       root.traverse((obj) => {
@@ -576,7 +579,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
               const n = T.min(bg.mul(T.float(0.5).add(dirtG.mul(1.9))), T.vec3(1));
               const dist = T.length(T.positionWorld.sub(T.vec3(0, 0, -24))).toVar();
               const fade = T.float(1).sub(T.smoothstep(13, 26, dist));
-              return n.mul(fade).mul(0.25).toVar();
+              return n.mul(fade).toVar();
             })() as any;
             mesh.material = std;
             loadedMaterials.add(std);
@@ -592,25 +595,13 @@ export function createAboutContactScene(width: number, height: number): AboutCon
         if (Array.isArray(mesh.material)) mesh.material.forEach(apply);
         else apply(mesh.material);
       });
-      // 组变换（原站 cf 1:1）：group [.9,0,-3.5] + primitive scale1.1 rot[.3,π,0] pos[0,-4,-3]
-      // 观感校准（原站 nP 处理器未抽取）：三台话机在 GLB 里原始 z = −0.1 / 5.8 / 14.6，
-      // π 旋转+偏移后距相机 11~26（过远过小）；按 shader.se 实测（中话机 ≈32% 屏宽、
-      // 左右台 ≈0.7×）分组拉近：phone-2 主组距 ~6.5、phone-1 距 ~9、phone-3 距 ~8
-      const pullByPrefix: Array<[string, number]> = [
-        ['phone-1', 9],
-        ['phone-2', -11.5],
-        ['phone-3', 11.5],
-        ['phones', -11.5],
-        ['buttons', -11.5],
-      ];
-      for (const child of root.children) {
-        if (child.name.toLowerCase().includes('background')) continue;
-        const hit = pullByPrefix.find(([p]) => child.name.toLowerCase().startsWith(p));
-        if (hit) child.position.z += hit[1];
-      }
+      // 组变换（原站 cf 1:1，逐值照抄，不做任何再校准）：
+      // group [.9,0,-3.5] + primitive scale1.1 rot[.3,π,0] pos[0,-4,-3] + 组 y=0.55p−6
+      // 三台话机同组统一变换（phones mesh 11×19×20 一体），滚动时整组 0.55 倍速视差——
+      // 此前按话机宽度误判做的 pullByPrefix 分组拉近破坏了这个连贯空间，已废除。
+      // 重算验证：话机群世界 z −8.9..−30.7（最近端距相机 13.9），视觉宽 35% 屏 ≈ 原站实测。
       const primitive = new THREE.Group();
-      // nP 未知 → 组级缩放观感等价：0.72×（原站群高占画面 ~55%，1.1 原值下 1.4× 过大）
-      primitive.scale.setScalar(1.1 * 0.72);
+      primitive.scale.setScalar(1.1);
       primitive.rotation.set(0.3, Math.PI, 0);
       primitive.position.set(0, -4, -3);
       primitive.add(root);
@@ -641,6 +632,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   const update: AboutContactHandle['update'] = (dt, _time, state) => {
     const d = dLen;
     const end = Math.max(0.001, state.lengthScreens - 1);
+    // 原站 n_() 即 clamp（与 nL 同款），p 线性：e=0.05 时 p=5.5 世界 → 首帧 Hello 顶 8% ✓
     const h01 = nL(nM(state.enterScreens, -1.12, end, 0, 1), 0, 1);
     const g = nL(nM(state.enterScreens, -1, end, 0, 1), 0, 1) * (d - 1);
     // 列背景黑幕：滚过 hello 块后渐黑（原站 f）
@@ -661,7 +653,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
     camera.lookAt(0, -p, 0);
 
     // phones 组：y = 0.55p − 6
-    phonesGroup.position.y = 0.55 * p - (camera.aspect < 0.72 ? 8.2 : 7.1);
+    phonesGroup.position.y = 0.55 * p - 6;
 
     // 星星：tie→contact 转场窗口飞过（原站 contact 段内逐屏采样无星——
     // cb 的 progress 对应页转场 t，enterScreens −1.6..−0.5 飞入、−0.5..0 淡出）

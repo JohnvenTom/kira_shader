@@ -1100,8 +1100,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           // 握手 A = (end-3.6 → end-.7)；墨迹 (end-1.6 → end+.5)）
           const tieDolly = clamp((scroll - (tieStart - 2)) / (tieEnd - 0.5 - (tieStart - 2)), 0, 1);
           const tieHandshake = clamp((scroll - (tieEnd - 3.6)) / 2.9, 0, 1);
-          const tieTransition = smootherstep(tieEnd - 1.6, tieEnd + 0.5, scroll);
-          const tieFlash = smoothstep(tieEnd - 1.56, tieEnd - 0.6, scroll);
+          // 原站 n_/nF 均为 clamp 包装（非缓动）：火花窗口线性扩张、白闪线性淡出
+          const tieTransition = clamp((scroll - (tieEnd - 1.6)) / 2.1, 0, 1);
+          const tieFlash = clamp((scroll - (tieEnd - 1.56)) / 0.96, 0, 1);
           const tiePin = clamp((scroll - (tieStart - 1.5)) / (tieEnd - (tieStart - 1.5)), 0, 1);
           const tieCopyOpacity = stage === 'tie' ? 1 - smoothstep(0.02, 0.25, tieTransition) : 0;
 
@@ -1123,6 +1124,12 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
             // tie→contact 转场由 goldenTieScene 的火花窗口承担（原站 f5 转场板），无黑幕层
             if (veilRef.current) veilRef.current.style.opacity = '0';
+            (window as any).__aim = {
+              s: +aim.s.toFixed(3),
+              target: +aim.target.toFixed(3),
+              vel: +aim.vel.toFixed(3),
+              mult: aim.inputMultiplier,
+            };
 
             // ---------- 各页场景逐帧更新（渲染进各自页 RT 的参数都在这里备好） ----------
             if (stage === 'contact') {
