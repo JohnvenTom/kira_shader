@@ -131,8 +131,14 @@ export function createHeroScreenLoop(): HeroScreenLoop {
 /**
  * 从影片当前帧派生光纹理
  *
- * 功能：把影片帧压进光画布，并做模糊 + 提亮 + 提饱和，得到「屏幕发出的光」这一路信号
- *      （原件里由从属视频 `pE` 承担，本页改为同帧派生）
+ * 功能：把影片帧压进光画布，并做**重度模糊** + 提亮 + 提饱和，得到「屏幕发出的光」这一
+ *      路信号（原件里由从属视频 `pE` 承担——实测抽帧：该视频把内容糊到文字完全不可辨、
+ *      只剩色块，且垂直翻转）。本页改为同帧派生。
+ *
+ *      模糊做法：两级降采样（128→32）→ 小画布上 blur → 放大回 128。双线性放大本身就是
+ *      大半径平滑，叠加后等效模糊半径约为画布宽度的 6-8%——与原件「糊成色块」的程度
+ *      对齐。此前 blur(2px)/(4px) 在 128 宽画布上只有 1.5-3%，投影里还能看清内容，
+ *      观感是「缩小的屏幕」而不是「光」。
  *
  * 参数：
  *  - src  {CanvasImageSource} 影片元素（或任何可绘制源）
@@ -144,8 +150,13 @@ export function createHeroScreenLoop(): HeroScreenLoop {
  *
  * 异常：无（影片未就绪时由调用方拦掉，不在此处判断）
  *
- * 注意事项：与内容同一帧派生（主从同源）；两次叠加绘制（第二次用 lighter）模拟屏幕光的过曝核心
+ * 注意事项：与内容同一帧派生（主从同源）；中间小画布模块级复用（固定 1/4 尺寸），
+ *          双层叠加（第二次 lighter）模拟屏幕光的过曝核心
  */
+/** 中间降采样画布（模块级复用，drawLightFrom 内部按需调整尺寸） */
+const downCanvas = document.createElement('canvas');
+const downCtx = downCanvas.getContext('2d');
+
 function drawLightFrom(
   src: CanvasImageSource,
   dstCtx: CanvasRenderingContext2D,
@@ -154,14 +165,37 @@ function drawLightFrom(
   dw: number,
   dh: number
 ): void {
+  const halfW = Math.max(8, dw >> 2);
+  const halfH = Math.max(6, dh >> 2);
+  if (downCanvas.width !== halfW || downCanvas.height !== halfH) {
+    downCanvas.width = halfW;
+    downCanvas.height = halfH;
+  }
+
+  // 第一级：全尺寸 → 1/4 小画布（双线性缩小即第一重平滑）
   dstCtx.setTransform(1, 0, 0, 1, 0, 0);
   dstCtx.globalCompositeOperation = 'source-over';
-  dstCtx.filter = 'blur(2px) saturate(160%) brightness(1.5)';
   dstCtx.clearRect(0, 0, dw, dh);
-  dstCtx.drawImage(src, 0, 0, sw, sh, 0, 0, dw, dh);
-  dstCtx.globalCompositeOperation = 'lighter';
-  dstCtx.filter = 'blur(4px) saturate(180%) brightness(1.2)';
-  dstCtx.drawImage(src, 0, 0, sw, sh, 0, 0, dw, dh);
-  dstCtx.filter = 'none';
-  dstCtx.globalCompositeOperation = 'source-over';
+  if (downCtx) {
+    downCtx.setTransform(1, 0, 0, 1, 0, 0);
+    downCtx.globalCompositeOperation = 'source-over';
+    downCtx.clearRect(0, 0, halfW, halfH);
+    downCtx.filter = 'blur(1px)';
+    downCtx.drawImage(src, 0, 0, sw, sh, 0, 0, halfW, halfH);
+
+    // 第二级：小画布上重模糊，再放大回目标尺寸（放大双线性 = 大半径平滑）
+    dstCtx.filter = 'blur(2px) saturate(170%) brightness(1.25)';
+    dstCtx.drawImage(downCanvas, 0, 0, halfW, halfH, 0, 0, dw, dh);
+    // 过曝核心：再叠一层同源 lighter（放大后的糊帧，无需重画视频）
+    dstCtx.globalCompositeOperation = 'lighter';
+    dstCtx.filter = 'blur(2px) brightness(1.05)';
+    dstCtx.drawImage(downCanvas, 0, 0, halfW, halfH, 0, 0, dw, dh);
+    dstCtx.filter = 'none';
+    dstCtx.globalCompositeOperation = 'source-over';
+  } else {
+    // 无 2D 上下文（异常环境）：退回单层直绘，保证光纹理非空
+    dstCtx.filter = 'blur(4px) saturate(170%) brightness(1.5)';
+    dstCtx.drawImage(src, 0, 0, sw, sh, 0, 0, dw, dh);
+    dstCtx.filter = 'none';
+  }
 }

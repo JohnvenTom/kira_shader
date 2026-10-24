@@ -154,7 +154,13 @@ export const HERO_SCREEN_PLANE = {
 export const HERO_PROJECTOR = {
   groupPosition: [2.2, -1, -1] as [number, number, number],
   targetLocal: [-3.6, 1, 5] as [number, number, number],
-  /** 基础强度（原件静态 8，动画时用 baseIntensity + 抖动） */
+  /**
+   * 基础强度（原件标度 5 + 三频抖动）
+   *
+   * 说明：gobo 调制（GoboSpotLightNode）生效后，图案亮度随灯光视频内容走，灯本体
+   *      直接用原件标度 —— 中心有效强度 = 5 × gobo 中心亮度，与原站一致。
+   *      （历史：emissive 染色方案时期曾因「无调制全强白光」压到 2.0，该方案已废弃。）
+   */
   intensity: 8,
   baseIntensity: 5,
   animAmplitudes: [0.6, 0.25, 0.15] as [number, number, number],
@@ -162,26 +168,37 @@ export const HERO_PROJECTOR = {
   distance: 20,
   /** 原件 `decay: 0` —— 无距离衰减 */
   decay: 0,
-  /** 原件写的是 `angle: 20`；three 的 angle 是弧度，这里按「原件单位是度」换算 */
-  angleDeg: 20,
+  /**
+   * 投射灯锥角（弧度，直传 three SpotLight.angle）
+   *
+   * 原件写 `angle: 20` 并**直接传给 three**——three 的 angle 期望弧度，20 rad 经
+   * cos 周期性后等效 20 − 6π = 1.1504 rad（≈66° 半角；cos(20)=cos(1.1504)=0.408，
+   * spot 衰减只消费 cos 值，二者完全等价）。此前误判为「20°」再折半成 10° 半角，
+   * 锥立体角缩了约 20 倍——正是「屏幕光只投在键盘上方一小块」的主因。
+   */
+  angleRad: 1.1504,
+  /** penumbra（原件 0.4，r169 与 r180 同公式：cos(angle·(1−p))） */
   penumbra: 0.4,
   /**
    * 解析式溅射的半锥角（°）
    *
    * 说明：three 0.169 的 WebGPU 构建未实现 `SpotLight.map`（gobo 投影）——
    *      已核实 `build/three.webgpu.js` 里 `spotLightMap` 出现 0 次，而 WebGL 后端有。
-   *      原件因为 three 版本更新、后端支持该特性，才能看到「图案在动的溢出」。
-   *      本页因此改为在材质上做解析式投影采样（见 heroSpill.ts）。
-   *      这里把原件的 `angle: 20` 解释为「圆锥全角」，半角取 10°。
+   *      本页用自定义 GoboSpotLightNode（照官方 IESSpotLightNode 范本 fork）把 gobo
+   *      图案调制进完整 PBR 直接光，见 heroGoboLight.ts。
+   *      gobo 投影锥与 spotAttenuation 锥必须同角：原件 `angle: 20`（弧度直传）等效半角 66°。
    */
-  halfAngleDeg: 10,
+  halfAngleDeg: 66,
   /**
    * 解析式溅射强度
    *
    * 注意事项：**该值不是原件实测值**，是自定系数 —— 原件那一项由 spotLight.map 承担、
    *          本页无法照搬其内部标度，故给一个保守初值，需按观感校准。
+   *          迭代记录：0.35（初值，锥角扩到 66° 后整机染色过浓+键盘中心热点）→ 0.18。
+   *          已废弃：emissive 染色方案（heroSpill.ts）由 GoboSpotLightNode 真光照取代，
+   *          图案亮度由灯光视频内容与 light.intensity 决定，不再需要手调系数。
    */
-  spillStrength: 0.35,
+  spillStrength: 0.18,
 } as const;
 
 /** 补光（原件 `pC` 里的 ambientLight） */

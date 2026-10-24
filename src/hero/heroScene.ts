@@ -11,7 +11,7 @@ import { createHeroSmoke } from './heroSmoke';
 import { createHeroEnvironment } from './heroLightRig';
 import { sampleScreenProjects } from './heroCompose';
 import { createHeroScreenLoop } from './heroScreenLoop';
-import { createHeroSpillFactory } from './heroSpill';
+import { GoboSpotLight, GoboSpotLightNode } from './heroGoboLight';
 import { createHeroBootPass } from './heroBootPass';
 import { createHeroSlats } from './heroSlats';
 import {
@@ -159,17 +159,10 @@ export function createHeroScene(
   screenLoop.update();
   cleanups.push(screenLoop.dispose);
 
-  // 解析式屏幕光溅射（three 0.169 WebGPU 无 spotLight.map 的替代实现）
-  const spillDisabled = (window.location.hash.split('?')[1] ?? '').includes('spill=0');
-  let spillFactory: ReturnType<typeof createHeroSpillFactory> | null = null;
-  if (!spillDisabled) {
-    try {
-      spillFactory = createHeroSpillFactory(screenLoop.lightTexture);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[heroScene] 溅射工厂创建失败，已跳过：', err);
-    }
-  }
+  // gobo 灯光节点注册（three 0.169 WebGPU 无 SpotLight.map —— 自定义 GoboSpotLightNode
+  // 照官方 IESSpotLightNode 范本 fork，把 gobo 图案调制进完整 PBR 直接光）。
+  // 注意：NodeLibrary 挂在 renderer.nodes.library（Nodes 实例的 library 属性）。
+  (renderer.nodes as any).library.addLight(GoboSpotLightNode, GoboSpotLight);
 
   // ---------- 模型（照搬原件世界变换，不做归一化） ----------
   const gltfLoader = new GLTFLoader();
@@ -195,7 +188,7 @@ export function createHeroScene(
     if (disposed) return;
     if (gltf?.scene) {
       const model = gltf.scene as THREE.Group;
-      replaceModelMaterials(model, dirt, grunge, screenLoop.lightTexture, spillFactory);
+      replaceModelMaterials(model, dirt, grunge, screenLoop.lightTexture);
       modelGroup.add(model);
       modelGroup.updateMatrixWorld(true);
     }
@@ -236,24 +229,30 @@ export function createHeroScene(
   modelGroup.add(screenGroup);
   modelGroup.updateMatrixWorld(true);
 
-  // ---------- 屏幕投射灯（原件 po） ----------
+  // ---------- 屏幕投射灯（原件 po）----------
+  // gobo 灯：图案（灯光版纹理）调制进完整 PBR 直接光 —— diffuse×albedo（地板光斑贴材质色）、
+  // specular（键帽镜面高光）、NdotL（明暗面）全部走 three 光照管线，等价原站 spotLight.map。
   const projGroup = new THREE.Group();
   projGroup.position.set(...HERO_PROJECTOR.groupPosition);
   const projTarget = new THREE.Object3D();
   projTarget.position.set(...HERO_PROJECTOR.targetLocal);
   projGroup.add(projTarget);
-  const projLight = new THREE.SpotLight(
+  const projLight = new GoboSpotLight(
     new THREE.Color('#ffffff'),
     HERO_PROJECTOR.baseIntensity,
     HERO_PROJECTOR.distance,
-    (HERO_PROJECTOR.angleDeg * Math.PI) / 180,
+    HERO_PROJECTOR.angleRad,
     HERO_PROJECTOR.penumbra,
     HERO_PROJECTOR.decay
   );
   projLight.position.set(0, 0, 0);
   projLight.target = projTarget;
-  projLight.map = screenLoop.lightTexture;
+  projLight.goboMap = screenLoop.lightTexture;
   projGroup.add(projLight);
+  // 消融开关：#hero?gobo=0 关掉 gobo 灯（对照「无屏幕光」的观感）
+  if ((window.location.hash.split('?')[1] ?? '').includes('gobo=0')) {
+    projLight.intensity = 0;
+  }
   scene.add(projGroup);
   projGroup.updateMatrixWorld(true);
 
@@ -415,30 +414,19 @@ export function createHeroScene(
  * 按原件配方替换模型材质（原件 `pn` / `pa` / `ps` / `pi`）
  *
  * computer：metalness .83 / roughness .8 / DoubleSide，`((rgb*(0.9,1,1))*1.5+0.25)^1.2`；
- * keyboard：纯黑 + 溅射走 emissive；logo：metalness 1 / roughness 0 + 自发光 ×0.4；
+ * keyboard：纯黑（光照观感由 gobo 聚光灯 + ambient + 环境承担）；
+ * logo：metalness 1 / roughness 0 + 自发光 ×0.4；
  * background：grunge(uv×50) 与 cloud(uv×7) 复合配方 + 双距离场渐隐 + 屏幕光溢出（4 点环绕 ×0.1）
  */
 function replaceModelMaterials(
   root: THREE.Object3D,
   dirt: THREE.Texture,
   grunge: THREE.Texture,
-  lightTexture: THREE.Texture,
-  spillFactory: ReturnType<typeof createHeroSpillFactory> | null
+  lightTexture: THREE.Texture
 ): string {
   const lum = T.vec3(0.299, 0.587, 0.114);
   const NODE_NAMES = ['computer', 'keyboard', 'logo', 'background'];
   const nodeDiag: string[] = [];
-
-  const safeSpillNode = (): unknown | null => {
-    if (!spillFactory) return null;
-    try {
-      return spillFactory.makeNode();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[heroScene] 溅射节点构建失败，该材质跳过溅射：', err);
-      return null;
-    }
-  };
 
   const toOwnTexture = (tex: unknown): THREE.Texture | null => {
     if (!tex) return null;
@@ -489,8 +477,6 @@ function replaceModelMaterials(
       m.side = THREE.DoubleSide;
       const rgb = ownMap ? T.vec3(T.texture(ownMap, T.uv()).rgb) : T.vec3(T.float(0.55));
       (m as any).colorNode = rgb.mul(T.vec3(0.9, 1, 1)).mul(1.5).add(0.25).pow(T.vec3(1.2));
-      const spillNode = safeSpillNode();
-      if (spillNode) (m as any).emissiveNode = spillNode;
       mesh.material = m;
       return;
     }
@@ -501,8 +487,6 @@ function replaceModelMaterials(
       m.color.set('black');
       m.metalness = 0;
       m.roughness = 0.2;
-      const kbSpill = safeSpillNode();
-      if (kbSpill) (m as any).emissiveNode = kbSpill;
       mesh.material = m;
       return;
     }
@@ -514,9 +498,7 @@ function replaceModelMaterials(
       if (ownMap) m.map = ownMap;
       m.metalness = 1;
       m.roughness = 0;
-      const logoSpill = safeSpillNode();
-      const logoEmissive = ownMap ? T.texture(ownMap).rgb.mul(0.4) : T.vec3(1, 1, 1);
-      (m as any).emissiveNode = logoSpill ? logoEmissive.add(logoSpill) : logoEmissive;
+      (m as any).emissiveNode = ownMap ? T.texture(ownMap).rgb.mul(0.4) : T.vec3(1, 1, 1);
       mesh.material = m;
       return;
     }
