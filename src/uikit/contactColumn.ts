@@ -113,7 +113,7 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   const simonSize = lg ? 200 : 150;
   const simon = UIElement.container({ width: simonSize, height: simonSize, ...(lg ? { marginLeft: 16 } : { marginLeft: 8 }), marginTop: 6, marginBottom: 6 });
   ceoInner.add(simon);
-  const ceoTextCol = UIElement.container({ flexDirection: 'column', maxWidth: 380 });
+  const ceoTextCol = UIElement.container({ flexDirection: 'column', maxWidth: 384 });
   ceoTextCol.add(
     UIElement.text('New business', { font: fonts.bold, fontSize: lg ? 32 : W >= 640 ? 24 : 19 }),
     UIElement.text('Reach out today to our CEO for new business enquiries at ceo@shader.se', {
@@ -137,18 +137,18 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   );
   ci.add(intro, cards, ceoOuter);
 
-  // ---- cg footer（37972） ----
+  // ---- cg footer（37972）：图 width:"100%" 语义 = 容器内容宽（cert 容器 padding16 → 图宽 −32） ----
   const certW = xl ? 232 : lg ? 160 : 144;
   const copyW = xl ? 384 : lg ? 320 : 256;
   const a11yW = xl ? 232 : lg ? 160 : 144;
 
   const certCol = UIElement.container({ display: lg ? 'flex' : 'none', width: certW, padding: 16 });
-  certCol.add(UIElement.image(certW, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
+  certCol.add(UIElement.image(certW - 32, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
   const copyrightCol = UIElement.container({ width: copyW });
   copyrightCol.add(UIElement.image(copyW, IMG_ASPECT['copyright_footer.png'], { map: '/textures/copyright_footer.png' }, '/textures/copyright_footer.png'));
   const certCol2 = UIElement.container({ display: lg ? 'none' : 'flex', width: 144, padding: 16 });
-  certCol2.add(UIElement.image(144, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
-  const a11yCard = UIElement.container({ width: a11yW, borderWidth: 2, justifyContent: 'flex-end' });
+  certCol2.add(UIElement.image(144 - 32, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
+  const a11yCard = UIElement.container({ width: a11yW, borderWidth: 2, borderRadius: 4, justifyContent: 'flex-end' });
   a11yCard.add(UIElement.image(a11yW, IMG_ASPECT['a11y.png'], { map: '/textures/a11y.png' }, '/textures/a11y.png'));
 
   const a11yRow = UIElement.container({
@@ -159,6 +159,8 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   const footer = UIElement.container({
     flexDirection: lg ? 'row' : 'column-reverse',
     justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'black',
+    borderColor: 'rgba(245, 235, 216, 0.05)',
     paddingLeft: 64, paddingRight: 64,
     paddingTop: lg ? 96 : 64, paddingBottom: lg ? 96 : 64,
     borderTopWidth: 1,

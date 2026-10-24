@@ -168,7 +168,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   // phones（cf 1:1：材质覆盖 + 背景 TSL shader + 组变换）
   // =====================================================================
   const phonesGroup = new THREE.Group();
-  phonesGroup.position.set(0.2, -6, -3.5); // x 按原站首帧群中心 50%W 重校（旧 0.9 偏右）
+  phonesGroup.position.set(0.9, 0, -3.5); // 原站 cf 值（bundle 1:1）
   scene.add(phonesGroup);
 
   phonesGroup.add(new THREE.AmbientLight(0xffffff, 2.4));
@@ -187,85 +187,6 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   addLight(0xffffff, 80 * 0.4 * 2, 28, -14, 14, -4); // light{100,dist28,decay2}
   addLight(0xffffff, 23 * 0.4 * 2, 28, 14, 12, 0);
   addLight(0xffffff, 16 * 0.4, 60, 0, 9, 14);
-
-  // =====================================================================
-  // 烟雾粒子（cC：smoke.webp × 50，opacity .5 白，慢自转 0.1 rad/s）
-  // =====================================================================
-  const smokeGroup = new THREE.Group();
-  scene.add(smokeGroup);
-  const smokeTex = new THREE.TextureLoader().load('/textures/smoke.webp');
-  smokeTex.colorSpace = THREE.SRGBColorSpace;
-  const smokeMats: THREE.MeshBasicMaterial[] = [];
-  for (let i = 0; i < 50; i++) {
-    const mat = new THREE.MeshBasicMaterial({
-      map: smokeTex,
-      transparent: true,
-      opacity: 0.5,
-      depthWrite: false,
-      color: 0xffffff,
-    });
-    smokeMats.push(mat);
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
-    mesh.position.set((Math.random() * 2 - 1) * 16, Math.random() * 14, -4 - Math.random() * 24);
-    const s = 1.5 + Math.random() * 2.5;
-    mesh.scale.set(s, s, 1);
-    mesh.rotation.z = Math.random() * Math.PI * 2;
-    smokeGroup.add(mesh);
-  }
-
-  // =====================================================================
-  // 黄星群（cb：主星 flat + 7 副星 extrude；原站 contact 段实测无星——整体隐藏，
-  // 仅 tie→contact 转场窗口飞过；组件保留以便后续考证）
-  // =====================================================================
-  const starShape = () => {
-    const shape = new THREE.Shape();
-    for (let i = 0; i < 10; i++) {
-      const r = i % 2 === 0 ? 2 : 1;
-      const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
-      const x = r * Math.cos(a);
-      const yy = r * Math.sin(a);
-      if (i === 0) shape.moveTo(x, yy);
-      else shape.lineTo(x, yy);
-    }
-    shape.closePath();
-    return shape;
-  };
-  const shape = starShape();
-  const STAR_YELLOW = new THREE.Color('rgb(255, 255, 80)');
-
-  const starOpacityMain = T.uniform(0);
-  const starMainMat = new THREE.MeshBasicNodeMaterial();
-  starMainMat.colorNode = T.color(STAR_YELLOW);
-  starMainMat.transparent = true;
-  starMainMat.opacityNode = starOpacityMain;
-  starMainMat.depthTest = false;
-  starMainMat.toneMapped = false;
-  const starMain = new THREE.Mesh(new THREE.ShapeGeometry(shape), starMainMat);
-  starMain.renderOrder = 3;
-  starMain.frustumCulled = false;
-  scene.add(starMain);
-
-  const starGeo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.2,
-    bevelEnabled: true,
-    bevelSegments: 2,
-    bevelSize: 0.01,
-    bevelThickness: 0.01,
-  });
-  const starExtras: Array<{ mesh: THREE.Mesh; opacity: any }> = [];
-  for (let i = 0; i < 7; i++) {
-    const opacity = T.uniform(0);
-    const mat = new THREE.MeshStandardNodeMaterial();
-    mat.metalness = 0.5;
-    mat.roughness = 0.05;
-    mat.color = STAR_YELLOW;
-    mat.transparent = true;
-    mat.opacityNode = opacity;
-    const mesh = new THREE.Mesh(starGeo, mat);
-    mesh.frustumCulled = false;
-    starExtras.push({ mesh, opacity });
-    scene.add(mesh);
-  }
 
   // =====================================================================
   // phones.glb（cf 1:1：材质名覆盖 + 背景 TSL shader + 变换）
@@ -354,11 +275,11 @@ export function createAboutContactScene(width: number, height: number): AboutCon
       // 三台话机同组统一变换（phones mesh 11×19×20 一体），滚动时整组 0.55 倍速视差——
       // 此前按话机宽度误判做的 pullByPrefix 分组拉近破坏了这个连贯空间，已废除。
       // 重算验证：话机群世界 z −8.9..−30.7（最近端距相机 13.9），视觉宽 35% 屏 ≈ 原站实测。
-      // 组变换（原站 cf 公式 0.55p−6 + primitive 变换）。scale/基准按 2026-10-24 原站 1440×900
-      // 首帧实测重校：原站话机群宽 59% 屏、中心 66% 高——本地旧值(1.1/−6)为 47%/35%，
-      // scale 1.1→1.38（宽度比 59/47），基准 −6→−8.1（scale 放大后中心随动，迭代目检定值）
+      // 组变换（bundle cf 1:1：scale 1.1 / rot[0.3,π,0] / pos[0,-4,-3] / group y=0.55p−6）。
+      // 2026-10-24 曾按首帧目检放大到 1.34/−9.36——但那会把背景壳一起放大，壳的地面
+      // 进入 fade<26 近距离亮圈（用户报告"亮面在下面"），且偏离 bundle 数值，已回滚。
       const primitive = new THREE.Group();
-      primitive.scale.setScalar(1.34);
+      primitive.scale.setScalar(1.1);
       primitive.rotation.set(0.3, Math.PI, 0);
       primitive.position.set(0, -4, -3);
       primitive.add(root);
@@ -414,17 +335,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
     uikitRootGroup.position.y = -VH * d * 0.5 + VH * 0.5;
 
     // phones 组：y = 0.55p − 8.1（基准按原站首帧重校，见 primitive 注释）
-    phonesGroup.position.y = 0.55 * p - 9.36;
-
-    // 星星：tie→contact 转场窗口飞过（原站 contact 段内逐屏采样无星——
-    // cb 的 progress 对应页转场 t，enterScreens −1.6..−0.5 飞入、−0.5..0 淡出）
-    const starP = nL(nM(state.enterScreens, -1.6, -0.5, 0, 1), 0, 1);
-    void starP;
-    starOpacityMain.value = 0;
-    for (const { opacity } of starExtras) opacity.value = 0;
-
-    // 烟雾慢自转（原站 rotation [0,0,.1]/s）
-    for (const m of smokeGroup.children) m.rotation.z += 0.1 * dt;
+    phonesGroup.position.y = 0.55 * p - 6;
 
     if (layoutDirty) rebuildUikit(curVw, curVh);
     uikit.update();
@@ -488,12 +399,6 @@ export function createAboutContactScene(width: number, height: number): AboutCon
     uikit.dispose();
     clMat.dispose();
     clMesh.geometry.dispose();
-    smokeTex.dispose();
-    for (const m of smokeMats) m.dispose();
-    starMainMat.dispose();
-    starMain.geometry.dispose();
-    starGeo.dispose();
-    for (const { mesh } of starExtras) (mesh.material as THREE.Material).dispose();
     for (const t of loadedTextures) t.dispose();
     for (const m of loadedMaterials) m.dispose();
     loadedMaterials.clear();
