@@ -275,12 +275,12 @@ export function createAboutContactScene(width: number, height: number): AboutCon
             std.colorNode = T.Fn(() => {
               const uv = T.uv();
               const dirtG = T.texture(dirt as any, uv.mul(T.vec2(6.5, 5))).g.mul(1.6);
-              // ★ bg 贴图必须 V 翻转采样（uv.y→1−uv.y）：r180 TSL texture 节点对 WebGPU
-              // 有 flipY 补偿而 r169 没有——GLTF 贴图（flipY=false）在 r169 的 TSL 采样
-              // 是上下镜像的，background2_d 的烘焙光池（话机剪影+地面辉光）因此落不进
-              // 视野（用户报告"地面着色反了/发光面在下面"的最终根因）。
-              // 2026-10-24 消融实证：?dbgGround=bg 无池 / bgflip 池现身后与原站一致。
-              const bgUv = uv.mul(T.vec2(1, -1)).add(T.vec2(0, 1));
+              // ★ bg 贴图必须 V 翻转 + 旋转 180°（= 采样 (1−u, v)，即水平翻转）：
+              // r180 TSL texture 节点对 flipY=false 的 GLTF 贴图有 in-shader 补偿而
+              // r169 没有——GLTF 贴图在 r169 的 TSL 采样是上下镜像的，background2_d
+              // 的烘焙光池（话机剪影+地面辉光）因此落不进视野；仅 V 翻转后光池出现
+              // 但朝向差 180°（用户实测），补水平翻转后与原站一致。
+              const bgUv = uv.mul(T.vec2(-1, 1)).add(T.vec2(1, 0));
               const bg = bgMap ? T.texture(bgMap as any, bgUv).rgb : T.vec3(0.02, 0.02, 0.02);
               const n = T.min(bg.mul(T.float(0.5).add(dirtG.mul(1.9))), T.vec3(1));
               const dist = T.length(T.positionWorld.sub(T.vec3(0, 0, -24))).toVar();
