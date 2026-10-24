@@ -268,6 +268,10 @@ export function createAboutContactScene(width: number, height: number): AboutCon
             dirt.colorSpace = THREE.SRGBColorSpace;
             const bgMap = mat.map;
             if (bgMap) loadedTextures.add(bgMap);
+            // bg 贴图采样 = raw 直采（见 colorNode 内注释）；GLTF 默认
+            // LinearMipmapLinear + r169 自动 mip 生成有效——光池边缘柔化正常。
+            // 注意：SwiftShader 上下文被反复 reload/实验污染后 mip 内存会损坏，
+            // 出现硬边梯形伪影——重启 Chrome 即愈（2026-10-24 实证，勿改代码）。
             const std = new THREE.MeshStandardNodeMaterial();
             std.roughness = 0.7;
             std.metalness = 0.6;
@@ -275,12 +279,16 @@ export function createAboutContactScene(width: number, height: number): AboutCon
             std.colorNode = T.Fn(() => {
               const uv = T.uv();
               const dirtG = T.texture(dirt as any, uv.mul(T.vec2(6.5, 5))).g.mul(1.6);
-              // ★ bg 贴图必须 V 翻转 + 旋转 180°（= 采样 (1−u, v)，即水平翻转）：
-              // r180 TSL texture 节点对 flipY=false 的 GLTF 贴图有 in-shader 补偿而
-              // r169 没有——GLTF 贴图在 r169 的 TSL 采样是上下镜像的，background2_d
-              // 的烘焙光池（话机剪影+地面辉光）因此落不进视野；仅 V 翻转后光池出现
-              // 但朝向差 180°（用户实测），补水平翻转后与原站一致。
-              const bgUv = uv.mul(T.vec2(-1, 1)).add(T.vec2(1, 0));
+              // ★ bg 贴图采样方向：分块差定量裁决（2026-10-24，原站首帧 8×8 对比）：
+              //   raw (u,v)=5.8 最优；v 翻 8.0 / h 翻 7.6 / 双翻 8.0——此前的
+              //   "flipY 补偿"理论证伪，r169 与 r180 在此一致，raw 直采正确。
+              //   ?dbgBg=v|h|hv 保留供复查。
+              const dbgBg = new URLSearchParams(location.search).get('dbgBg');
+              const bgUv =
+                dbgBg === 'v' ? uv.mul(T.vec2(1, -1)).add(T.vec2(0, 1))
+                : dbgBg === 'h' ? uv.mul(T.vec2(-1, 1)).add(T.vec2(1, 0))
+                : dbgBg === 'hv' ? uv.mul(T.vec2(-1, -1)).add(T.vec2(1, 1))
+                : uv;
               const bg = bgMap ? T.texture(bgMap as any, bgUv).rgb : T.vec3(0.02, 0.02, 0.02);
               const n = T.min(bg.mul(T.float(0.5).add(dirtG.mul(1.9))), T.vec3(1));
               const dist = T.length(T.positionWorld.sub(T.vec3(0, 0, -24))).toVar();
@@ -338,6 +346,7 @@ export function createAboutContactScene(width: number, height: number): AboutCon
 
   const update: AboutContactHandle['update'] = (dt, _time, state) => {
     const d = dLen;
+
     const end = Math.max(0.001, state.lengthScreens - 1);
     // 原站 n_() 即 clamp（与 nL 同款），p 线性：e=0.05 时 p=5.5 世界 → 首帧 Hello 顶 8% ✓
     const h01 = nL(nM(state.enterScreens, -1.12, end, 0, 1), 0, 1);
