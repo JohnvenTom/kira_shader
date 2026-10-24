@@ -4,6 +4,8 @@
  */
 export interface GlyphInfo {
   char: string;
+  /** BMFont 字符 id（kerning 查表键，04kr:26797 o5） */
+  id: number;
   /** em 单位（已除以烘焙字号 48） */
   xadvance: number;
   xoffset: number;
@@ -28,6 +30,8 @@ export interface UIKitFont {
   lineHeightFont: number;
   glyph(char: string): GlyphInfo;
   kerning(a: string, b: string): number;
+  /** 按 BMFont 字符 id 查 kerning（04kr:26810 getKerning） */
+  kerningById(firstId: number, secondId: number): number;
   /** MSDF 图集 URL（渲染层用） */
   pageUrl: string;
 }
@@ -35,6 +39,7 @@ export interface UIKitFont {
 /** 原站缺字回退（04kr:26778 o4） */
 export const FALLBACK_GLYPH: GlyphInfo = {
   char: '',
+  id: -1,
   xadvance: 0.6,
   xoffset: 0,
   yoffset: 0.3,
@@ -54,6 +59,7 @@ export function parseBMFont(json: any, pageUrlOverride?: string): UIKitFont {
   for (const c of json.chars as any[]) {
     map.set(c.char, {
       char: c.char,
+      id: c.id,
       xadvance: c.xadvance / size,
       xoffset: c.xoffset / size,
       yoffset: (c.yoffset - (lineHeight - size)) / size,
@@ -85,6 +91,9 @@ export function parseBMFont(json: any, pageUrlOverride?: string): UIKitFont {
     },
     kerning(a: string, b: string) {
       return kern.get(`${a}/${b}`) ?? 0;
+    },
+    kerningById(firstId: number, secondId: number) {
+      return kern.get(`${firstId}/${secondId}`) ?? 0;
     },
     pageUrl: pageUrlOverride ?? json.pages[0],
   };

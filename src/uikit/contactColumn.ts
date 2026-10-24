@@ -106,7 +106,11 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
     paddingBottom: lg ? 60 : 32,
     paddingLeft: lg ? 0 : 30, paddingRight: lg ? 0 : 30,
   });
-  const intro = UIElement.text(CONTACT_CONTENT.intro, { font: fonts.regular, fontSize: lg ? 24 : W >= 768 ? 20 : 18 }, { maxWidth: 480 });
+  const intro = UIElement.text(
+    CONTACT_CONTENT.intro,
+    { font: fonts.regular, fontSize: lg ? 24 : W >= 768 ? 20 : 18, textAlign: 'center' },
+    { maxWidth: 480 },
+  );
   ci.add(intro, cards, ceoOuter);
 
   // ---- cg footer（37972） ----
@@ -115,13 +119,13 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   const a11yW = xl ? 232 : lg ? 160 : 144;
 
   const certCol = UIElement.container({ display: lg ? 'flex' : 'none', width: certW, padding: 16 });
-  certCol.add(UIElement.image(certW, IMG_ASPECT['footer_certificate.png']));
+  certCol.add(UIElement.image(certW, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
   const copyrightCol = UIElement.container({ width: copyW });
-  copyrightCol.add(UIElement.image(copyW, IMG_ASPECT['copyright_footer.png']));
+  copyrightCol.add(UIElement.image(copyW, IMG_ASPECT['copyright_footer.png'], { map: '/textures/copyright_footer.png' }, '/textures/copyright_footer.png'));
   const certCol2 = UIElement.container({ display: lg ? 'none' : 'flex', width: 144, padding: 16 });
-  certCol2.add(UIElement.image(144, IMG_ASPECT['footer_certificate.png']));
+  certCol2.add(UIElement.image(144, IMG_ASPECT['footer_certificate.png'], { map: '/textures/footer_certificate.png' }, '/textures/footer_certificate.png'));
   const a11yCard = UIElement.container({ width: a11yW, borderWidth: 2, justifyContent: 'flex-end' });
-  a11yCard.add(UIElement.image(a11yW, IMG_ASPECT['a11y.png']));
+  a11yCard.add(UIElement.image(a11yW, IMG_ASPECT['a11y.png'], { map: '/textures/a11y.png' }, '/textures/a11y.png'));
 
   const a11yRow = UIElement.container({
     marginBottom: lg ? 0 : 48, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 32,
@@ -139,7 +143,7 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
 
   // ---- Good buy 组（cp 树 38303-38339） ----
   const goodbuyHead = UIElement.container({ flexDirection: 'column', paddingTop: 200 });
-  goodbuyHead.add(UIElement.text('Good buy.', { font: fonts.medium, fontSize: heroSize }));
+  goodbuyHead.add(UIElement.text('Good buy.', { font: fonts.medium, fontSize: heroSize, textAlign: 'center' }));
 
   const blackBox = UIElement.container({ flexDirection: 'column' }); // 黑幕容器（zIndex2 渲染层职责）
   blackBox.add(ci);
@@ -153,7 +157,7 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   // ---- Hello 块（cp 树 38279-38302）：内层 paddingTop = pageHeight（=viewportHeight，uU 实证） ----
   const helloInner = UIElement.container({ flexDirection: 'column', width: W, paddingTop: H });
   helloInner.add(
-    UIElement.text('“Hello”', { font: fonts.medium, fontSize: heroSize }),
+    UIElement.text('“Hello”', { font: fonts.medium, fontSize: heroSize, textAlign: 'center' }),
     UIElement.container({ height: 0.95 * H, width: W }),
   );
   const helloBlock = UIElement.container({ flexDirection: 'column' });

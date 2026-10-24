@@ -79,6 +79,16 @@ try {
       console.log('shot saved:', p);
       break;
     }
+    case 'shotvp': {
+      // shotvp <w> <h> <name.png>：设置视口后截图
+      const [w, h, name] = args;
+      await page.setViewportSize({ width: +w, height: +h });
+      await page.waitForTimeout(300);
+      const p = `screenshots/${name}`;
+      await page.screenshot({ path: p });
+      console.log('shotvp saved:', p, `(${w}x${h})`);
+      break;
+    }
     case 'mouse': {
       const [act, x, y] = args;
       if (act === 'move') await page.mouse.move(+x, +y);

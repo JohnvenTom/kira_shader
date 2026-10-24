@@ -4,7 +4,7 @@
  * 断点 {sm:640, md:768, lg:1024, xl:1280, "2xl":1536}（04kr:21681），min-width 语义。
  */
 import YGPackage from 'yoga-layout';
-import { createTextMeasurer, MeasureMode, type TextMeasurer } from './text.ts';
+import { createTextMeasurer, MeasureMode, resolveLineHeight, type TextMeasurer } from './text.ts';
 import type { UIKitFont } from './font.ts';
 
 const YG = (YGPackage as any).default ?? YGPackage;
@@ -58,6 +58,22 @@ export interface StyleProps {
   borderRightWidth?: number;
   positionType?: 'relative' | 'absolute';
   display?: 'flex' | 'none';
+  // ---- 视觉属性（renderer.ts 消费；对照原站 oG 默认值 04kr:26399） ----
+  backgroundColor?: string | number;
+  borderColor?: string | number;
+  /** 统一圆角 px（四角一致；原站打包序 BL,BR,TR,TL 一致时无歧义） */
+  borderRadius?: number;
+  /** 文本颜色（子元素继承） */
+  color?: string | number;
+  /** 元素不透明度（面板=整体；文本=字形） */
+  opacity?: number;
+  renderOrder?: number;
+  zIndex?: number;
+  /** 原站默认 false（04kr:26404） */
+  depthTest?: boolean;
+  overflow?: 'visible' | 'hidden';
+  /** 面板背景贴图（dashed_frame.svg / 页脚 PNG 等，拉伸铺满） */
+  map?: string;
 }
 
 export interface MeasureResult {
@@ -89,7 +105,14 @@ export class UIElement {
 
   static text(
     text: string,
-    opts: { font: UIKitFont; fontSize: Responsive<number>; letterSpacing?: Responsive<number>; lineHeight?: Responsive<number | string> },
+    opts: {
+      font: UIKitFont;
+      fontSize: Responsive<number>;
+      letterSpacing?: Responsive<number>;
+      lineHeight?: Responsive<number | string>;
+      textAlign?: 'left' | 'center' | 'right' | 'justify';
+      verticalAlign?: 'top' | 'middle' | 'center' | 'bottom';
+    },
     style: StyleProps = {},
   ): UIElement {
     const el = new UIElement(style, null);
@@ -97,10 +120,25 @@ export class UIElement {
     return el;
   }
 
-  /** 图片：内容宽 w、纵横比 aspect → 高度 = w*aspect 直接写死（contact 全部为定宽图片） */
-  static image(contentWidth: number, aspect: number, style: StyleProps = {}): UIElement {
-    return new UIElement({ ...style, height: contentWidth * aspect }, null);
+  /** 图片：内容宽 w、纵横比 aspect → 高度 = w*aspect（定宽定高，contact 全部为固定尺寸图片） */
+  static image(contentWidth: number, aspect: number, style: StyleProps = {}, url?: string): UIElement {
+    const el = new UIElement({ width: contentWidth, ...style, height: (style.height as number) ?? contentWidth * aspect }, null);
+    if (url) el.__image = { url };
+    return el;
   }
+
+  __image?: { url: string };
+
+  /** applyViewport 解析后的文本渲染参数（renderer.ts 消费） */
+  __textResolved?: {
+    text: string;
+    font: UIKitFont;
+    fontSize: number;
+    letterSpacing: number;
+    lineHeight: number;
+    textAlign: 'left' | 'center' | 'right' | 'justify';
+    verticalAlign: 'top' | 'middle' | 'center' | 'bottom';
+  };
 
   __text?: {
     text: string;
@@ -108,6 +146,8 @@ export class UIElement {
     fontSize: Responsive<number>;
     letterSpacing?: Responsive<number>;
     lineHeight?: Responsive<number | string>;
+    textAlign?: 'left' | 'center' | 'right' | 'justify';
+    verticalAlign?: 'top' | 'middle' | 'center' | 'bottom';
   };
 
   add(...children: UIElement[]): this {
@@ -130,8 +170,19 @@ export class UIElement {
     if (this.__text) {
       const fontSize = resolveResponsive(this.__text.fontSize, width)!;
       const letterSpacing = resolveResponsive(this.__text.letterSpacing, width) ?? 0;
-      const lineHeight = resolveResponsive(this.__text.lineHeight, width);
-      const m = createTextMeasurer({ text: this.__text.text, font: this.__text.font, fontSize, letterSpacing, lineHeight });
+      const lineHeightRaw = resolveResponsive(this.__text.lineHeight, width);
+      const lineHeight = resolveLineHeight(lineHeightRaw, fontSize);
+      this.__textResolved = {
+        text: this.__text.text,
+        font: this.__text.font,
+        fontSize,
+        letterSpacing,
+        lineHeight,
+        textAlign: this.__text.textAlign ?? 'left',
+        verticalAlign: this.__text.verticalAlign ?? 'middle',
+      };
+      // createTextMeasurer 内部自行解析 lineHeight（此处传原始值，避免二次乘 fontSize）
+      const m = createTextMeasurer({ text: this.__text.text, font: this.__text.font, fontSize, letterSpacing, lineHeight: lineHeightRaw });
       this.measurer = m;
       this.node.setMeasureFunc((w: number, wm: number) => {
         const mode = wm === 0 ? MeasureMode.UNDEFINED : wm === 1 ? MeasureMode.EXACTLY : MeasureMode.AT_MOST;
@@ -139,6 +190,7 @@ export class UIElement {
       });
     } else {
       this.node.setMeasureFunc(null);
+      this.__textResolved = undefined;
     }
     for (const c of this.children) c.applyViewport(width);
   }
