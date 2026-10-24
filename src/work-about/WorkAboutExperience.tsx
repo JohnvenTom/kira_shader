@@ -342,8 +342,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     };
     const initialContactMode = mode === 'contact';
     let wasEnding = false;
-    /** 上一帧 stage（veil 黑场只在 tie→contact 滚入时生效） */
-    let prevStage = '';
     let rtW = 1;
     let rtH = 1;
     // === 转场方向调试（?debugRT=film|office）：把页 RT 以两种 V 方向分屏直铺上屏 ===
@@ -1123,12 +1121,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
             setContactActiveState(inContact);
 
-            let veil = 0;
-            // 黑场过渡只在「从 tie 段滚入 contact」时生效；直链/跳转落点无黑场（原站同款）
-            if (stage === 'tie') veil = smoothstep(tieEnd - 1.2, tieEnd, scroll);
-            else if (stage === 'contact' && prevStage === 'tie') veil = 1 - smoothstep(0, 0.22, contactEnterScreens);
-            prevStage = stage;
-            if (veilRef.current) veilRef.current.style.opacity = String(veil);
+            // tie→contact 转场由 goldenTieScene 的火花窗口承担（原站 f5 转场板），无黑幕层
+            if (veilRef.current) veilRef.current.style.opacity = '0';
 
             // ---------- 各页场景逐帧更新（渲染进各自页 RT 的参数都在这里备好） ----------
             if (stage === 'contact') {

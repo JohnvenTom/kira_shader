@@ -505,25 +505,15 @@ export function createAboutContactScene(width: number, height: number): AboutCon
     scene.add(mesh);
   }
 
-  /** 星星轨迹（原站 cb updateHandle 1:1） */
+  /** 星星轨迹（原站 cb updateHandle 1:1）
+   *  注：原站 cb 的 progress 实参是全局 scroll（clamp 0..1 后恒为 1），星星常驻
+   *  (0.2,0,0) scale2——但原站 contact 段逐屏+转场窗口实测均无星，故整体隐藏
+   *  （cb/cv 疑为原站未激活的残留代码，组件保留以便后续考证） */
   const updateStars = (progress: number, vw: number) => {
-    const o = Math.min(Math.max(vw / 1920, 0.4), 0.75);
-    const place = (mesh: THREE.Mesh, r: number) => {
-      mesh.position.z = 30 * Math.cos(r * Math.PI + 0.5 * Math.PI);
-      mesh.position.x = 14 * Math.cos(r * Math.PI * 1.5) * o + 0.2;
-      mesh.position.y = 6 * Math.cos(r * Math.PI * 1.5);
-      mesh.rotation.z = 2 * r * Math.PI;
-      mesh.rotation.y = 2 * r * Math.PI;
-      mesh.rotation.x = 0;
-    };
-    place(starMain, nL(progress, 0, 1));
-    starMain.scale.setScalar(nL(nM(progress, 0.96, 1, 1, 2), 1, 2));
-    starOpacityMain.value = nL(nM(progress, 0.05, 0.3, 0, 1), 0, 1);
-    starExtras.forEach(({ mesh, opacity }, i) => {
-      const a = nL(progress - 0.15 * i, 0, 1);
-      place(mesh, a);
-      opacity.value = nL(nM(a, 0.05, 0.3, 0, 1), 0, 1);
-    });
+    void progress;
+    void vw;
+    starOpacityMain.value = 0;
+    for (const { opacity } of starExtras) opacity.value = 0;
   };
 
   // =====================================================================

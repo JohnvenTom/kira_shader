@@ -473,7 +473,8 @@ export function createGoldenTieScene(
   const fallbackSheet = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   fallbackSheet.needsUpdate = true;
   let sheetNode: any = null;
-  let contactTexNode: any = null;
+  // contact 页 RT 的纹理节点（TextureNode.value 运行时可换；WorkAboutExperience 逐帧传入 nextRT.texture）
+  const contactTexNode = T.texture(fallbackSheet);
 
   const hs = {
     offset: T.uniform(new THREE.Vector2(0, 0)),
@@ -484,6 +485,11 @@ export function createGoldenTieScene(
     flash: T.uniform(0),
     time: T.uniform(0),
   };
+
+  // 转场火花噪声（原站 /textures/rgba_noise.png，RepeatWrapping）
+  const sparkNoiseTex = new THREE.TextureLoader().load('/textures/rgba_noise.png');
+  sparkNoiseTex.wrapS = THREE.RepeatWrapping;
+  sparkNoiseTex.wrapT = THREE.RepeatWrapping;
 
   const hsMat = new THREE.MeshBasicNodeMaterial();
   hsMat.transparent = true;
@@ -501,24 +507,55 @@ export function createGoldenTieScene(
         );
       return T.vec3(conv(c.x), conv(c.y), conv(c.z));
     });
-    const sparkle = T.Fn(([_oUv, texUv, contact]: any[]) => {
-      const n = texUv.sub(hs.sparkle).mul(T.vec2(1, 0.5625));
-      const l = T.length(n).mul(1.35);
-      const c = hs.transition.mul(1.3).sub(l);
-      const d = T.step(0, c);
-      const h = hs.transition.mul(0.18);
-      const g = T.smoothstep(h.negate(), 0, c).mul(T.oneMinus(d));
-      const f = T.vec3(1, 0.95, 0.9).mul(g).mul(1.5);
+    // 原站 a(uv)：4 octave 噪声分形——n(uv)=texture(noise, uv×0.005).r（**0.005 不可省**，
+    // 省了采样坐标大 142 倍 → 颗粒退化成高频闪烁噪点，失去原站锐利的结构化颗粒团）
+    const fbm = T.Fn(([p]: any[]) => {
+      const sum = T.float(0).toVar();
+      const amp = T.float(0.4).toVar();
+      const pos = p.toVar();
+      T.Loop(4, () => {
+        sum.assign(sum.add(amp.mul(T.texture(sparkNoiseTex, pos.mul(0.007)).r)));
+        pos.assign(pos.mul(2));
+        amp.assign(amp.mul(0.5));
+      });
+      return sum;
+    });
+    // 原站 s(uv, screenUv, contact)：以握手 sparkle 为中心的爆裂窗口
+    // （角向 3/7/13 倍频正弦扰动的不规则轮廓 + fbm 火花边缘）
+    const sparkle = T.Fn(([oUv, screenUv, contact]: any[]) => {
+      const n = oUv.sub(hs.sparkle).mul(T.vec2(1, 0.5625));
+      const ang = T.atan2(n.y, n.x);
+      const wave = T.sin(ang.mul(3).add(hs.time.mul(1.5)))
+        .mul(1.5)
+        .add(T.sin(ang.mul(7).add(hs.time.mul(2.5))))
+        .add(T.sin(ang.mul(13).add(hs.time.mul(0.8))).mul(0.5))
+        .mul(0.08)
+        .mul(hs.transition);
+      const l = T.length(n).add(wave).mul(1.3);
+      // fbm 火花颗粒（屏幕空间、x 按视口宽高比拉伸、5 层倍频）
+      const u = screenUv.toVar();
+      u.x.assign(u.x.mul(hs.resolution.x.div(hs.resolution.y)));
+      const grain = fbm(u.mul(12).add(T.vec2(hs.time.mul(0.4), hs.time.mul(0.4))))
+        .mul(0.5)
+        .add(fbm(u.mul(32).add(T.vec2(hs.time.mul(0.4), hs.time.mul(0.4)))).mul(1))
+        .add(fbm(u.mul(160).add(T.vec2(hs.time.mul(0.2), hs.time.mul(0.2)))).mul(0.5))
+        .add(fbm(u.mul(240).add(T.vec2(hs.time.mul(0.1), hs.time.mul(0.1)))).mul(0.2))
+        .add(fbm(u.mul(320).add(T.vec2(hs.time.mul(0.1), hs.time.mul(0.1)))).mul(0.5));
+      const c = hs.transition.mul(1.3).sub(l).add(grain.mul(0.7).mul(hs.transition));
+      const inside = T.step(0, c);
+      const edgeW = hs.transition.mul(0.15);
+      const spark = T.smoothstep(edgeW.negate(), 0, c).mul(T.oneMinus(inside));
+      const sparkCol = T.vec3(1, 0.95, 0.9).mul(spark).mul(1.5);
       const out = T.vec4(0, 0, 0, 0).toVar();
-      T.If(d.greaterThan(0), () => {
+      T.If(inside.greaterThan(0), () => {
+        // 窗口内：白闪（过曝 2）随 flashFadeProgress 淡出成 contact 场景
         const col = T.mix(T.vec3(2, 2, 2), contact.rgb, hs.flash);
         out.assign(T.vec4(col, 1));
-      }).ElseIf(g.greaterThan(0), () => {
-        out.assign(T.vec4(f, g));
+      }).ElseIf(spark.greaterThan(0), () => {
+        out.assign(T.vec4(sparkCol, spark));
       });
       return out;
     });
-    void sparkle;
 
     hsMat.colorNode = T.Fn(() => {
       const e = T.uv();
@@ -550,7 +587,15 @@ export function createGoldenTieScene(
       const py = T.smoothstep(0, 0.25, T.clamp(o.y, 0, 0.3));
       const my = T.smoothstep(0, 0.25, T.clamp(T.float(1).sub(o.y), 0, 0.3));
       const alpha = gx.mul(fx).mul(py).mul(my).mul(lum);
-      return T.vec4(linear(col.rgb), alpha);
+      const A = T.vec4(linear(col.rgb), alpha).toVar();
+      // tie→contact 火花转场（原站 f5 colorNode 尾部）：窗口内 contact 场景
+      // 按屏幕空间直采 contact RT（本地页 RT 为屏幕序，screenCoordinate 直采即正确）
+      const I = T.vec4(0, 0, 0, 0).toVar();
+      T.If(hs.transition.greaterThan(0), () => {
+        const r = contactTexNode.uv(T.screenCoordinate.div(hs.resolution)).rgb;
+        I.assign(sparkle(o, e, T.vec4(r, 1)));
+      });
+      return T.mix(A, I, I.a);
     })();
   }
   const hsGeo = new THREE.PlaneGeometry(1, 1);
