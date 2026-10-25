@@ -95,6 +95,8 @@ export interface HeroComposeFrame {
    * type 3 → `u = mix(s, a, a.a)`（below：当前页 alpha 门控）。
    */
   transition?: { t: number; type: number } | null;
+  /** P2 跨段导航转场（原站 isTransitioningToSection）：星星阵列场景 RT + 进度 0..1 */
+  navTransition?: { tex: THREE.Texture; t: number } | null;
   /** 动态页表的逐页效果加权和（宿主用动态边界算好递入） */
   effects?: HeroEffects;
   /** UI 烘焙层逐帧输入（缺省 uiTransition=0，不画 UI） */
@@ -483,6 +485,9 @@ export function createHeroCompose(
     portalBlend: N.uniform(0),
     /** 下一页的转场类型（原件 nextTransitionType：0 fade / 1 direct / 2 overlay / 3 below） */
     nextTransitionType: N.uniform(0),
+    /** P2 跨段导航转场（原站 isTransitioningToSection）：星星阵列场景 RT + 进度 0..1 */
+    transitionTex: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    sectionTransition: N.uniform(0),
     // ---- UI 烘焙层（原件 uikit：场景 pass 内按畸变 uv 采样并 over 合成） ----
     uiLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     uiDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
@@ -578,10 +583,28 @@ export function createHeroCompose(
     );
     // loading 屏覆盖（原件 `isReadyToRender == 0` 分支）：按基准 uv 直采，**不吃畸变**
     const withLoading = N.mix(mixedScene, N.texture(bootTexture, uvB), u.loadingActive);
+    // ---- P2 跨段导航转场（原件 isTransitioningToSection 分支，37288）----
+    // 星星阵列场景 RT 直采：≤0.9 按 alpha 混入当前画面（星星是透明底、黑幕不遮挡场景）、
+    // >0.9 全替换（尾段目标页从领头星星形窗口放大接管）。原站此处还带目标页畸变，本地暂直采。
+    // 注意：SwiftShader/WebGPU 下 RT 的 alpha 通道不可靠（clearAlpha 0 实测写成 1，
+    // 2026-10-25 starRT 实证），星星是黑底亮星 → 用 rgb 亮度作混入掩码，视觉等价。
+    const navT = u.sectionTransition;
+    const navTexNode = N.texture(
+      u.transitionTex.value as THREE.Texture,
+      uvB,
+    );
+    const navLuma = N.clamp(
+      N.max(navTexNode.r, N.max(navTexNode.g, navTexNode.b)).mul(2.5),
+      0,
+      1,
+    );
+    const navBlended = N.mix(withLoading.rgb, navTexNode.rgb, navLuma);
+    const navReplacing = navT.greaterThan(0.9).toFloat();
+    const withNav = N.mix(navBlended, navTexNode.rgb, navReplacing);
     // 暗角：`smoothstep(-s, s, radius - length(uv - 0.5))`
     const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
-    const vignetted = N.mix(withLoading.rgb, N.clamp(withLoading.rgb.mul(vf), 0, 1), u.vigIntensity);
+    const vignetted = N.mix(withNav, N.clamp(withNav.mul(vf), 0, 1), u.vigIntensity);
     // alpha 随 portalBlend 过渡到下一页的门禁结果（0/1 硬边）：单页时保持 1 不变，
     // 出界页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）。
     // overlay/below 转场时 alpha 走类型分支的混合结果（原件 mix(a,s,s.a) 连 alpha 一起混）
@@ -904,6 +927,13 @@ export function createHeroCompose(
     u.nextSaturation.value = nfx.saturation;
     u.portalBlend.value = portal;
     u.nextTransitionType.value = transType;
+    // P2 跨段导航转场（原站 isTransitioningToSection）
+    if (frame.navTransition) {
+      u.transitionTex.value = frame.navTransition.tex;
+      u.sectionTransition.value = frame.navTransition.t;
+    } else {
+      u.sectionTransition.value = 0;
+    }
     // UI 烘焙层
     if (frame.ui) {
       u.uiMode.value = frame.ui.mode;

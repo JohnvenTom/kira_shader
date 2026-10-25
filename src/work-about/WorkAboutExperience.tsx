@@ -6,6 +6,7 @@ import { createSelectedWorkScene } from '../selected-work/scene';
 import { createAboutOfficeScene } from '../about/officeScene';
 import { createAboutContactScene, AboutContactHandle } from '../about/contactScene';
 import { createNavUiScene, type NavUiSceneHandle } from './navUiScene';
+import { createStarTransitionScene } from './starTransitionScene';
 import { createHeroCompose } from '../hero/heroCompose';
 import { createHeroScene } from '../hero/heroScene';
 import { createUiCanvas, type UiCanvasHandle, type UiDrawState } from './uiCanvas';
@@ -332,6 +333,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let nextRT: THREE.RenderTarget | null = null;
     let paperPromise: Promise<void> | null = null;
     let paperToken = 0;
+    /** P2 转场：星星阵列场景 + 它的 RT（原站 TransitionScene） */
+    let starScene: ReturnType<typeof createStarTransitionScene> | null = null;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
     let pendingContact = mode === 'contact';
     /** ?jump=tie 调试直链：纸页就绪后落到 tie 段（起点 +0.5 屏，标题/人群/领带同框） */
@@ -342,6 +345,43 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let snapLockUntil = 0;
     const lockSnap = (ms = 1400) => {
       snapLockUntil = performance.now() + ms;
+    };
+
+    // ---------- P2 导航跳转状态机（原站 useNavbarClickHandler） ----------
+    // 相邻 hero↔projects：0.8s 缓动滚动（bezier(.48,.09,.22,1) + lock）；
+    // 跨段：1.25s fade-through 转场（前半黑幕渐入、中点 immediate 跳轴+切状态、后半渐出；
+    // 原站是目标页画面 alpha 混入，本地 v1 用黑幕掩盖切换，观感为呼吸式切换）。
+    // URL 在点击瞬间 replaceState（原站 history.replaceState(href) 语义）。
+    type NavPage = 'hero' | 'projects' | 'about-us' | 'contact';
+    let navNav: {
+      kind: 'scroll' | 'transition';
+      page: NavPage;
+      fromS: number;
+      toS: number;
+      toIdx: number;
+      t: number;
+      t0: number;
+      jumped: boolean;
+      duration: number;
+      /** 最近一次成功强渲的目标页纹理（领头星内芯的画面源；未就绪为 null） */
+      toTex?: THREE.Texture | null;
+    } | null = null;
+    /** 转场的定时器（组件卸载清理；转场动画走 CSS/墙钟，不依赖渲染帧率——
+     *  SwiftShader 下渲染帧 1-2s/帧，rAF 驱动的 1.25s 转场会在 1-2 帧内跑完退化成瞬移） */
+    const navTimers: number[] = [];
+    /** css cubic-bezier(.48,.09,.22,1)：牛顿迭代解 x(u)=t 后取 y(u)（原站 scrollTo easing） */
+    const navEase = (t: number): number => {
+      const x1 = 0.48, y1 = 0.09, x2 = 0.22, y2 = 1;
+      const bez = (u: number, a: number, b: number) =>
+        3 * u * (1 - u) * (1 - u) * a + 3 * u * u * (1 - u) * b + u * u * u;
+      let u = t;
+      for (let i = 0; i < 8; i++) {
+        const x = bez(u, x1, x2) - t;
+        const d = 3 * (1 - u) * (1 - u) * x1 + 6 * u * (1 - u) * (x2 - x1) + 3 * u * u * (1 - x2);
+        if (Math.abs(x) < 1e-5 || Math.abs(d) < 1e-6) break;
+        u -= x / d;
+      }
+      return Math.min(1, Math.max(0, bez(Math.min(1, Math.max(0, u)), y1, y2)));
     };
     const initialContactMode = mode === 'contact';
     let wasEnding = false;
@@ -628,11 +668,62 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     apiRef.current = { startAbout, switchToWork, jumpToHero, jumpToContact, jumpToAboutTop };
 
+    // ---------- P2 导航跳转入口（navbar 点击统一走这里） ----------
+    const navTargetS = (page: NavPage): number | null => {
+      switch (page) {
+        case 'hero': return 0;
+        case 'projects': return WORK_REST_S;
+        case 'about-us': return ABOUT_START;
+        case 'contact': return getContactStart();
+      }
+    };
+    const navHashFor = (page: NavPage): string => {
+      const base = `${window.location.pathname}${window.location.search}`;
+      switch (page) {
+        case 'hero': return base; // 原站 hero→"/"：URL 去掉 hash
+        case 'projects': return `${base}#selected-work`;
+        case 'about-us': return `${base}#about-us`;
+        case 'contact': return `${base}#contact`;
+      }
+    };
+    const navNavigate = (page: NavPage) => {
+      if (!st.ready || navNav) return;
+      const toS = navTargetS(page);
+      if (toS == null) {
+        // contact 且纸页未就绪：退化为既有瞬移路径（pendingContact 机制接管）
+        history.replaceState(null, '', navHashFor(page));
+        jumpToContact();
+        return;
+      }
+      const fromS = st.about.s;
+      // URL 立即变（原站 history.replaceState(href) 语义；hash 只是 URL 状态，不触发滚动）
+      history.replaceState(null, '', navHashFor(page));
+      if (Math.abs(fromS - toS) < 0.01) return; // 同页：只改 URL
+      // 相邻 hero↔projects → 0.8s 缓动滚动；其余跨段 → 星星阵列转场（1.25s，原站 TransitionScene）
+      const adjacent = fromS <= WORK_REST_S + 0.01 && toS <= WORK_REST_S + 0.01;
+      const toIdx = page === 'hero' ? 0 : page === 'projects' ? 1 : page === 'about-us' ? 3 : 6;
+      // ?navdur= 调试：覆盖转场时长（ms），便于慢环境抓帧
+      const navDur = Math.max(
+        200,
+        +(new URLSearchParams(window.location.search).get('navdur') ?? 0) || (adjacent ? 800 : 1250),
+      );
+      if (adjacent) {
+        navNav = { kind: 'scroll', page, fromS, toS, toIdx, t: 0, t0: performance.now(), jumped: true, duration: 800 };
+        lockSnap(1000);
+      } else {
+        navNav = { kind: 'transition', page, fromS, toS, toIdx, t: 0, t0: performance.now(), jumped: false, duration: navDur };
+        lockSnap(Math.max(1600, navDur + 400));
+        st.about.vel = 0;
+      }
+    };
+
     const onWheel = (e: WheelEvent) => {
       if (!st.ready) return;
       if (document.body.dataset.aboutMenu === '1') return;
       e.preventDefault();
       if (pendingContact) return;
+      // P2 导航跳转期间锁滚动输入（原站 lenis.stop() 语义）
+      if (navNav) return;
       // boot 弹簧收敛前锁滚动（与 bootInteractionUnlocked 同一意图）
       if (!bootStore.springDone) return;
       let dx = e.deltaX;
@@ -680,6 +771,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
+      if (navNav) return; // P2 跳转期间锁拖拽滚动
       if (!bootStore.springDone) return;
       // contact 段链接命中（3D 投影区域，优先于 canvas UI——原站 uikit 点击语义）
       if (st.contactActive && contact) {
@@ -698,7 +790,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         }
       }
       // canvas UI 命中分发（原件 uikit 区域表；navbar/菜单在 uikit 层，箭头/提示在 canvas 层）。
-      // 直呼 API 而非改 hash——避免与帧循环的 replaceState 同帧竞态
+      // 导航项统一走 navNavigate（P2 状态机：URL 立即同步 + 相邻缓动/跨段转场）
       if (ui || nav) {
         const hit = uiHit(e.clientX, e.clientY);
         if (hit) {
@@ -708,23 +800,23 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             case 'navHome':
             case 'menuHome':
               if (menuOpen) toggleMenu(false);
-              apiRef.current?.jumpToHero();
+              navNavigate('hero');
               break;
             case 'navWork':
             case 'menuWork':
               if (menuOpen) toggleMenu(false);
-              apiRef.current?.switchToWork();
+              navNavigate('projects');
               break;
             case 'navAbout':
             case 'menuAbout':
               if (menuOpen) toggleMenu(false);
-              startAbout('auto');
+              navNavigate('about-us');
               break;
             case 'navContact':
             case 'menuContact':
             case 'menuBook':
               if (menuOpen) toggleMenu(false);
-              apiRef.current?.jumpToContact();
+              navNavigate('contact');
               break;
             case 'book':
               window.location.href = 'mailto:hello@shader.se?subject=Book%20a%20call';
@@ -820,6 +912,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!st.ready) return;
+      if (navNav) return; // P2 跳转期间锁键盘滚动
       if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
       const aim = st.about;
       if (scrollNow() > 0.9 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
@@ -888,7 +981,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
     (async () => {
       const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
-      const r = new THREE.WebGPURenderer({ antialias: false, alpha: true, forceWebGL: !hasWebGPU });
+      // ?gl=webgl 调试：强制 WebGL backend（WebGPU backend 的星星场景 RT 渲染排障）
+      const forceGL = new URLSearchParams(window.location.search).get('gl') === 'webgl';
+      const r = new THREE.WebGPURenderer({ antialias: false, alpha: true, forceWebGL: !hasWebGPU || forceGL });
       renderer = r;
       await r.init();
       if (disposed) {
@@ -917,9 +1012,20 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       try {
         hero = createHeroScene(r, host, host.clientWidth, host.clientHeight, { playBoot: mode === 'hero' });
         cleanups.push(hero.dispose);
+        (window as any).__hero = hero; // 调试句柄（CDP eval 用）
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[WorkAbout] hero 场景创建失败：', err);
+      }
+      // P2 转场：星星阵列场景（原站 TransitionScene，cx 共享工厂）
+      try {
+        starScene = createStarTransitionScene(r);
+        starScene.setSize(host.clientWidth, host.clientHeight);
+        cleanups.push(starScene.dispose);
+        (window as any).__star = starScene; // 调试句柄（CDP eval 用）
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.warn('[WorkAbout] 星星转场场景创建失败：', err?.stack ?? String(err));
       }
       try {
         compose = createHeroCompose(host.clientWidth, host.clientHeight);
@@ -1080,7 +1186,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           const officeProgress = (scroll - OFFICE_START_S) / OFFICE_SCREENS;
 
           // ---- 视图切换与 hash 窗口（pageOffset 滞回：向下 0.9/2.0，向上 0.8/1.3）----
-          if (!pendingContact) {
+          // P2 跳转期间跳过：URL 已由 navNavigate 立即 replaceState，别覆盖成出发段 hash
+          if (!pendingContact && !navNav) {
             if (st.view === 'hero' && scroll >= HERO_PAGE_DOWN_S) setViewState('work');
             else if (st.view === 'work' && scroll >= PAGE_SWITCH_S) setViewState('about');
             else if (st.view === 'work' && scroll < HERO_PAGE_UP_S) setViewState('hero');
@@ -1165,8 +1272,35 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
             setContactActiveState(inContact);
 
+            // ---------- P2 导航跳转推进 ----------
+            // 相邻缓动：帧循环直驱轴插值。跨段星星转场：进度走墙钟（帧率无关），
+            // 星星场景每帧渲进 starRT、由合成器 navTransition 通道混入（原站 isTransitioningToSection）
+            if (navNav && navNav.kind === 'scroll') {
+              navNav.t = Math.min(1, navNav.t + dt * 1000 / navNav.duration);
+              const e2 = navEase(navNav.t);
+              const s = navNav.fromS + (navNav.toS - navNav.fromS) * e2;
+              aim.s = s;
+              aim.target = s;
+              aim.vel = 0;
+              if (navNav.t >= 1) navNav = null;
+            } else if (navNav && navNav.kind === 'transition') {
+              navNav.t = Math.min(1, (performance.now() - navNav.t0) / navNav.duration);
+              if (navNav.t >= 1 && !navNav.jumped) {
+                // 原站：animate(sectionTransition,1) onComplete 才 scrollTo(target, immediate)
+                navNav.jumped = true;
+                switch (navNav.page) {
+                  case 'hero': jumpToHero(); break;
+                  case 'projects': switchToWork(); break;
+                  case 'about-us': jumpToAboutTop(); break;
+                  case 'contact': jumpToContact(); break;
+                }
+                navNav = null;
+              }
+            } else if (!navNav && veilRef.current && veilRef.current.style.opacity !== '0') {
+              veilRef.current.style.opacity = '0';
+            }
+
             // tie→contact 转场由 goldenTieScene 的火花窗口承担（原站 f5 转场板），无黑幕层
-            if (veilRef.current) veilRef.current.style.opacity = '0';
             (window as any).__aim = {
               s: +aim.s.toFixed(3),
               target: +aim.target.toFixed(3),
@@ -1406,6 +1540,61 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               await (renderer as any).renderAsync(contact.scene, contact.camera);
             }
 
+            // ---------- P2 星星转场：目标页 RT 强渲（领头星内芯的画面源） + 星星场景渲染 ----------
+            // 原站做法：宿主每帧临时把 scroll 设为 target 取目标页纹理。本地页 RT 是条件渲，
+            // 转场时目标页多半没渲 → 在这里按 toS 局部重算参数强渲对应 RT（t≥0.5 起即可，
+            // 内芯 0.8 才可见，给 WebGPU 预热余量）。about 页 fromS 不可能=toIdx（同页短路），
+            // about 目标页退化用 stale aboutRT。
+            if (navNav && navNav.kind === 'transition' && navNav.t >= 0.5) {
+              const toS = navNav.toS;
+              // 强渲成功才把 RT 喂给内芯：采样从未渲染的 RT 会让 WebGPU pipeline
+              // invalid，整帧被弃（星星 RT 全空、转场黑屏实证）
+              navNav.toTex = null;
+              try {
+                if (navNav.toIdx === 0 && hero && heroRT) {
+                  hero.update({ dt, time, scroll: 0, mouseX: mouse.x, mouseY: mouse.y });
+                  renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+                  renderer.setRenderTarget(heroRT);
+                  await (renderer as any).renderAsync(hero.scene, hero.camera);
+                  navNav.toTex = heroRT.texture;
+                } else if (navNav.toIdx === 1 && filmRT) {
+                  workScene.update(dt, time, {
+                    mouseX: mouse.x,
+                    mouseY: mouse.y,
+                    selectedIndex: work.index,
+                    dragPx: 0,
+                    pageScroll: toS,
+                    exitProgress: 0,
+                  });
+                  workScene.setTransitionTexture(null);
+                  renderer.setRenderTarget(filmRT);
+                  await (renderer as any).renderAsync(workScene.scene, workScene.camera);
+                  navNav.toTex = filmRT.texture;
+                } else if (navNav.toIdx === 3 && paperScene && aboutRT) {
+                  // toS=ABOUT_START：纸页顶（paperTop=0），paperScene 直渲 aboutRT（同 1304 分支）
+                  paperScene.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
+                  renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+                  renderer.setRenderTarget(aboutRT);
+                  await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
+                  navNav.toTex = aboutRT.texture;
+                } else if (navNav.toIdx === 6 && contact && contactRT) {
+                  contact.update(dt, time, {
+                    enterScreens: 0,
+                    lengthScreens: contact.length(),
+                    mouseX: mouse.x,
+                    mouseY: mouse.y,
+                    touch: 'ontouchstart' in window,
+                  });
+                  renderer.setClearColor(CLEAR_CONTACT, 1);
+                  renderer.setRenderTarget(contactRT);
+                  await (renderer as any).renderAsync(contact.scene, contact.camera);
+                  navNav.toTex = contactRT.texture;
+                }
+              } catch {
+                // 强渲失败不阻塞转场（内芯退化为透明）
+              }
+            }
+
             // ---------- sceneMode 合成（原件 c[0..6] + 转场类型，动态页表） ----------
             const pages: HeroPageConfig[] = paper
               ? [
@@ -1453,6 +1642,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 nextTexOverride: pageRTs[idx + 1]?.texture,
                 sectionPage: idx,
                 transition: nextPage ? { t: tt, type: tType } : null,
+                navTransition: null, // 星星转场走画布 overlay（WebGPU RT 渲染不画内容，见 starTransitionScene 注释）
                 effects: pageEffects,
                 ui: {
                   mode: uiModeDamped,
@@ -1464,6 +1654,19 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   pageActionHover: actionHoverDamped,
                 },
               });
+              // P2 星星转场 overlay：星星场景直渲画布（autoClear=false 叠在 compose 输出上）。
+              // WebGPU backend 的 renderAsync-to-RT 不画内容（lab+主页面实证），走画布 overlay。
+              // 内芯分辨率 = 目标页 RT 的像素尺寸（screenCoordinate 除数，原站 width·dpr 同语义）
+              if (navNav && navNav.kind === 'transition' && starScene) {
+                starScene.update({
+                  progress: navNav.t,
+                  nextSceneTexture: navNav.toTex ?? null,
+                  cssW: host.clientWidth,
+                  resW: rtW,
+                  resH: rtH,
+                });
+                await starScene.render(renderer, true);
+              }
             } else {
               // 无合成链兜底：直渲当前页场景
               const fallback: Array<[THREE.Object3D, THREE.Camera] | null> = [
@@ -1561,6 +1764,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       cancelAnimationFrame(raf);
       apiRef.current = null;
       work.wheelResetTimer !== null && window.clearTimeout(work.wheelResetTimer);
+      for (const id of navTimers) window.clearTimeout(id);
+      navNav = null;
       const probe = (window as unknown as { __workAboutProbe?: { renderer?: any } }).__workAboutProbe;
       probe?.renderer?.dispose?.();
       delete (window as unknown as { __workAboutProbe?: unknown }).__workAboutProbe;

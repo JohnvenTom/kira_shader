@@ -167,6 +167,10 @@ export function createTitleTextureSet(): TitleTextureSet {
           canvas.height = pxH;
         }
       }
+      // canvas 尺寸变了必须 dispose GPU 资源：WebGPU 的 CanvasTexture 不随 canvas
+      // resize 重分配，旧尺寸纹理收新尺寸 copy 会越界并整帧渲染停摆（900→1600 实证）。
+      // dispose 后同一 Texture 对象复用会按新尺寸重建，外部材质引用无需更新。
+      for (const tex of textures) tex.dispose();
       for (let i = 0; i < 4; i++) drawSlot(i);
     },
     setProject(slot: number, projectIndex: number) {

@@ -384,6 +384,11 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     light.canvas.height = pxH;
     dark.canvas.width = pxW;
     dark.canvas.height = pxH;
+    // canvas 尺寸变了必须 dispose GPU 资源：WebGPU 的 CanvasTexture 不随 canvas
+    // resize 重分配，旧尺寸纹理收新尺寸 copy 会越界并整帧渲染停摆（900→1600 实证）。
+    // dispose 后同一 Texture 对象复用会按新尺寸重建，compose 槽位引用无需更新。
+    light.tex.dispose();
+    dark.tex.dispose();
     dirty = true;
   };
 
