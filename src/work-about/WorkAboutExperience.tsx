@@ -5,6 +5,7 @@ import * as TSL from 'three/tsl';
 import { createSelectedWorkScene } from '../selected-work/scene';
 import { createAboutOfficeScene } from '../about/officeScene';
 import { createAboutContactScene, AboutContactHandle } from '../about/contactScene';
+import { createNavUiScene, type NavUiSceneHandle } from './navUiScene';
 import { createHeroCompose } from '../hero/heroCompose';
 import { createHeroScene } from '../hero/heroScene';
 import { createUiCanvas, type UiCanvasHandle, type UiDrawState } from './uiCanvas';
@@ -335,6 +336,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let pendingContact = mode === 'contact';
     /** ?jump=tie 调试直链：纸页就绪后落到 tie 段（起点 +0.5 屏，标题/人群/领带同框） */
     let pendingJumpTie = new URLSearchParams(window.location.search).get('jump') === 'tie';
+    /** ?uiflat=1 消融：UI 合成不吃桶形畸变（隔离 navbar 变暗是否来自 uiA 采样偏移） */
+    const ABLATE_UI_FLAT = new URLSearchParams(window.location.search).has('uiflat');
     /** 程序化跳转期间暂停 snap（原站 snapLockTarget 的等价物） */
     let snapLockUntil = 0;
     const lockSnap = (ms = 1400) => {
@@ -362,6 +365,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let entryMat: ReturnType<typeof makeFoldMaterial> | null = null;
     /** canvas 烘焙 UI（原件 uikit 路径）：light/dark 纹理 + 区域表 + 命中测试 */
     let ui: UiCanvasHandle | null = null;
+    /** navbar uikit 层（2026-10-25 P1：header/菜单改由 uikit 渲染，canvas 只留 work 箭头/提示） */
+    let nav: NavUiSceneHandle | null = null;
+    let navMenuT = 0;
     let uiModeDamped = 0;
     let uiTransitionDamped = 0;
     let logoHoverDamped = 0;
@@ -481,6 +487,23 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       menuOpen = open;
       if (open) document.body.dataset.aboutMenu = '1';
       else delete document.body.dataset.aboutMenu;
+    };
+
+    /**
+     * UI 命中统一入口：navbar uikit 区域表（header/菜单）优先，canvas 区域表兜底
+     * （work 箭头/提示仍在 canvas 层）。键名两侧对齐（logo/navXxx/burger/book/menuXxx）。
+     */
+    const uiHit = (x: number, y: number): string | null => {
+      if (nav) {
+        for (const [k, r] of Object.entries(nav.regions)) {
+          if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+            // 菜单项仅菜单展开时可命中（面板 opacity 门控）
+            if (k.startsWith('menu') && navMenuT < 0.5) continue;
+            return k;
+          }
+        }
+      }
+      return ui?.hitTest(x, y) ?? null;
     };
 
     /**
@@ -674,10 +697,10 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           return;
         }
       }
-      // canvas UI 命中分发（原件 uikit 区域表；箭头/提示/链接/菜单都在这里）。
+      // canvas UI 命中分发（原件 uikit 区域表；navbar/菜单在 uikit 层，箭头/提示在 canvas 层）。
       // 直呼 API 而非改 hash——避免与帧循环的 replaceState 同帧竞态
-      if (ui) {
-        const hit = ui.hitTest(e.clientX, e.clientY);
+      if (ui || nav) {
+        const hit = uiHit(e.clientX, e.clientY);
         if (hit) {
           e.preventDefault();
           switch (hit) {
@@ -829,6 +852,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       renderer.setSize(w, h);
       hero?.setSize(w, h);
       ui?.setSize(w, h);
+      nav?.setSize(w, h);
       workScene.setSize(w, h);
       office.setSize(w, h);
       contact?.setSize(w, h);
@@ -907,11 +931,22 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       // canvas UI（原件 uikit 路径）；纹理注入合成链
       try {
         ui = createUiCanvas(host.clientWidth, host.clientHeight);
-        compose?.setUiTextures(ui.lightTexture, ui.darkTexture);
         cleanups.push(ui.dispose);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[WorkAbout] UI 画布创建失败：', err);
+      }
+      // navbar uikit 层（header/菜单从 canvas 迁出；区域表由 uikit 布局导出）
+      try {
+        nav = await createNavUiScene(host.clientWidth, host.clientHeight);
+        cleanups.push(nav.dispose);
+        (window as any).__nav = nav; // 调试句柄（CDP eval 用）
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[WorkAbout] navbar uikit 创建失败：', err);
+      }
+      if (compose && ui) {
+        compose.setUiTextures(ui.lightTexture, ui.darkTexture, nav?.lightTexture, nav?.darkTexture);
       }
       buildTargets();
       void ensurePaper();
@@ -1187,15 +1222,37 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               time,
               mode: uiModeDamped,
               tieCopy: tieCopyOpacity,
+              headerless: nav != null,
             });
             const uiModeTarget = st.theme === 'dark' ? 1 : 0;
             uiModeDamped += (uiModeTarget - uiModeDamped) * Math.min(1, dt * 8);
             const uiTransTarget = st.uiVisible || st.view === 'hero' || st.view === 'work' ? 1 : 0;
             uiTransitionDamped += (uiTransTarget - uiTransitionDamped) * Math.min(1, dt * 8);
             if (ui) {
-              const hit = ui.hitTest(mouse.cssX, mouse.cssY);
+              const hit = uiHit(mouse.cssX, mouse.cssY);
               logoHoverDamped += ((hit === 'logo' ? 1 : 0) - logoHoverDamped) * Math.min(1, dt * 10);
               actionHoverDamped += ((hit === 'book' || hit === 'burger' ? 1 : 0) - actionHoverDamped) * Math.min(1, dt * 10);
+            }
+            // navbar uikit 层逐帧驱动（spring/菜单动画/镜像/双 RT 渲染）
+            navMenuT += ((menuOpen ? 1 : 0) - navMenuT) * Math.min(1, dt * 10);
+            if (nav) {
+              await nav.update(
+                {
+                  activeNav: st.contactActive
+                    ? 'contact'
+                    : st.view === 'about'
+                      ? 'about-us'
+                      : st.view === 'work'
+                        ? 'projects'
+                        : 'hero',
+                  menuT: navMenuT,
+                  logoHover: logoHoverDamped,
+                  actionHover: actionHoverDamped,
+                  uiMode: uiModeDamped,
+                },
+                dt,
+                renderer,
+              );
             }
 
             // ---------- 逐页 RT 渲染（renderRange ≈ start − max(beforeStart, 转场 TL)，stale 尾部同原站） ----------
@@ -1400,8 +1457,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 ui: {
                   mode: uiModeDamped,
                   transition: uiTransitionDamped,
-                  lens: pageEffects.lensDistortion,
-                  border: pageEffects.lensDistortionBorders,
+                  // ?uiflat=1 消融：UI 层不吃桶形畸变（隔离 navbar 变暗/错位是否来自 uiA 采样）
+                  lens: ABLATE_UI_FLAT ? 0 : pageEffects.lensDistortion,
+                  border: ABLATE_UI_FLAT ? 0 : pageEffects.lensDistortionBorders,
                   logoHover: logoHoverDamped,
                   pageActionHover: actionHoverDamped,
                 },

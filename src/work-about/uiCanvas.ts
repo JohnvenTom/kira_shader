@@ -36,6 +36,8 @@ export interface UiDrawState {
   mode: number;
   /** tie 文案透明度 */
   tieCopy: number;
+  /** navbar 已迁 uikit 层（2026-10-25 P1）：跳过 header/菜单绘制，只留 work 箭头/提示 */
+  headerless?: boolean;
 }
 
 export interface UiCanvasHandle {
@@ -319,6 +321,11 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     for (const k of Object.keys(regions)) delete regions[k as UiRegionKey];
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, pxW, pxH);
+    if (st.headerless) {
+      // navbar/菜单已由 uikit 层渲染（navUiScene）；canvas 只画 work 箭头/提示
+      if (theme === 'light' && st.page === 'work') drawWorkExtras(ctx, st);
+      return;
+    }
     drawHeader(ctx, theme, st);
     if (st.menuOpen && theme === 'dark') {
       // 菜单盖住 header（同原件 z 序）；只画一份到 dark 层

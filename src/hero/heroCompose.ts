@@ -118,8 +118,8 @@ export interface HeroComposeHandle {
   setSize: (cssWidth: number, cssHeight: number) => void;
   /** 执行整条合成链并把最终结果上屏 */
   render: (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) => Promise<void>;
-  /** 注入 UI 烘焙纹理（宿主 uiCanvas 的 light/dark 两张） */
-  setUiTextures: (lightTex: THREE.Texture, darkTex: THREE.Texture) => void;
+  /** 注入 UI 烘焙纹理（宿主 uiCanvas 的 light/dark + 可选 navbar uikit light/dark） */
+  setUiTextures: (lightTex: THREE.Texture, darkTex: THREE.Texture, navLight?: THREE.Texture, navDark?: THREE.Texture) => void;
   /** 执行同一条合成链，但把结果写进离屏 RT（用于转场冻结帧） */
   renderToTarget: (
     renderer: any,
@@ -486,6 +486,9 @@ export function createHeroCompose(
     // ---- UI 烘焙层（原件 uikit：场景 pass 内按畸变 uv 采样并 over 合成） ----
     uiLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     uiDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    /** navbar uikit 层（2026-10-25 P1：uikit 导航树独立 RT，按 alpha 压在 canvas UI 之上） */
+    navLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    navDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     /** light=0 → dark=1（原件 uiModeTransition） */
     uiMode: N.uniform(0),
     /** UI 显隐标量（原件 uiTransition，spring 驱动） */
@@ -600,7 +603,10 @@ export function createHeroCompose(
       .mul(N.step(uiA.y, N.float(1)));
     // TextureNode 的采样必须走 `.uv()`（N.texture() 只吃 THREE 纹理对象——
     // 传 TextureNode 会抛 "TextureNode: Need a three.js texture."）
-    const uiRaw = N.mix(u.uiLight.uv(uiA), u.uiDark.uv(uiA), u.uiMode);
+    const uiRawC = N.mix(u.uiLight.uv(uiA), u.uiDark.uv(uiA), u.uiMode);
+    const navRaw = N.mix(u.navLight.uv(uiA), u.navDark.uv(uiA), u.uiMode);
+    // navbar uikit 层按自身 alpha 压在 canvas UI 之上（两者元素不重叠，语义安全）
+    const uiRaw = N.mix(uiRawC, navRaw, navRaw.a);
     // hover 区域（CSS px、y 向下）：logo 左上 240×96，pageAction 右上 220×96；
     // bool 节点必须 .toFloat() 才能参与乘加（直接 mul 会编译出 bool*bool 的非法 GLSL）
     const uiPxX = uiA.x.mul(u.dimensions.x);
@@ -1033,10 +1039,12 @@ export function createHeroCompose(
   const render = (renderer: any, scene: THREE.Object3D, camera: THREE.Camera, frame: HeroComposeFrame) =>
     renderInner(renderer, scene, camera, frame, null);
 
-  /** 注入 UI 烘焙纹理（宿主的 canvas light/dark 两张） */
-  const setUiTextures = (lightTex: THREE.Texture, darkTex: THREE.Texture) => {
+  /** 注入 UI 烘焙纹理（宿主的 canvas light/dark + 可选 navbar uikit light/dark） */
+  const setUiTextures = (lightTex: THREE.Texture, darkTex: THREE.Texture, navLight?: THREE.Texture, navDark?: THREE.Texture) => {
     u.uiLight.value = lightTex;
     u.uiDark.value = darkTex;
+    if (navLight) u.navLight.value = navLight;
+    if (navDark) u.navDark.value = navDark;
   };
 
   const renderToTarget = (

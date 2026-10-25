@@ -34,8 +34,8 @@ export interface StyleProps {
   flexGrow?: number;
   flexShrink?: number;
   gap?: number;
-  width?: number | 'auto';
-  height?: number | 'auto';
+  width?: number | 'auto' | '100%';
+  height?: number | 'auto' | '100%';
   maxWidth?: number;
   minWidth?: number;
   minHeight?: number;
@@ -57,6 +57,11 @@ export interface StyleProps {
   borderLeftWidth?: number;
   borderRightWidth?: number;
   positionType?: 'relative' | 'absolute';
+  /** absolute 定位边（原站 Ew 菜单面板 top60/right8；yoga setPosition） */
+  positionTop?: number;
+  positionRight?: number;
+  positionBottom?: number;
+  positionLeft?: number;
   display?: 'flex' | 'none';
   // ---- 视觉属性（renderer.ts 消费；对照原站 oG 默认值 04kr:26399） ----
   backgroundColor?: string | number;
@@ -247,15 +252,23 @@ function applyStyle(el: UIElement, viewportWidth: number): void {
   if (num(gap)) n.setGap(S.GUTTER_ALL, gap);
   if (s.positionType === 'absolute') n.setPositionType(S.POSITION_TYPE_ABSOLUTE);
   else n.setPositionType(S.POSITION_TYPE_RELATIVE);
+  if (s.positionType === 'absolute') {
+    if (num(s.positionTop)) n.setPosition(S.EDGE_TOP, s.positionTop);
+    if (num(s.positionRight)) n.setPosition(S.EDGE_RIGHT, s.positionRight);
+    if (num(s.positionBottom)) n.setPosition(S.EDGE_BOTTOM, s.positionBottom);
+    if (num(s.positionLeft)) n.setPosition(S.EDGE_LEFT, s.positionLeft);
+  }
   if (s.display === 'none') n.setDisplay(S.DISPLAY_NONE);
   else n.setDisplay(S.DISPLAY_FLEX);
 
-  // 尺寸（数字直接定；图片 '100%' 由 measure 动态给）
+  // 尺寸（数字直接定；'100%' 透传 yoga 百分比；图片 '100%' 由 measure 动态给）
   const width = r(s.width as any) ?? s.width;
   if (num(width)) n.setWidth(width);
+  else if (width === '100%') n.setWidth('100%');
   else n.setWidthAuto();
   const height = r(s.height as any) ?? s.height;
   if (num(height)) n.setHeight(height);
+  else if (height === '100%') n.setHeight('100%');
   else n.setHeightAuto();
   const maxWidth = r(s.maxWidth as any) ?? s.maxWidth;
   if (num(maxWidth)) n.setMaxWidth(maxWidth);

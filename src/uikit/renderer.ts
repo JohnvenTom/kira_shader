@@ -169,12 +169,14 @@ export class UIKitRenderer {
     this.pixelSize = ps;
   }
 
-  private updateRecursive(rec: NodeRecord, parentChain: THREE.Matrix4, inheritedClip: WorldRect | null): void {
+  private updateRecursive(rec: NodeRecord, parentChain: THREE.Matrix4, inheritedClip: WorldRect | null, inheritedVisible = true): void {
     const el = rec.el;
     const size = el.size;
     const w = size.width;
     const h = size.height;
     const ps = this.pixelSize;
+    // display:none 子树整体隐藏（原站 uikit computedIsVisible 语义：父隐藏则后代不可见）
+    const displayed = el.style.display !== 'none' && inheritedVisible;
 
     // relativeCenter（04kr:26151）
     const left = el.node.getComputedLeft();
@@ -232,7 +234,6 @@ export class UIKitRenderer {
       // 可见性（computedIsVisible，04kr:24370）：bg 或 border 有 alpha；图片元素随 map 显示
       const bgVisible = bgAlpha > 0;
       const borderVisible = _tmpBorderColorArr[3] > 0 && (bordT > 0 || bordR > 0 || bordB > 0 || bordL > 0);
-      const displayed = el.style.display !== 'none';
       rec.mesh.visible = displayed && (bgVisible || borderVisible || rec.mapUrl != null);
 
       // 贴图（未就绪时保持 whiteTexture + mapEnabled=0：WebGPU 下采样 image=undefined 的纹理会炸掉整个 pass）
@@ -267,18 +268,18 @@ export class UIKitRenderer {
 
     // ---- 文本 ----
     if (rec.text != null && el.__textResolved != null) {
-      this.updateText(rec, contentW, contentH, effectiveClip);
+      this.updateText(rec, contentW, contentH, effectiveClip, displayed);
     }
 
     // ---- 子节点：childrenMatrix = globalMatrix（contact 无滚动容器） ----
     for (const child of el.children) {
       const childRec = this.records.get(child);
-      if (childRec != null) this.updateRecursive(childRec, rec.globalMatrix, effectiveClip);
+      if (childRec != null) this.updateRecursive(childRec, rec.globalMatrix, effectiveClip, displayed);
     }
   }
 
   /** ld 渲染循环（04kr:27377-27462）1:1 */
-  private updateText(rec: NodeRecord, availableWidth: number, availableHeight: number, clip: WorldRect | null): void {
+  private updateText(rec: NodeRecord, availableWidth: number, availableHeight: number, clip: WorldRect | null, inheritedVisible = true): void {
     const el = rec.el;
     const p = el.__textResolved!;
     const st = rec.text!;
@@ -308,7 +309,7 @@ export class UIKitRenderer {
     const A = verticalAlignOffset(availableHeight, lineCount, p.lineHeight, va) - availableHeight / 2;
 
     const opacity = typeof el.style.opacity === 'number' ? el.style.opacity : 1;
-    const visible = opacity > 0.01 && el.style.display !== 'none';
+    const visible = inheritedVisible && opacity > 0.01 && el.style.display !== 'none';
 
     // 行槽位数组扩到行数
     while (st.slots.length < lineCount) st.slots.push([]);
@@ -406,19 +407,21 @@ export class UIKitRenderer {
     if (tex != null) return tex;
     if (this._pendingImages.has(url)) return null;
     if (url.endsWith('.svg')) {
-      // SVG 光栅化：Image → canvas → CanvasTexture
+      // SVG 光栅化：Image → canvas → CanvasTexture。
+      // canvas 必须用图片自然尺寸：固定 512×512 会把 1285×173 的 logo 非等比压进
+      // 方形（minification 8:1 且无 mip → 文字糊+暗，2026-10-25 navbar logo 实证）
       this._pendingImages.add(url);
       const img = new Image();
       img.src = url;
       const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 512;
       const ctx = canvas.getContext('2d');
       const tex2 = new THREE.CanvasTexture(canvas);
       tex2.colorSpace = THREE.SRGBColorSpace;
       img
         .decode()
         .then(() => {
+          canvas.width = img.naturalWidth || 512;
+          canvas.height = img.naturalHeight || 512;
           ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
           tex2.needsUpdate = true;
           this.imageTextures.set(url, tex2);

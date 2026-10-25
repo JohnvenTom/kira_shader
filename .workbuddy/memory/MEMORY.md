@@ -1,41 +1,50 @@
 # Kira Shader 项目长期备忘
 
-## 验证/调试基础设施（复用）
-- `scripts/ab.mjs`：CDP 交互驱动（会话间可能被清，缺了就按 2026-09-26 日志重建）。先起常驻 headless chrome：`"...\ms-playwright\chromium-1217\chrome-win64\chrome.exe" --headless=new --remote-debugging-port=9222 --user-data-dir=...`，再 `node scripts/ab.mjs goto|reload|eval|shot|mouse move|down|up|click|wheel|wait|waitfor|burst|burst-click`。支持分步 mouse down/move/up 模拟真实拖拽；burst-click 单连接内点击后连拍抓转场帧（SwiftShader 下每帧截图 ~1-2s，抓早期帧改用 evaluate 内 async IIFE click+延时读 getComputedStyle）。playwright-core 用 file:/// 绝对路径 import（ESM 不认 NODE_PATH），位置 `C:/Users/tom/.workbuddy/binaries/node/workspace/node_modules`。
-- 进钢琴页：kira-return {section:5,detail:true} → `/#film` → 滚轮推进运镜至 interactive（progress≥0.995）。进作品收藏柜：{section:1,detail:true} → `/#film` 等 1s。**通用规则：设置 kira-return 后必须 page.reload()——SPA 内 goto 只是 hash 导航不重 mount，initialRestore 不会重读**。
-- three r169 渲染管线坑：EffectComposer 共享深度纹理 + autoClear=true → 深度被清；MSAA 深度 resolve 在 SwiftShader/ANGLE 静默失败。诊断法：shader 内临时输出 d0 灰度；uniform 冻结实验须兼容 value/accessor 描述符。
-- WAAPI clamp 分发语义坑（通用）：滚动 scrubbing 按 `clamp(t, delay, delay+dur)` 写 currentTime 时，**t<delay 必须写 0（before 相位）而非 delay**——写 delay 会把 forwards 填充动画强制推进活动相位起点、from 帧生效（曾致 trace 页 ink from{opacity:.38} 在 0% 显示彩色底稿）。both 填充动画两种写法视觉一致。
-- **EffectComposer 中段通道采样共享深度纹理 = 反馈环**（2026-09-27 computer 页踩坑）：往挂着深度纹理的 rt 里写、同时采样它读深度 → GL 静默拒绝（INVALID_OPERATION，零报错），整页画布全黑。症状特征：全黑+零 console 错误+gl.getError()=1282。修法：读深度的通道必须最终 renderToScreen（钢琴 Grade、computer DofPass 都放链尾），或写往未挂该纹理的目标。排障：先 getError()，git stash 做对照。另：SpotLight.map 锥角别扫到屏幕主体；灯贴脸时 decay 会平方级放大近场强度。
-- **three WebGPU 页 RT 采样方向约定**（2026-10-23 转场颠倒踩坑）：WorkAboutExperience 的页 RT（pageRT 工厂）存储为**屏幕序**（第 0 行=屏幕顶部），TSL `screenUV`（y 向下）**直接采样即正确**；quad uv（y 向上）采样必须翻 V。heroCompose 的 baseUv 翻的是 quad uv（等效 screenUV）——与"screenUV 上再叠 oneMinus"不是同款约定，后者是双重翻转（曾致 #selected-work→office 转场画格内 office 颠倒）。定性工具：WorkAboutExperience 内置 `?debugRT=film|office|about` 分屏（左 quad uv / 右 screenUV），一图定 RT 存储方向。goldenTieReveal 的 `screenCoordinate/resolution` 直采是同款正确写法。
-- **WebGPU 上传 canvas 纹理必须有渲染上下文**（2026-10-23）：`copyExternalImageToTexture` 对从未 getContext 的 canvas 抛 OperationError 且每帧 needsUpdate 时整帧渲染反复中断。兜底纹理画布（如 heroScene 的 1×1 boot canvas）必须 `getContext('2d')+fillRect` 一次。直链时若场景从未被渲染（scroll 边界外）则潜伏，回滚跨界后才爆——排查时注意"何时首次渲染"而非"何时创建"。
-- **原站可直接当 1:1 复刻对照**：`https://shader.se/`（www）在 headless Chrome+SwiftShader 下可渲染；同段位滚轮+burst 连拍逐帧对照是转场/运镜类 bug 的金标准。本地进 work-about 系 hash 测试必须带 query 强制真导航（hash goto 不重 mount）。
-- **原站 tie 人群素材管线**（2026-10-23）：人群 = Mux 签名 rendition 私有视频（`3hT3o009...` 10 人鼓掌图集 1518×1080，5×2 网格每人一格循环）；定位法 = 滚到 tie 段停住查 resource timing 增量（滚动过快会漏拉 manifest）。本地已烘焙 `public/videos/tie_crowd.mp4`（提亮+缩尺寸），goldenTieScene 用 VideoTexture + UV 裁窗 sprite；黑底不做亮度抠像（深色西装会被削半透明）+边缘 alpha 渐隐消接缝；crowdOpacity=1−handshake×4 握手退场。拉 HLS 用 `scripts/pull-hls.mjs`（curl 后端，node fetch 不走系统代理）+ `scripts/bin/ffmpeg.exe`（本地拼接后解，ffmpeg 直连 mux m3u8 会 Invalid NAL）。
-- **WorkAboutExperience 的段边界**：about 以后按纸面高度动态算（shredStart=3.8+ctaY×scale/h）——本地纸页内容比原站长 3 倍（tieStart 33 屏 vs 原站 11.14），tie 段验收用 `?jump=tie` 直链；纸页长度对齐是独立待办。
-- **CSS 动画要起跑，必须先有一次样式提交**（2026-09-27 磁带页踩坑）：layout effect 设置动画+类之后若同任务同步跑重 boot（编着色器），浏览器没机会提交样式 → 动画从未上合成器，醒来后直接 Snap 到终态。修法：boot 推迟到 double-rAF 之后（首帧画完+动画上合成器才交主线程）；"隐式起点 keyframes + delay + both 填充"可让展开完全在合成器线程跑。另：挂载首帧的姿态要用 useLayoutEffect 摆（useEffect 绘制后才跑，会闪一帧终态）。
-- **StrictMode 双挂载在 SwiftShader/受限 GPU 环境下杀死 WebGL 上下文**（2026-10-23 首页踩坑）：main.tsx 首页/胶片页曾包 React.StrictMode，dev 双挂载让 R3F Canvas 在启动瞬间挂载→卸载(forceContextLoss)→重挂，SwiftShader 下频繁上下文创建销毁会连带杀死新上下文 → CanvasContextGuard 轮询兜底 reload → "丢失→刷新→再丢失"无限刷新循环（页面加载 5-6s 必丢，最小 WebGL 页面却稳定）。修法：去掉 StrictMode（TapePage/BadgePage 本就因双挂载副作用不套）；另给 Guard 加 canAutoReload 防死循环（15s 窗口最多自动刷新 2 次，超限显式报错停止刷新）。排障工具：`scripts/diag-boot.mjs`（新 page 收集 console/pageerror/requestfailed/404）、`scripts/webgl-soak.html`（最小 WebGL 稳定性对照）、`scripts/cleanup-pages.mjs`（清理 CDP 旧页面——多页面并存会放大软件渲染资源压力）。
-- **main.tsx 已页面级懒加载**（2026-10-23）：入口曾静态 import 全部 7 个页面，首页被迫同时加载 three（WebGL）+ three/webgpu（WebGPU）双构建（控制台 "Multiple instances of Three.js" 警告、内存翻倍）。现 React.lazy + Suspense fallback=null 按路由分包；`FILM_SECTION_BY_HASH` 因懒加载无法同步引用，已抽到 `src/filmSectionMap.ts`（KiraFilmDemo re-export 保持兼容）。**注意：给 main.tsx 加新页面时用 lazy，别回退成静态 import**。
-- 首页 ComputerScene GIF 解码的 compose canvas 已加 willReadFrequently（消除 Canvas2D getImageData 性能警告）；GIF 全帧 ImageData 驻留内存约 185MB（400x224x12 + 890x713x15 + 720x425x79 + 320x160x223），资源压力参考值。
-- **contact 段 1:1 重建架构**（2026-10-24）：uikit 列 → contactScene 内 canvas 纹理 3D 长列（tie 先例）。**官方 uikit 必死**（onBeforeCompile GLSL，WebGPU 不支持；原站是未公开 TSL fork）。uikit 断点 sm640/md768/lg1024/xl1280。滚动公式 cp 组件：h=nM(scroll,start−1.12,end−1)、p=h·VH·(d−1)（VH=2·5·tan32.5°≈6.371，相机 z=5 fov65）、phones 组 y=0.55p−6。黑幕 f 是列背景（renderOrder 0 在列 1 之下，depthTest:false 全靠 renderOrder 分层——顺序错=整段黑）。cl 遮罩在文字下层。CONTACT_JUMP=0.05（原站首帧 Hello 顶 8% = 列滚 0.8 页）。**原站 n_/nF 就是 clamp 包装非缓动**（p 线性；误判平方会使话机离场过慢）。**phones.glb 原站 2026-10-15 重新导出**（116KB），URL 加 ?v=2。**话机场景连贯性铁律：三台话机同组（phones mesh 11×19×20 一体）统一变换，禁止分组拉近**——pullByPrefix 拼凑会破坏 0.55 视差的连贯空间（曾因话机宽度误判 3.2 vs 实际 11 引入，已废除，视觉宽 35% 屏本就与原站吻合）。**metallic/black 材质在无 envMap 场景须降 metalness**（0.9→0.35/0.4→0.15，否则金属件反射纯黑、s1 基座黑）。移动端：竖屏 fov78、三列 wrap（General 独行+Visit/Social 并排）、卡片 desc 折行。素材 smoke.webp/contact_dirt.jpg/rgba_noise.png 在 public/textures/。**pageHeight 疑点**：本地列 4.19 屏 vs 原站配置 3.32（视觉锚点已对齐、手感略长）。
-- **tie→contact 火花爆裂转场**（2026-10-24）：原站 f5 组件=握手全屏板（clip-space quad，vertexNode=positionLocal.xy），火花窗口内嵌同 shader——非独立 mesh。握手=AVIF 图集（manifest+ImageBitmapLoader，帧 round(0.8×A×(N−1))），sparklePosition 按帧表 59→85 插值（拳头位置）。窗口 SDF：c=tp×1.3−(length((o−sparkle)×(1,.5625))+角向波 sin3/7/13×0.08×tp)×1.3+fbm×0.7×tp；窗口内 mix(vec3(2), contactRT.rgb, flashFade)（白闪→contact 1 屏淡出）；边缘带 smoothstep(−0.15tp,0,c)×(1−inside)×vec3(1,.95,.9)×1.5。时间轴 tp=nM(progress,end−1.6,end+0.5)、flash=nM(end−1.56,end−0.6)——与本地 tieTransition/tieFlash 天然一致。**r169 坑：无 T.uniformTexture → T.texture(tex) 创建 TextureNode 运行时换 .value、.uv() 换坐标；T.atan 双参 WGSL 报错 → T.atan2**。cb/cv 星星组件是原站未激活残留（progress 传全局 scroll clamp 0..1）——原站实测无星，本地已隐藏。**Chrome 反复 goto 后整页全黑（非代码）= SwiftShader 上下文污染，重启 Chrome 即愈**。无转场贴图视频（resource timing 验证），纯程序化。**fbm 锐利度关键：原站噪声采样 uv×0.005 藏在 n() 内部（a() 输入 ×1.4 再进 n）——漏乘则采样坐标大 142 倍、火花退化成高频闪烁噪点**。
+## 导航 P1（2026-10-25 完成，tsc 全绿；P2 未开工）
+- **架构**：uikit 渲独立 UiScene（fov65 [0,0,5]，pixelSize=VH/vh）出 light/dark 双 RT → heroCompose.setUiTextures 第 3/4 参 → 合成器 mix 后叠加吃后期。navBar.ts（NavBarKit）+ navUiScene.ts（双树/双 RT/regions 命中表）。WorkAboutExperience：uiHit 优先 nav.regions、canvas 区域表兜底、uiCanvas headerless。详见 2026-10-25.md P1 节。
+- **uikit 集成五坑**：①mount 前必须 root.applyViewport(vw)（否则 __textResolved 缺失 → buildRecord 抛错 → nav 整体失败）；②yoga 默认 flexDirection=column（用 justifyContent 必显式 row）；③content-box 下 width:'100%'+padding 溢出（column 父 stretch 即可）；④display:none 不沿子树继承（updateRecursive 有 inheritedVisible）；⑤tick 改 style.display 必须同步 node.setDisplay（否则布局尺寸 0 全隐形）。
+- **其他**：menuPanel 挂 root（yoga absolute 相对父）；SVG 光栅化 canvas 用自然尺寸（512×固定 → logo 糊暗）；navRow gap 实测 45；worldToCss 的 w/h 要乘 vh/VH；hero 段 lens 应为 0。
+- **ab.mjs 坑**：每条命令独立 CDP 连接，mouse down/up 分开丢位置——点击用 `click x y` 单命令；eval 仅单表达式。
+- **P2 状态机**（未开工）：URL 先 replaceState → 相邻 hero↔projects 0.8s 缓动滚动 → 跨段 1.25s sectionTransition（lenis.stop + 目标页 RT alpha 混入 >0.9 全替换 + immediate 瞬移）。映射：projects→#selected-work、office→#about-us、golden-tie*→#contact、hero→"/"；contact 目标=range.start+0.05。子页 navbar translateY −200 滑出。
+- **遗留**：boot 状态机卡死（phase=loading、GLB 已 200 但 hero-init 未 markDone）挡 springDone——点击交互要强制 springDone，独立待查；MSDF 笔画偏细；navbar 下移 2px。
 
-## contact 电话页面 1:1 重建（2026-10-24 完成，commit ae6b8b8/892db79/3e23c64/3fd5459/04e6b8d/95ac1cf/6dce276）
-M1 反编译工作区（_bundles/ + glossary.md，锁 dpl_AadA…）；M2 yoga 布局引擎；M3 渲染层全套；M4 contactScene 重写接线；M5 运行时取证收敛。**最终状态：contact 列与原站逐位吻合**（fiber 探针实测原站运行时页长：1440×900=3.8701 / 1920×1080=3.5501，本地树 3.8700/3.5500；静态注册 3.3238 系构建快照勿当锚点）。**#contact 跳转 = range.start 精确值（CONTACT_JUMP=0）**。WebGPU/uikit 实测坑：①同一 InterleavedBuffer 多视图偏移 ≥12 读数错位→实例属性用独立 InstancedBufferAttribute；②vertex buffer 槽上限 8，超限=pipeline invalid 整 pass 全黑无报错（字形 6 槽）；③TextureLoader 未 ready 纹理进材质=整 pass 全黑，必须白纹理门控；④裁剪用单 vec4 轴对齐矩形 instanceClipRect；⑤面板数据 data0=边框 insets、data3.x=borderColor alpha；图片元素默认白底；⑥字形 quad=PlaneGeometry translate(0.5,-0.5) 左上锚；writeUV=[uvX,uvY+uvH,w,−h]；⑦**uikit pixelSize=VH/vh≈0.00708**（传 1 列宽 141 倍视口全不可见）；⑧renderOrder 用先序号，显式 1001/1002/1000 优先；⑨lightTextColor≈#F0F0F0；glyph 默认 depthTest=false/va=middle。**★场景结构铁律：cf（话机+壳+ambient2.4+point300#fcd 两盏灯）必须与 uk 列同级、同在 y=−VH·d/2+VH/2 滚动居中组内**（bundle 38248-38345）——挂 scene 根会高出 9.14 世界单位：话机顶到 Hello/提前离场/背景壳地面进亮圈（"地面亮面朝下"+电话段"变短"共因）。相机：pos y=−p + lookAt(0,−p,0)（鼠标俯仰），p=h·VH·(d−1)、h 窗口 [start−1.12, end−1]、phones y=0.55p−6、黑幕锚 s.current=hello块高/vh。reveal 段的烟雾/星群/Environment-Lightformer 都属于 cx 组件，contact 页只有 cf——勿误植（烟雾 opacity 0.005 且 disableSmoke）。metalness 本地补偿（0.35/0.15）保留：原站无 envMap 但视觉更暗，待精调。工具：probe-origin-store.mjs（**React fiber 钩子链挖原站 zustand store：pages MotionValue/snapPoints/scroll——运行时取证利器**）、measure-hello-top.mjs（PNG 逐行亮像素定位文字块）、/uikitlab.html；滚动测试用 eval dispatchEvent(WheelEvent)；原站 headless 锁滚动（合成/可信 wheel 均无效）只能首帧+store 对照。
-**遗留**：about-us 纸页原站 8.61 屏 vs 本地 ~29（独立待办）；mainPage.snapPoints 空数组语义待查；话机亮度略高（metalness 补偿）；1600×1200 残差 1.99% 未定位。详见 2026-10-24.md。
-**★负 scale 双重坑 + 采样终局（commit 6dce276→1b0e1e9）**：GLB background 节点三轴负 scale（房间内壁 point reflection）在 r169 WebGPU 下 ①环绕序不翻（r180 有 determinantAffine<0→frontFace cw，0y2r:32904）→整壳背面剔除；②着色法线不翻（WebGL 有 FLIP_SIDED，72436/70165）→弧面地板法线朝下、点光照不亮。修=索引三角形序翻转+normal 全量取负。**③贴图采样最终裁决：RAW 直采正确**——曾误立"flipY 补偿"理论加 V 翻转/H 翻转，分块差定量证伪（raw 5.8 vs 翻转 7.6-8.0），r169/r180 采样一致。**background2_d 贴图本体=黑暗房间中一小块烘焙光池（中心约图 48%,48%），没有话机剪影**——光池边界在 SwiftShader 上下文污染时呈硬边梯形伪影（活体实验 dispose/recreate 损坏 mip 内存），重启 Chrome 即愈，勿当代码 bug。验收：8×8 分块差 3.1%。消融参数 ?dbgBg=v|h|hv 保留。GLB 提取：binStart=20+jsonLen+**8**；**GLTF 贴图的 mipmap 自动生成路径是好的，勿手动 backend.generateMipmaps（产出可疑）**。
+## 调试基础设施（复用）
+- `scripts/ab.mjs`：CDP 交互驱动。先起常驻 headless chrome（`...\ms-playwright\chromium-1217\chrome-win64\chrome.exe --headless=new --remote-debugging-port=9222 --user-data-dir=...`），再 goto|reload|eval|shot|mouse|click|wheel|wait|burst。playwright-core 用 file:/// 绝对路径 import，位置 `C:/Users/tom/.workbuddy/binaries/node/workspace/node_modules`。
+- 进钢琴页：kira-return {section:5,detail:true} → `/#film` 滚轮推进至 interactive；收藏柜：{section:1,detail:true}。**设 kira-return 后必须 page.reload()（SPA hash goto 不重 mount）**。
+- 原站 `https://shader.se/` 在 headless Chrome+SwiftShader 可渲染，逐帧对照金标准；本地 work-about hash 测试须带 query 强制真导航。
+- **Chrome 反复 goto 后全黑/白/光池硬边梯形 = SwiftShader 上下文污染（非代码 bug），重启 Chrome 即愈**。多页面并存放大软件渲染压力→scripts/cleanup-pages.mjs。
+- 排障工具：diag-boot.mjs（console/error 收集）、webgl-soak.html、probe-origin-store.mjs（React fiber 挖原站 zustand store，运行时取证利器）。
+
+## three r169 WebGPU 渲染坑（可复用）
+- **EffectComposer 中段通道采样共享深度纹理=反馈环**：写+读同一 RT 深度 → GL 静默拒绝（INVALID_OPERATION=1282，零 console 错误，整页全黑）。读深度的通道必须 renderToScreen 或写往别处。
+- **RT 采样方向**：WorkAboutExperience 页 RT 存储为屏幕序（第0行=屏顶），TSL screenUV（y向下）直采正确；quad uv（y向上）须翻 V。`?debugRT=` 分屏工具可定性。
+- **上传 canvas 纹理必须有渲染上下文**：copyExternalImageToTexture 对从未 getContext 的 canvas 抛错且每帧中断。兜底 canvas 须 getContext+fillRect 一次；注意"何时首次渲染"（scroll 边界外潜伏）。
+- **StrictMode 双挂载杀 WebGL 上下文**（SwiftShader 下无限刷新循环）：已去掉 StrictMode；CanvasContextGuard 有 canAutoReload（15s 最多 2 次）。
+- **r169 无 T.uniformTexture**：T.texture(tex) 可运行时换 .value；T.atan 双参 WGSL 报错→T.atan2。
+- WAAPI clamp 分发：t<delay 必须写 0（before 相位）而非 delay，否则 forwards 填充动画被推进活动相位。
+- CSS 动画起跑需先有一次样式提交：boot（编 shader）推迟到 double-rAF 后；挂载首帧姿态用 useLayoutEffect。
+- main.tsx 页面级懒加载（React.lazy）：加新页面用 lazy，勿回退静态 import。
+- metallic/black 材质无 envMap 场景须降 metalness（0.9→0.35/0.4→0.15）。
+- GLB 负 scale（房间内壁）：r169 下环绕序不翻+法线不翻 → 修=索引三角序翻转+normal 取负。**贴图采样 RAW 直采正确，勿加 flipY 补偿**；GLTF 贴图 mipmap 自动生成路径是好的，勿手动 generateMipmaps；GLB binStart=20+jsonLen+8。
+
+## hero 屏幕光（2026-10-24 完成重构）
+- 终局方案=GoboSpotLightNode（fork IESSpotLightNode，gobo 乘进 lightColor 走完整 PBR）；注册挂载点=`renderer.nodes.library.addLight(Node, Light)`。TS：Light 真类型 extends，Node 类 mixin (ctor as any)。
+- **angle 单位坑：原站 `angle:20` 是弧度直传**（等效 66° 半角），按 20° 解读锥立体角缩 20 倍。
+- 配方：双 Mux 视频（灯光版=重度模糊+垂直翻转）+ gobo 聚光灯（intensity 5+三频闪烁，decay 0，penumbra 0.4）+ 键盘纯黑 + GLB 烘焙光池 + bloom(0.54/2/0.78)。gobo 模糊标准：糊到文字不可辨（两级降采样 128→32→blur→放大）。调试口 `#hero?gobo=0`。文件：heroGoboLight.ts/heroConfig/heroScreenLoop/heroScene；heroSpill.ts 已废弃。遗留：键盘亮度略低于原站。
+
+## contact/tie 要点（2026-10-24 完成，commit 系 6dce276→1b0e1e9）
+- uikit 断点 sm640/md768/lg1024/xl1280；pixelSize=VH/vh≈0.00708；官方 uikit 必死（GLSL onBeforeCompile），本地自研 TSL uikit。
+- uikit 渲染坑：①InterleavedBuffer 多视图偏移≥12 错位→用独立 InstancedBufferAttribute；②vertex buffer 槽上限 8，超限=全黑无报错；③未 ready 纹理进材质=全黑，须白纹理门控；④裁剪=单 vec4 instanceClipRect；⑤字形 quad 左上锚 writeUV=[uvX,uvY+uvH,w,−h]；⑥renderOrder 全靠显式分层（depthTest:false）。
+- **cf（话机+壳+灯）必须与 uk 列同级、同滚动居中组**（挂 scene 根高出 9.14 世界单位）。相机 pos y=−p、p=h·VH·(d−1)、phones y=0.55p−6。
+- tie→contact 火花转场：握手 AVIF 图集+窗口 SDF（fbm 噪声采样 uv×0.005 藏在 n() 内部，漏乘=高频噪点）；tp=nM(progress,end−1.6,end+0.5)。
+- tie 人群=Mux 视频→本地烘焙 public/videos/tie_crowd.mp4；黑底不抠像+边缘 alpha 渐隐。
+- 遗留：about-us 纸页原站 8.61 屏 vs 本地 ~29；话机亮度略高；1600×1200 残差 1.99%。
 
 ## 用户偏好
 - 修视觉问题要求浏览器交互式实测截图目检（拒绝一次性固化验证脚本）。
-- 决策风格：给推荐项+讲清取舍，快速拍板（景深修复四轮、hover 修复一轮 grill 均选推荐项）。
-
-## hero 屏幕光溅射机制（2026-10-24 校准，未提交）
-- **原站配方**：双 Mux 视频（屏幕 `S6lql...` + 灯光版 `bGeuE...` = 同内容**重度模糊+垂直翻转**，主从 ±0.15s 同步）→ gobo 聚光灯 po（pos[2.2,-1,-1]→target[-3.6,1,5]，intensity 5+三频 sin10/23/47 闪烁，decay 0，angle **20=弧度直传**，cos(20rad)≈0.408→等效半角 66°）+ 键盘纯黑材质 + 地板光池主体=GLB 烘焙贴图（自带光池+电脑剪影）+ 背景 shader 云纹 mask + 灯光视频平面投影 4tap×0.1 + ambient1.8 + Lightformer 组 + 屏幕×4 min1 + bloom(0.54/2/0.78)。
-- **★angle 单位坑：原站 bundle 里 `angle: 20` 是直传 three 的弧度值**——cos 周期性使其等效 66° 半角全向锥；按"20°"解读会把锥立体角缩 ~20 倍（=「屏幕光只投键盘上方一小块」主因）。同类坑：原站写死的大数值先按弧度+cos 周期性推演再下结论。
-- **WebGPU 无 spotLight.map 的终局方案 = 自定义 GoboSpotLightNode**（2026-10-24 深夜重构，替代 emissive 染色方案）：emissive 溅射（heroSpill）观感是「整机均匀染色」而非光照——无 NdotL、不与材质交互、background 没挂。终局：照 r169 内置 **IESSpotLightNode** 官方范本 fork `setup()`，gobo 图案乘进 lightColor → 完整 PBR 直接光（diffuse×albedo+specular+NdotL）。**注册挂载点 = `renderer.nodes.library.addLight(Node, Light)`**（Nodes 实例的 library 属性，不是 renderer.nodes.addLight）。TS 坑：`extends (any属性)` 构造签名退化 0 参 → Light 用真类型 extends THREE.SpotLight，Node 类 extends (ctor as any)。灯参数回原件标度（intensity 5 + penumbra 0.4），gobo 投影锥须与 light.angle 同角（1.1504 rad ≈66°）。调试口 `#hero?gobo=0`（旧 spill=0 失效）。heroSpill.ts 已废弃未删。遗留：键盘整体亮度仍略低于原站（specular/环境贴图强度差）。
-- **gobo 模糊标准**：灯光版纹理要糊到文字不可辨（等效模糊半径≈画布宽 6-8%）——两级降采样（128→32→blur(1-2px)→放大，放大双线性=大半径平滑）；blur(2-4px)@128px 太轻，投影观感是"缩小的屏幕"而非"光"。
-- 本地改动：heroGoboLight.ts（新，真灯光节点）+ heroConfig.ts（angleRad 1.1504/halfAngleDeg 66/penumbra 0.4/baseIntensity 5）+ heroScreenLoop.ts（两级降采样）+ heroScene.ts（GoboSpotLight 接线+摘 spill）。消融脚本 scripts/ablate-light2.mjs。
+- 决策风格：给推荐项+讲清取舍，快速拍板。
 
 ## 既有问题备忘
-- ~~`FilmPostProcessing.tsx` 有 5 个既有 TS 错误~~（2026-10-23 复查已消失，tsc -b 全绿）。
 - 钢琴 HUD "三角面 0k" 计数没接对数据源（显示 bug，未修）。
-- 磁带页 post.js 与钢琴页旧配置同款（共享深度+autoClear+MSAA）隐患，AO 通道后深度仍会被清，待统一修复。
-- 收藏柜 `playFocusRing`（mouseenter 光圈）无拖拽守卫，拖拽经过卡片也会播光圈（既有行为，未修）。
+- 磁带页 post.js 与钢琴页旧配置同款（共享深度+autoClear+MSAA）隐患，待统一修复。
+- 收藏柜 playFocusRing 无拖拽守卫（既有行为，未修）。
