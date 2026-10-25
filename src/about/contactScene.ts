@@ -7,6 +7,7 @@ import { loadFont } from '../uikit/font.ts';
 import type { ContactFonts } from '../uikit/contactColumn.ts';
 import { buildContactContentColumn, buildContactRoot, CONTACT_LENGTH_STATIC, type ContactColumnHandles } from '../uikit/contactColumn.ts';
 import { UIKitRenderer } from '../uikit/renderer.ts';
+import { createSpringMouse } from '../work-about/springMouse';
 import type { UIElement } from '../uikit/element.ts';
 
 /**
@@ -24,7 +25,9 @@ import type { UIElement } from '../uikit/element.ts';
  *   g   = clamp(nM(scroll, start−1, end−1), 0, 1) · (d−1)      // 列滚动（页）
  *   f   = clamp(nM(g, dHello−(w>640?120:80)/vh, dHello+100/vh), 0, 1)  // 黑幕
  *   p   = h · viewportHeight · (d−1)                            // 世界位移
- *   相机 = (0.25·mx, 0.25·my − p, 5)，lookAt(0, −p, 0)，fov 65 near .1 far 100
+ *   相机 = (0.25·off.x, 0.25·off.y − p, 5)，lookAt(0, −p, 0)，fov 65 near .1 far 100
+ *   off = getMouseOffset() = 0.5 − mouse01 ∈ ±0.5（spring(60,30) 阻尼）
+ *   ⇒ NDC 入参换算：camera.xy += (−0.125·NDC.x, −0.125·NDC.y)
  *   phones 组 y = 0.55p − 6（0.55 倍视差）
  *   viewportHeight（世界）= 2·5·tan(32.5°) ≈ 6.371（z=0 平面可视高度）
  */
@@ -342,7 +345,8 @@ export function createAboutContactScene(width: number, height: number): AboutCon
   // =====================================================================
   // 每帧更新（cp useImperativeHandle 公式 1:1）
   // =====================================================================
-  const smoothMouse = { x: 0, y: 0 };
+  /** 鼠标视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset ±0.5） */
+  const contactSpring = createSpringMouse();
 
   const update: AboutContactHandle['update'] = (dt, _time, state) => {
     const d = dLen;
@@ -354,15 +358,12 @@ export function createAboutContactScene(width: number, height: number): AboutCon
 
     const p = h01 * VH * (d - 1);
 
-    // 鼠标弹簧阻尼（原站 useSpringMouse 近似）
-    const targetX = state.touch ? 0 : state.mouseX;
-    const targetY = state.touch ? 0 : state.mouseY;
-    const ease = 1 - Math.exp(-6 * Math.min(0.05, dt));
-    smoothMouse.x += (targetX - smoothMouse.x) * ease;
-    smoothMouse.y += (targetY - smoothMouse.y) * ease;
+    // 鼠标视差：原站 getMouseOffset() = 0.5 − mouse01 ∈ ±0.5（spring(60,30) 阻尼，
+    // touch 恒 0）→ 相机 xy = ±0.125。NDC 入参换算 = −0.125·NDC。
+    contactSpring.update(dt, state.touch ? 0 : -state.mouseX * 0.5, state.touch ? 0 : -state.mouseY * 0.5);
 
-    // 相机：(0.25mx, 0.25my − p, 5) lookAt(0,−p,0)
-    camera.position.set(0.25 * smoothMouse.x, 0.25 * smoothMouse.y - p, CAM_Z);
+    // 相机：(0.25·off.x, 0.25·off.y − p, 5) lookAt(0,−p,0)
+    camera.position.set(0.25 * contactSpring.px, 0.25 * contactSpring.py - p, CAM_Z);
     camera.lookAt(0, -p, 0);
 
     // 列居中（04kr:38250-38255）：group y = −vh·len·0.5 + 0.5·vh（世界）

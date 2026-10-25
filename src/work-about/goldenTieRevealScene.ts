@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { createCxStarArray, type CxStarArray } from './starArray';
+import { createSpringMouse } from './springMouse';
 
 /**
  * 碎纸之后的 golden-tie-reveal 页（原站「Still Not Convinced We're Serious About Business?」
@@ -187,8 +188,17 @@ export function createGoldenTieRevealScene(
   // ---------------------------------------------------------------------------
   // 更新
   // ---------------------------------------------------------------------------
+  /** 鼠标视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset ±0.5） */
+  const mouseSpring = createSpringMouse();
+  let lastTime = -1;
+
   const update = (state: GoldenTieRevealState) => {
-    lookTarget.set(state.mouseX * 0.25, state.mouseY * 0.25, -20);
+    // 原件（04kr:39040）lookAt = 0.5·getMouseOffset()（±0.5 spring 阻尼）
+    // ⇒ NDC 入参 = −0.25·NDC；dt 用 time 差分
+    const dt = lastTime < 0 ? 0.016 : Math.max(0, Math.min(0.05, state.time - lastTime));
+    lastTime = state.time;
+    mouseSpring.update(dt, -state.mouseX * 0.5, -state.mouseY * 0.5);
+    lookTarget.set(0.5 * mouseSpring.px, 0.5 * mouseSpring.py, -20);
     camera.lookAt(lookTarget);
 
     if (textMesh) {

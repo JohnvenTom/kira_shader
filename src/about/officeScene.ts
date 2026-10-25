@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { createSpringMouse } from '../work-about/springMouse';
 
 /**
  * About Us 的办公室场景（原件 office 页：`pO` 组件 + `pF` 灯架）
@@ -179,14 +180,19 @@ export function createAboutOfficeScene(width: number, height: number): AboutOffi
   };
   setSize(width, height);
 
-  const update: AboutOfficeHandle['update'] = (_dt, _time, state) => {
+  /** 鼠标视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset ±0.5） */
+  const officeSpring = createSpringMouse();
+
+  const update: AboutOfficeHandle['update'] = (dt, _time, state) => {
     // 原件 `nM(progress, page.start, page.end, 0, 1)` 不做 clamp：
     // projects 蒙版阶段（scroll 1.3–2.0）office 进度为负，镜头要停在页前机位
     const i = state.scrollProgress;
     const touch = state.touch ?? false;
-    // 原件用 getMouseOffset() = (.5 − mouseX01, .5 − mouseY01)，入参是 NDC ⇒ 取 −NDC/2
-    const offX = -state.mouseX * 0.5;
-    const offY = -state.mouseY * 0.5;
+    // 原件 getMouseOffset() = (.5 − mouseX01, .5 − mouseY01) ∈ ±0.5，spring(60,30) 阻尼
+    // ⇒ NDC 入参换算 = −NDC/2；touch 时 offset 恒 0
+    officeSpring.update(dt, touch ? 0 : -state.mouseX * 0.5, touch ? 0 : -state.mouseY * 0.5);
+    const offX = officeSpring.px;
+    const offY = officeSpring.py;
     camera.rotation.x = -0.6 + 0.025 * offY;
     camera.rotation.y = touch ? 0 : (0.5 - offX) * 0.025;
     camera.position.z = -4 * i + 4.5;

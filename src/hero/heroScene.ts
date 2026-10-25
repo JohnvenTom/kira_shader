@@ -8,6 +8,7 @@ import {
   HERO_MODEL, HERO_SCREEN_PLANE, HERO_PROJECTOR, HERO_SCREEN, HERO_TIMELINE,
 } from './heroConfig';
 import { createHeroSmoke } from './heroSmoke';
+import { createSpringMouse } from '../work-about/springMouse';
 import { createHeroEnvironment } from './heroLightRig';
 import { sampleScreenProjects } from './heroCompose';
 import { createHeroScreenLoop } from './heroScreenLoop';
@@ -300,9 +301,8 @@ export function createHeroScene(
 
   // ---------- 预热统计（playBoot 时由 update 驱动 bootStore） ----------
   const warmup = { startedAt: 0, frames: 0, smooth: 0, compiled: false };
-  /** 相机视差的鼠标平滑值（原件 8/s 阻尼） */
-  let mouseSmoothX = 0;
-  let mouseSmoothY = 0;
+  /** 相机视差阻尼（原站 useSpringMouse：framer spring(60,30) 过阻尼，全场景统一） */
+  const mouseSpring = createSpringMouse();
 
   const setSize = (w: number, h: number) => {
     camera.aspect = w / Math.max(1, h);
@@ -350,13 +350,12 @@ export function createHeroScene(
     const u = Math.min(progress / HERO_SCROLL.pushRange, 1);
     const ease = 1 - Math.pow(1 - u, HERO_SCROLL.easeOutPower);
 
-    // 鼠标视差：原件 `getMouseOffset() × 0.3 × (1 - u)` → NDC 入参换算 ±0.15；
-    // 平滑 8/s 与 y 的 DOM 下正符号照 HeroOneToOne（y-up 入参取负）
-    mouseSmoothX += (mouseX - mouseSmoothX) * Math.min(1, dts * 8);
-    mouseSmoothY += (mouseY - mouseSmoothY) * Math.min(1, dts * 8);
-    const par = HERO_SCROLL.parallaxAmount * (1 - ease) * 0.5;
-    const offX = -mouseSmoothX * par;
-    const offY = -mouseSmoothY * par;
+    // 鼠标视差：原件 `getMouseOffset() × 0.3 × (1 − u)`（offset=0.5−mouse01 ∈ ±0.5，
+    // spring(60,30) 阻尼）→ 世界 xy ±0.15。spring 跟 offset 语义目标（−0.5·NDC）。
+    mouseSpring.update(dts, -mouseX * 0.5, -mouseY * 0.5);
+    const par = HERO_SCROLL.parallaxAmount * (1 - ease);
+    const offX = mouseSpring.px * par;
+    const offY = mouseSpring.py * par;
 
     camera.position.set(
       basePos.x + (endPos.x - basePos.x) * ease + offX,

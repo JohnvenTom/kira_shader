@@ -48,6 +48,10 @@
 - 修视觉问题要求浏览器交互式实测截图目检（拒绝一次性固化验证脚本）。
 - 决策风格：给推荐项+讲清取舍，快速拍板。
 
+## 鼠标视差（2026-10-25 统一 1:1）
+- **全场景统一 spring(60,30) 阻尼**（src/work-about/springMouse.ts，半隐式欧拉）——原站 useSpringMouse 单一阻尼器：getMouseOffset()=0.5−mouse01 ∈ ±0.5。消费系数：hero 0.3·(1−u)/projects 0.2/contact 0.25/golden-tie lookAt 0.25/reveal lookAt 0.5/office rot 0.025（rot.y=(0.5−off.x)·0.025 原站就不对称）。NDC 入参换算=−0.5·NDC。
+- 已修：contact 原 ±0.25（2 倍超差）→±0.125；goldenTie/goldenTieReveal lookAt 方向反→已反向；所有场景阻尼从 8/s 指数/零阻尼统一为 spring。**单位链全程换算是对照原站系数的纪律**（NDC±1 vs offset±0.5 差 2 倍）。
+
 ## 既有问题备忘
 - 钢琴 HUD "三角面 0k" 计数没接对数据源（显示 bug，未修）。
 - 磁带页 post.js 与钢琴页旧配置同款（共享深度+autoClear+MSAA）隐患，待统一修复。

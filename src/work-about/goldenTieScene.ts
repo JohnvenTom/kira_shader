@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { createSpringMouse } from './springMouse';
 
 /**
  * golden-tie 页（反编译自 04kr7kd5riobb.js 的 f8/f5/cQ/pt/pe/cS）：
@@ -677,11 +678,19 @@ export function createGoldenTieScene(
   // 更新
   // ---------------------------------------------------------------------------
   const lookAt = new THREE.Vector3(0, 0, -20);
+  /** 鼠标视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset ±0.5） */
+  const mouseSpring = createSpringMouse();
+  let lastTime = -1;
 
   const update = (state: GoldenTieUpdateState) => {
     const o = state.dolly;
+    // 原件（04kr:58654）lookAt = 0.25·getMouseOffset()（±0.5 spring 阻尼）
+    // ⇒ NDC 入参 = −0.125·NDC；dt 用 time 差分
+    const dt = lastTime < 0 ? 0.016 : Math.max(0, Math.min(0.05, state.time - lastTime));
+    lastTime = state.time;
+    mouseSpring.update(dt, -state.mouseX * 0.5, -state.mouseY * 0.5);
     camera.position.z = 7 - 25 * o;
-    lookAt.set(state.mouseX * 0.125, state.mouseY * 0.125, -20);
+    lookAt.set(0.25 * mouseSpring.px, 0.25 * mouseSpring.py, -20);
     camera.lookAt(lookAt);
     camera.updateMatrixWorld();
 

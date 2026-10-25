@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { SELECTED_PROJECTS } from './data';
 import { createTitlePrism } from './titlePrism';
+import { createSpringMouse } from '../work-about/springMouse';
 
 /**
  * Selected Work 三维场景（线上 `ProjectsScene` + 胶片材质 `mT` + 标题棱柱 `m7`）
@@ -426,7 +427,8 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   let flex = 0;
   const initialVel = 0;
   let mouseSmooth = 0.5;
-  const camMouse = { x: 0, y: 0 };
+  /** 相机视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset 语义 ±0.5） */
+  const camMouse = createSpringMouse();
   let firstFrame = true;
 
   const update: SelectedWorkSceneHandle['update'] = (dt, time, state) => {
@@ -452,8 +454,7 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     // 鼠标横向视差 + 相机视差
     const mouse01 = clamp((state.mouseX + 1) / 2, 0, 1);
     mouseSmooth += (mouse01 - mouseSmooth) * (1 - Math.exp(-10 * dts));
-    camMouse.x += (state.mouseX - camMouse.x) * (1 - Math.exp(-8 * dts));
-    camMouse.y += (state.mouseY - camMouse.y) * (1 - Math.exp(-8 * dts));
+    camMouse.update(dts, -state.mouseX * 0.5, -state.mouseY * 0.5);
 
     u.reelOffset.value = reelPos + (mouseSmooth - 0.5) * 0.04;
 
@@ -477,9 +478,8 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     bgMesh.position.set(0, 60 * groupY, -200);
     // 原件逐帧 `ea.current?.scale.set(n,n,1)`（两轴同步缩放）
     bgMesh.scale.set(bgW * bgScale, bgH * bgScale, 1);
-    // 原件 `.2 * mouseOffset.x` / `-r + .2 * mouseOffset.y`，
-    // mouseOffset = (.5 − mouseX01, .5 − mouseY01) ⇒ x = −.1·NDC.x、y = −r − .1·NDC.y
-    camera.position.set(-0.1 * camMouse.x, -r - 0.1 * camMouse.y, 5 - 5 * t);
+    // 原件 `.2 * mouseOffset.x` / `-r + .2 * mouseOffset.y`（offset=0.5−mouse01 ∈ ±0.5，spring 阻尼）
+    camera.position.set(0.2 * camMouse.px, -r + 0.2 * camMouse.py, 5 - 5 * t);
     camera.lookAt(0, lookY, 0);
 
     u.exitProgress.value = state.exitProgress ?? 0;
