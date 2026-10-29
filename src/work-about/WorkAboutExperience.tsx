@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { createSelectedWorkScene } from '../selected-work/scene';
@@ -269,8 +270,19 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
   return { mat, uEnter };
 }
 
-/** 点击进入详情时胶片镜头的推近峰值倍数（画格放大成遮罩窗口，铺满后交给全屏子页） */
-const PROJECT_FRAME_ZOOM = 3;
+/**
+ * 详情页转场曲线（原站 2026-10-29 CDP 实测规格）：
+ * 入场（点击 View project）：
+ *  1. 画格蒙版揭示（短）：spring 前 1/3 内画格内换成详情页（屏幕 1:1 采样）
+ *  2. 胶片推近（快）：spring 0.12→0.7 画格 zoom 1→3 放大铺满（原站转场启动后 ~350ms 铺满，
+ *     伴随强运动模糊与胶片带上移——上移由 zoom 中心与画格位置自然形成，未单独驱动）
+ *  3. 全屏交接（稳）：spring 0.55→0.95 全屏详情页渐显覆盖，与铺满的画格内容重合无跳变
+ * 退场 = 同一 spring 反向回落，两段自然倒放（原站 Close 实测：胶片缩回 → 画格内页面淡出）。
+ */
+const FRAME_REVEAL_GAIN = 3;
+const FRAME_ZOOM_PEAK = 3;
+const CROSSFADE_START = 0.55;
+const CROSSFADE_END = 0.95;
 
 export default function WorkAboutExperience({ mode, projectSlug }: { mode: RouteMode; projectSlug?: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -295,6 +307,11 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
    */
   const [bootProject] = useState(() => (mode === 'project' && projectSlug && !consumeSpaNav() ? findWorkProject(projectSlug) ?? null : null));
   const [bootDone, setBootDone] = useState(() => !bootProject);
+  /**
+   * SPA 点击进入的兜底加载层：预建未就绪（滑动后立即点击）时短暂显示，
+   * 子页创建完成即消失。预建命中时不出现（与原站一致：转场立即启动无加载感）。
+   */
+  const [projectLoading, setProjectLoading] = useState(false);
 
   const initialView: View = mode === 'hero' ? 'hero' : mode === 'work' || mode === 'project' ? 'work' : 'about';
   const [ready, setReady] = useState(false);
@@ -410,11 +427,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     let projectPending = false;
     /** 子页已上屏（compose 采样 subPageTexture 的门） */
     let projectActive = false;
-    /** 子页 spring 已启动（原站 30 帧预热后才 animate） */
+    /** 子页 spring 已启动（openProject 创建完成回调统一调用） */
     let projectEntered = false;
-    /** 预热起点：创建完成时的帧数 + 墙钟（SwiftShader 下 30 帧可能几十秒，取二者先到） */
-    let projectWarmFrom = 0;
-    let projectWarmT0 = 0;
     /** 子页滚动目标（px；clamp 到 (pageCount-1)*视口高） */
     let projectScrollPx = 0;
     /** 退场中（防重复 Close） */
@@ -431,6 +445,9 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
      * 点击时直接复用，避免「点了之后先卡 0.3~0.5s 才起转场」。
      */
     let preload: { uid: string; promise: Promise<WorkDetailExperience | null>; exp: WorkDetailExperience | null; stale: boolean } | null = null;
+    /** 停驻预热防抖：最近看到的激活 uid 与时刻（index 稳定 450ms 后才预建，滑动中零负载） */
+    let preloadIndexSeen = '';
+    let preloadIndexAt = 0;
     /** P2 转场：星星阵列场景 + 它的 RT（原站 TransitionScene） */
     let starScene: ReturnType<typeof createStarTransitionScene> | null = null;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -821,10 +838,12 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     const ensurePreload = (uid: string) => {
       if (!renderer || projectActive || projectPending) return;
       if (preload?.uid === uid) return;
-      // 换目标：旧槽作废（已建好的实例立即释放；创建中的等 promise 完成时自行 dispose）
+      // 换目标：旧槽作废 —— 实例释放延后 250ms（dispose 是重活：FBO/图集/字形/几何，
+      // 同步执行会在翻页当帧卡住主线程；延后到滑动停止后的空闲帧执行）
       if (preload) {
         preload.stale = true;
-        preload.exp?.dispose();
+        const stale = preload;
+        stale.exp && setTimeout(() => { stale.exp?.dispose(); stale.exp = null; }, 250);
         preload.exp = null;
       }
       const proj = findWorkProject(uid);
@@ -874,6 +893,17 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       /** 命中预建实例则直接复用 */
       const slot = preload && preload.uid === uid ? preload : null;
       if (slot) preload = null;
+      /** 预建命中标记：exp 已建好（字体/uikit/几何全部就绪）即可直接 enter ——
+       *  重活在创建期已完成，热身帧数不影响首帧画面（frameProgress 由 spring 驱动，
+       *  前 100ms 蒙版里还是缩略图，RT 内容 enter 后每帧重渲）。
+       *  若这里放行失败（prebuilt=false 且 slot.promise 已 resolve），await 会与
+       *  setProjectLoading(true) 同批合并，加载层一帧都渲染不出来，且误走 30 帧门卡住转场 */
+      const prebuilt = !!slot?.exp;
+      // 兜底加载层必须在本宏任务内强制上屏：若 slot.promise 已 resolve（hover 预建
+      // 抢先完成），下面 await 的微任务会与这次 setState 同批合并成 true→false，
+      // 加载层一帧都渲染不出来。flushSync 保证 true 先落地，false 由完成回调关闭
+      if (prebuilt) setProjectLoading(false);
+      else flushSync(() => setProjectLoading(true));
       const gen = ++projectGen;
       void (async () => {
         try {
@@ -888,12 +918,16 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
           projectExp = exp;
           projectPending = false;
           projectActive = true;
-          projectWarmFrom = exp.getFrames();
-          projectWarmT0 = performance.now();
+          // 创建完成即 enter（原站：Loading work 消失即刻转场，无附加预热延迟）；
+          // projectEntered 置位防止渲染循环预热门二次 enter
+          projectEntered = true;
+          exp.enter({ cameraFlight: !projectZoomReveal });
           exp.setScrollTarget(projectScrollPx);
+          setProjectLoading(false);
           if (pushUrl) syncUrl(`/work/${uid}`);
         } catch (err) {
           projectPending = false;
+          setProjectLoading(false);
           snapLockUntil = 0;
           // eslint-disable-next-line no-console
           console.error('[WorkAbout] 项目子页创建失败：', err);
@@ -917,6 +951,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       if (projectPending) {
         projectPending = false;
         projectGen++;
+        setProjectLoading(false);
         setViewState('work');
         snapLockUntil = 0;
         return;
@@ -1052,8 +1087,10 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       mouse.y = 1 - (e.clientY / window.innerHeight) * 2;
       mouse.cssX = e.clientX;
       mouse.cssY = e.clientY;
-      // 悬停胶片中心 → 预建对应项目的详情子页（点击时零等待起转场）
-      if (!projectActive && !projectPending && scrollNow() > 0.9 && scrollNow() < 1.1) {
+      // 悬停胶片中心 → 预建对应项目的详情子页（点击时零等待起转场）。
+      // 拖拽/待定滑动中不预建：dispose/创建不上滑动当帧（防抖由停驻预热块的
+      // index 稳定判断承担，这里只补「未拖拽时的即时悬停预建」）
+      if (!projectActive && !projectPending && !work.dragging && !work.pending && scrollNow() > 0.9 && scrollNow() < 1.1) {
         const inFilmHover =
           Math.abs(e.clientX - window.innerWidth / 2) <= window.innerWidth * 0.3 &&
           e.clientY >= window.innerHeight * 0.28 &&
@@ -1781,22 +1818,38 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               );
             }
 
+            // ---------- 项目子页停驻预热（丝滑转场的关键） ----------
+            // work 视图下预建当前激活项目的子页并热身渲 60 帧（不上屏）：
+            // uikit 字形图集上传、管线编译、MSDF 纹理全部在停驻期完成 —— 点击瞬间
+            // spring 立即启动且第一帧画面就是热的。
+            // 翻页防抖：index 稳定 ≥450ms 才换预建目标 —— 滑动过程 dispose/创建
+            // 都不上主线程（否则每次翻页都会卡一拍），停稳后再后台准备下一个项目。
+            if (!projectActive && !projectPending && st.view === 'work' && !st.contactActive && !navNav) {
+              const n = SELECTED_PROJECTS.length;
+              const activeIdx = ((work.index % n) + n) % n;
+              const activeUid = WORK_PROJECTS[activeIdx].uid;
+              if (activeUid !== preloadIndexSeen) {
+                preloadIndexSeen = activeUid;
+                preloadIndexAt = performance.now();
+              }
+              // index 稳定 ≥450ms 才预建：滑动翻页期间 dispose/创建完全不上主线程
+              if (performance.now() - preloadIndexAt >= 450 && (!preload || preload.uid !== activeUid)) {
+                ensurePreload(activeUid);
+              }
+              // 限 60 帧热身：字形图集/管线热完即停渲，不为闲置预建持续烧帧预算；
+              // 点击后 projectExp.frame() 接管时管线已是热的，无冷启动
+              if (preload?.uid === activeUid && preload.exp && preload.exp.getFrames() < 60) {
+                await preload.exp.frame(dt, time);
+              }
+            }
+
             // ---------- 项目子页逐帧推进（必须先于 film 渲染） ----------
             // 画格蒙版按 screenUV 采样子页 grainFBO —— 若 grainFBO 在 film 之后才渲，
             // WebGPU 侧「先采样后写入」的跨帧资源状态容易拿到空绑定（画格内全黑的根因之一）；
             // 提前到 film 前即「先写后读」的常规 pass 顺序，画格内永远拿到本帧内容。
-            // 原站：子页 RT 就绪后先数 30 帧（onSubPageFrameRendered），再 animate(subPageTransition,1)。
-            // 这里退化条件用「30 帧 或 0.6s 墙钟」——SwiftShader 下一帧可能几百 ms，纯帧数会让入场迟滞。
+            // enter 已统一在 openProject 创建完成回调里调用（原站 Loading 消失即刻转场）。
             if (projectActive && projectExp) {
               await projectExp.frame(dt, time);
-              if (!projectEntered) {
-                const warmFrames = projectExp.getFrames() - projectWarmFrom;
-                if (warmFrames >= 30 || performance.now() - projectWarmT0 > 600) {
-                  projectEntered = true;
-                  // 点击入场：不做相机 z 飞入（页面缩放由胶片场景 camera.zoom 承担）
-                  projectExp.enter({ cameraFlight: !projectZoomReveal });
-                }
-              }
             }
 
             // ---------- 逐页 RT 渲染（renderRange ≈ start − max(beforeStart, 转场 TL)，stale 尾部同原站） ----------
@@ -1822,18 +1875,20 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                 pageScroll: scroll,
                 // 子页开启时不用 projects→office 的 exit 蒙版
                 exitProgress: projectActive ? 0 : mask,
-                // 镜头推近：画格放大成遮罩；直链 boot 后直接满值（不走遮罩）
+                // 转场镜头推近（原站入场核心形态）：spring 0.12→0.7 画格 zoom 1→3；
+                // 直链 boot 后直接满值（不走蒙版/推近）
                 frameZoom: projectActive && projectExp
-                  ? (projectZoomReveal ? 1 + (PROJECT_FRAME_ZOOM - 1) * filmSpring : PROJECT_FRAME_ZOOM)
+                  ? (projectZoomReveal
+                    ? 1 + (FRAME_ZOOM_PEAK - 1) * smoothstep(0.12, 0.7, filmSpring)
+                    : FRAME_ZOOM_PEAK)
                   : 1,
               });
               // 胶片蒙版：激活画格内按屏幕坐标混入 office 页 RT（原件 transitionTexture）
               workScene.setTransitionTexture(!projectActive && mask > 0 && officeRT ? officeRT.texture : null);
-              // 详情子页：整页按屏幕坐标采样、由激活画格当遮罩（与 office 同一机制）；
-              // 前 25% spring 内换入页面，其余行程只放大画格把页面「揭」满
+              // 详情子页：激活画格当遮罩，spring 前 1/3 完成画格内揭示
               workScene.setFrameTexture(projectActive && projectZoomReveal && projectExp ? projectExp.getTexture() : null);
               workScene.setFrameProgress(
-                projectActive && projectZoomReveal ? Math.min(1, filmSpring * 4) : 0
+                projectActive && projectZoomReveal ? Math.min(1, filmSpring * FRAME_REVEAL_GAIN) : 0
               );
               renderer.setRenderTarget(filmRT);
               await (renderer as any).renderAsync(workScene.scene, workScene.camera);
@@ -2069,36 +2124,33 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
             let mainZoom = 1;
             if (projectActive && projectExp) {
               // frame() 已在本帧开头（film 渲染前）推进过 —— 这里只读 spring 并算覆盖参数
-              /** 入场进度：点击进入用 spring（缩放+亮度+效果混合），直链 boot 后直接满值 */
+              /** 入场进度：点击进入用 spring（亮度+效果混合），直链 boot 后直接满值 */
               const springNow = Math.min(1, Math.max(0, projectExp.getSpring()));
-              // 点击入场：详情页先通过「胶片格蒙版」显现，画格被推近到铺满屏幕后才交给
-              // subPage 全屏叠加（原站 subPageTransitionIsDone 后由合成链接管）。
-              // 关闭时反之：spring 掉到 0.985 以下立刻交回画格蒙版，页面随画格缩回。
+              // 整页交接（原站铺满后 subPageTexture 接管）：胶片推近铺满后
+              // （spring ≥ CROSSFADE_START）全屏详情页渐显覆盖，铺满的画格内容与
+              // 全屏页面 1:1 重合 → 无跳变；关闭时同一 spring 回落自然倒放
               const overlayMix = projectZoomReveal
-                ? (springNow > 0.985 ? 1 : 0)
+                ? smoothstep(CROSSFADE_START, CROSSFADE_END, springNow)
                 : (projectClosing ? springNow : 1);
               subPageFrame = {
                 tex: projectExp.getTexture(),
                 mix: overlayMix,
                 brightness: 1,
-                // 页面不再做中心小窗缩放：显现交给胶片格蒙版（画格自身带透视/弯曲）
+                // 页面 1:1 全屏覆盖：揭示交给胶片格蒙版，这里只做整页渐显（office fade 同款）
                 zoom: 1,
                 lens: 0.16,
                 border: 0,
               };
-              // 注意：这里**不再**做屏幕级缩放 —— 放大由胶片场景的 camera.zoom 承担，
-              // 否则会连画格里 1:1 采样的详情页一起放大，交接瞬间页面尺寸会跳变
               projectSubMix = subPageFrame.mix;
               projectSubBrightness = subPageFrame.brightness;
-              // 调试探针（CDP eval 用）：当前子页 spring / 合成混合 / 胶片推近
+              // 调试探针（CDP eval 用）：当前子页 spring / 合成混合
               (window as any).__project = {
                 spring: +springNow.toFixed(3),
-                mix: overlayMix,
-                zoom: projectZoomReveal ? +(1 + (PROJECT_FRAME_ZOOM - 1) * springNow).toFixed(2) : PROJECT_FRAME_ZOOM,
+                mix: +overlayMix.toFixed(3),
                 closing: projectClosing,
               };
             }
-            /** 入场进度（0=胶片页效果，1=详情页效果）：与胶片推近同根 spring */
+            /** 入场进度（0=胶片页效果，1=详情页效果）：与转场同根 spring */
             const projectReveal =
               projectActive && projectExp
                 ? projectZoomReveal
@@ -2314,6 +2366,18 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
 
       {/* /work/<slug> 硬加载 boot 屏（与独立详情页同一套 BIOS：bootStore 单例 + 视频缩略图进度） */}
       {bootProject && !bootDone && <WorkDetailBootOverlay project={bootProject} onDone={() => setBootDone(true)} />}
+
+      {/* SPA 点击进入的兜底加载提示（原站同款底部「✳ Loading work...」，不遮画面） */}
+      <div
+        className="wd-loading"
+        data-on={projectLoading ? '1' : '0'}
+        style={{ display: projectLoading ? 'flex' : 'none' }}
+        role="status"
+        aria-label="Loading project"
+        aria-hidden={!projectLoading}
+      >
+        Loading work...
+      </div>
 
       <a ref={hotspotRef} className="ab-hotspot" href={BOOK_URL} aria-label="Book a Call Today" style={{ display: 'none' }}>
         Book a Call Today

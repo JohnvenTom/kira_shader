@@ -95,7 +95,7 @@ export interface SelectedWorkSceneHandle {
    *  - pageScroll     原站主页面 scroll（屏；1.0=projects 页起点）。缺省按 1.05 摆位，
    *                   供 hero 页沿用现有画面；WorkAbout 传真实 scroll。
    *  - exitProgress   原站画格蒙版进度（projects.end−0.7 → +0.2，0..1）
-   *  - frameZoom      镜头推近倍数（详情子页入场：1 = 原位，≈3 = 激活画格铺满屏幕）
+   *  - frameZoom      转场镜头推近（1 = 原位；≈3 = 激活画格铺满屏幕，原站入场实测形态）
   */
   update: (
     dt: number,
@@ -518,8 +518,8 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     // 原件 `.2 * mouseOffset.x` / `-r + .2 * mouseOffset.y`（offset=0.5−mouse01 ∈ ±0.5，spring 阻尼）
     camera.position.set(0.2 * camMouse.px, -r + 0.2 * camMouse.py, 5 - 5 * t);
     camera.lookAt(0, lookY, 0);
-    // 详情子页入场的镜头推近：调 camera.zoom（改投影矩阵、不改机位），
-    // 胶片格被放大成遮罩窗口；格内的详情页按 screenUV 采样，保持屏幕 1:1 尺度不变
+    // 转场镜头推近：camera.zoom（改投影矩阵、不改机位）——画格放大成遮罩窗口；
+    // 格内详情页按 screenUV 1:1 采样不受影响（原站入场 t≈900-1250ms 实测形态）
     const zoom = Math.max(0.1, state.frameZoom ?? 1);
     if (Math.abs(zoom - lastZoom) > 1e-4) {
       lastZoom = zoom;

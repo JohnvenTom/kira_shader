@@ -43,6 +43,42 @@ html.wd-booting body {
   display: block;
 }
 
+/* ===== SPA 点击进入的兜底加载提示 =====
+ * 原站同款（2026-10-29 CDP 实测）：点击后底部居中「✳ Loading work...」行内提示，
+ * 不遮挡画面（胶片页继续可交互）；子页就绪后消失。预建命中时不出现。 */
+.wd-loading {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 4.5%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+  color: #fdfdf5;
+  font-family: var(--font-stix);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+  animation: wd-loading-in 0.2s ease-out;
+}
+.wd-loading::before {
+  content: '✳';
+  display: inline-block;
+  font-size: 17px;
+  animation: wd-loading-spin 0.9s linear infinite;
+}
+@keyframes wd-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes wd-loading-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* ===== 顶栏 ===== */
 .wd-topbar {
   position: fixed;
