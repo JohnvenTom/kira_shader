@@ -440,16 +440,6 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     let projectSubBrightness = 1;
     /** 入场是否走「胶片推近 + 详情页中心弹出」（点击进入 true；直链 boot 后 false） */
     let projectZoomReveal = false;
-    /**
-     * 预加载：指针悬停在胶片上时先把详情子页建好（字体/uikit/缩略图就绪），
-     * 点击时直接复用，避免「点了之后先卡 0.3~0.5s 才起转场」。
-     */
-    let preload: { uid: string; promise: Promise<WorkDetailExperience | null>; exp: WorkDetailExperience | null; stale: boolean } | null = null;
-    /** 停驻预热防抖：最近看到的激活 uid 与时刻（index 稳定 450ms 后才预建，滑动中零负载） */
-    let preloadIndexSeen = '';
-    let preloadIndexAt = 0;
-    /** 胶片弹簧连续静止的起始时刻（-1 = 未静止）。创建/释放重活只在「连续静止 300ms」后放行 */
-    let reelStillSince = -1;
     /** P2 转场：星星阵列场景 + 它的 RT（原站 TransitionScene） */
     let starScene: ReturnType<typeof createStarTransitionScene> | null = null;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -824,52 +814,6 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
      *    Close 后正好停在它上面（原站 Close 行为）
      *  - 子页创建期间保持胶片可见、UI 淡出，不做黑场
      */
-    /**
-     * 预建详情子页（悬停胶片时触发）
-     *
-     * 功能：把 `createWorkDetailExperience`（字体/uikit/缩略图）提前跑掉，点击时直接复用，
-     *      让「点击 → 起转场」没有 0.3~0.5s 的空白等待。
-     *
-     * 参数：
-     *  - uid {string} 目标项目 slug
-     *
-     * 返回值：无（结果存进 preload 单槽）
-     * 异常：创建失败时静默清空槽位（点击时再走正常创建路径）
-     * 注意事项：同一 uid 不重复创建；盘片翻页后只保留最新一个预建实例。
-     */
-    const ensurePreload = (uid: string) => {
-      if (!renderer || projectActive || projectPending) return;
-      if (preload?.uid === uid) return;
-      // 换目标：旧槽作废 —— 实例释放延后 250ms（dispose 是重活：FBO/图集/字形/几何，
-      // 同步执行会在翻页当帧卡住主线程；延后到滑动停止后的空闲帧执行）
-      if (preload) {
-        preload.stale = true;
-        const stale = preload;
-        stale.exp && setTimeout(() => { stale.exp?.dispose(); stale.exp = null; }, 250);
-        preload.exp = null;
-      }
-      const proj = findWorkProject(uid);
-      if (!proj) return;
-      const gen = projectGen;
-      const slot: { uid: string; promise: Promise<WorkDetailExperience | null>; exp: WorkDetailExperience | null; stale: boolean } = {
-        uid,
-        exp: null,
-        stale: false,
-        promise: Promise.resolve(null),
-      };
-      slot.promise = createWorkDetailExperience(host, proj, { renderer })
-        .then((exp) => {
-          if (disposed || gen !== projectGen || slot.stale) {
-            exp.dispose();
-            return null;
-          }
-          slot.exp = exp;
-          return exp;
-        })
-        .catch(() => null);
-      preload = slot;
-    };
-
     const openProject = (uid: string, pushUrl: boolean, zoomReveal = false) => {
       if (!st.ready || !renderer) return;
       if (projectActive || projectPending) return;
@@ -892,26 +836,14 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       setUiVisibleState(false);
       setThemeState('light');
       hideHotspots();
-      /** 命中预建实例则直接复用 */
-      const slot = preload && preload.uid === uid ? preload : null;
-      if (slot) preload = null;
-      /** 预建命中标记：exp 已建好（字体/uikit/几何全部就绪）即可直接 enter ——
-       *  重活在创建期已完成，热身帧数不影响首帧画面（frameProgress 由 spring 驱动，
-       *  前 100ms 蒙版里还是缩略图，RT 内容 enter 后每帧重渲）。
-       *  若这里放行失败（prebuilt=false 且 slot.promise 已 resolve），await 会与
-       *  setProjectLoading(true) 同批合并，加载层一帧都渲染不出来，且误走 30 帧门卡住转场 */
-      const prebuilt = !!slot?.exp;
-      // 兜底加载层必须在本宏任务内强制上屏：若 slot.promise 已 resolve（hover 预建
-      // 抢先完成），下面 await 的微任务会与这次 setState 同批合并成 true→false，
-      // 加载层一帧都渲染不出来。flushSync 保证 true 先落地，false 由完成回调关闭
-      if (prebuilt) setProjectLoading(false);
-      else flushSync(() => setProjectLoading(true));
+      // 原站手感：不做任何后台预建（拖动全程零冻结），点击后即时创建，
+      // 由底部「✳ Loading work...」提示掩盖等待（flushSync 保证提示立即上屏——
+      // 否则创建冻结结束前 React 批处理不会渲染，提示会错过整个等待窗口）
+      flushSync(() => setProjectLoading(true));
       const gen = ++projectGen;
       void (async () => {
         try {
-          let exp: WorkDetailExperience | null = slot?.exp ?? null;
-          if (!exp && slot) exp = await slot.promise;
-          if (!exp) exp = await createWorkDetailExperience(host, proj, { renderer: renderer as THREE.WebGPURenderer });
+          const exp = await createWorkDetailExperience(host, proj, { renderer: renderer as THREE.WebGPURenderer });
           if (disposed || gen !== projectGen || !st.ready) {
             exp.dispose();
             return;
@@ -920,8 +852,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
           projectExp = exp;
           projectPending = false;
           projectActive = true;
-          // 创建完成即 enter（原站：Loading work 消失即刻转场，无附加预热延迟）；
-          // projectEntered 置位防止渲染循环预热门二次 enter
+          // 创建完成即 enter（原站：Loading work 消失即刻转场）
           projectEntered = true;
           exp.enter({ cameraFlight: !projectZoomReveal });
           exp.setScrollTarget(projectScrollPx);
@@ -1089,29 +1020,6 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       mouse.y = 1 - (e.clientY / window.innerHeight) * 2;
       mouse.cssX = e.clientX;
       mouse.cssY = e.clientY;
-      // 悬停胶片中心 → 预建对应项目的详情子页（点击时零等待起转场）。
-      // 拖拽/待定滑动/弹簧滚动中一律不预建：创建与释放都是同步重活（实测冻结 110-140ms），
-      // 必须等胶片静止（停驻预热块同款静止门），未就绪的点击由 Loading work 提示兜底
-      if (
-        !projectActive &&
-        !projectPending &&
-        !work.dragging &&
-        !work.pending &&
-        reelStillSince >= 0 &&
-        performance.now() - reelStillSince > 300 &&
-        scrollNow() > 0.9 &&
-        scrollNow() < 1.1
-      ) {
-        const inFilmHover =
-          Math.abs(e.clientX - window.innerWidth / 2) <= window.innerWidth * 0.3 &&
-          e.clientY >= window.innerHeight * 0.28 &&
-          e.clientY <= window.innerHeight * 0.92;
-        if (inFilmHover) {
-          const nn = SELECTED_PROJECTS.length;
-          const activeIdx = ((work.index % nn) + nn) % nn;
-          ensurePreload(WORK_PROJECTS[activeIdx].uid);
-        }
-      }
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -1829,52 +1737,6 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               );
             }
 
-            // ---------- 项目子页停驻预热（丝滑转场的关键） ----------
-            // work 视图下预建当前激活项目的子页并热身渲 60 帧（不上屏）：
-            // uikit 字形图集上传、管线编译、MSDF 纹理全部在停驻期完成 —— 点击瞬间
-            // spring 立即启动且第一帧画面就是热的。
-            // 翻页防抖：index 稳定 ≥450ms 才换预建目标 —— 滑动过程 dispose/创建
-            // 都不上主线程（否则每次翻页都会卡一拍），停稳后再后台准备下一个项目。
-            if (!projectActive && !projectPending && st.view === 'work' && !st.contactActive && !navNav) {
-              const n = SELECTED_PROJECTS.length;
-              const activeIdx = ((work.index % n) + n) % n;
-              const activeUid = WORK_PROJECTS[activeIdx].uid;
-              if (activeUid !== preloadIndexSeen) {
-                preloadIndexSeen = activeUid;
-                preloadIndexAt = performance.now();
-              }
-              // index 稳定 ≥450ms **且胶片弹簧连续静止 300ms** 才预建：拖动/弹簧滚动期间
-              // 完全不做创建与释放（原站拖动全程 max 12ms 帧间隔；本地创建冻结实测
-              // 110-140ms——这就是掉帧来源）。点击时未建好由底部 Loading work 提示兜底
-              const vel = workScene.getReelVelocity();
-              if (Math.abs(vel) < 3) {
-                if (reelStillSince < 0) reelStillSince = performance.now();
-              } else {
-                reelStillSince = -1;
-              }
-              const reelStill = reelStillSince >= 0 && performance.now() - reelStillSince > 300;
-              if (
-                reelStill &&
-                performance.now() - preloadIndexAt >= 450 &&
-                (!preload || preload.uid !== activeUid)
-              ) {
-                // 直接创建（rIC 实测反而与渲染循环抢隙，max 涨到 254ms）：
-                // 静止门已保证冻结只落在用户完全停手之后，感知最弱
-                ensurePreload(activeUid);
-              }
-              // 限 60 帧热身且**只在胶片静止时渲**：热身渲帧 = 每帧多渲一整套子页 RT，
-              // 若与拖动窗口重叠会把帧时间从 6ms 拖到 12ms+（原站拖动 max 12ms 无此负载）；
-              // 一动即停，回静止后继续。点击后 projectExp.frame() 接管时管线已是热的
-              if (
-                reelStill &&
-                preload?.uid === activeUid &&
-                preload.exp &&
-                preload.exp.getFrames() < 60
-              ) {
-                await preload.exp.frame(dt, time);
-              }
-            }
-
             // ---------- 项目子页逐帧推进（必须先于 film 渲染） ----------
             // 画格蒙版按 screenUV 采样子页 grainFBO —— 若 grainFBO 在 film 之后才渲，
             // WebGPU 侧「先采样后写入」的跨帧资源状态容易拿到空绑定（画格内全黑的根因之一）；
@@ -2350,12 +2212,6 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       projectExp = null;
       projectActive = false;
       projectPending = false;
-      if (preload) {
-        preload.stale = true;
-        preload.exp?.dispose();
-        preload.exp = null;
-        preload = null;
-      }
       const probe = (window as unknown as { __workAboutProbe?: { renderer?: any } }).__workAboutProbe;
       probe?.renderer?.dispose?.();
       delete (window as unknown as { __workAboutProbe?: unknown }).__workAboutProbe;
