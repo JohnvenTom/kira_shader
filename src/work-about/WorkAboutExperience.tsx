@@ -448,6 +448,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     /** 停驻预热防抖：最近看到的激活 uid 与时刻（index 稳定 450ms 后才预建，滑动中零负载） */
     let preloadIndexSeen = '';
     let preloadIndexAt = 0;
+    /** 胶片弹簧连续静止的起始时刻（-1 = 未静止）。创建/释放重活只在「连续静止 300ms」后放行 */
+    let reelStillSince = -1;
     /** P2 转场：星星阵列场景 + 它的 RT（原站 TransitionScene） */
     let starScene: ReturnType<typeof createStarTransitionScene> | null = null;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -1088,9 +1090,18 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       mouse.cssX = e.clientX;
       mouse.cssY = e.clientY;
       // 悬停胶片中心 → 预建对应项目的详情子页（点击时零等待起转场）。
-      // 拖拽/待定滑动中不预建：dispose/创建不上滑动当帧（防抖由停驻预热块的
-      // index 稳定判断承担，这里只补「未拖拽时的即时悬停预建」）
-      if (!projectActive && !projectPending && !work.dragging && !work.pending && scrollNow() > 0.9 && scrollNow() < 1.1) {
+      // 拖拽/待定滑动/弹簧滚动中一律不预建：创建与释放都是同步重活（实测冻结 110-140ms），
+      // 必须等胶片静止（停驻预热块同款静止门），未就绪的点击由 Loading work 提示兜底
+      if (
+        !projectActive &&
+        !projectPending &&
+        !work.dragging &&
+        !work.pending &&
+        reelStillSince >= 0 &&
+        performance.now() - reelStillSince > 300 &&
+        scrollNow() > 0.9 &&
+        scrollNow() < 1.1
+      ) {
         const inFilmHover =
           Math.abs(e.clientX - window.innerWidth / 2) <= window.innerWidth * 0.3 &&
           e.clientY >= window.innerHeight * 0.28 &&
@@ -1832,13 +1843,34 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                 preloadIndexSeen = activeUid;
                 preloadIndexAt = performance.now();
               }
-              // index 稳定 ≥450ms 才预建：滑动翻页期间 dispose/创建完全不上主线程
-              if (performance.now() - preloadIndexAt >= 450 && (!preload || preload.uid !== activeUid)) {
+              // index 稳定 ≥450ms **且胶片弹簧连续静止 300ms** 才预建：拖动/弹簧滚动期间
+              // 完全不做创建与释放（原站拖动全程 max 12ms 帧间隔；本地创建冻结实测
+              // 110-140ms——这就是掉帧来源）。点击时未建好由底部 Loading work 提示兜底
+              const vel = workScene.getReelVelocity();
+              if (Math.abs(vel) < 3) {
+                if (reelStillSince < 0) reelStillSince = performance.now();
+              } else {
+                reelStillSince = -1;
+              }
+              const reelStill = reelStillSince >= 0 && performance.now() - reelStillSince > 300;
+              if (
+                reelStill &&
+                performance.now() - preloadIndexAt >= 450 &&
+                (!preload || preload.uid !== activeUid)
+              ) {
+                // 直接创建（rIC 实测反而与渲染循环抢隙，max 涨到 254ms）：
+                // 静止门已保证冻结只落在用户完全停手之后，感知最弱
                 ensurePreload(activeUid);
               }
-              // 限 60 帧热身：字形图集/管线热完即停渲，不为闲置预建持续烧帧预算；
-              // 点击后 projectExp.frame() 接管时管线已是热的，无冷启动
-              if (preload?.uid === activeUid && preload.exp && preload.exp.getFrames() < 60) {
+              // 限 60 帧热身且**只在胶片静止时渲**：热身渲帧 = 每帧多渲一整套子页 RT，
+              // 若与拖动窗口重叠会把帧时间从 6ms 拖到 12ms+（原站拖动 max 12ms 无此负载）；
+              // 一动即停，回静止后继续。点击后 projectExp.frame() 接管时管线已是热的
+              if (
+                reelStill &&
+                preload?.uid === activeUid &&
+                preload.exp &&
+                preload.exp.getFrames() < 60
+              ) {
                 await preload.exp.frame(dt, time);
               }
             }

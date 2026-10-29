@@ -121,6 +121,8 @@ export interface SelectedWorkSceneHandle {
   setFrameTexture: (texture: THREE.Texture | null) => void;
   /** 画格蒙版进度 0..1（0 = 胶片画面，1 = 详情页完全占据画格） */
   setFrameProgress: (progress: number) => void;
+  /** 选中弹簧当前速度（px/s）——宿主用它判断胶片是否静止，静止才做子页预建等重活 */
+  getReelVelocity: () => number;
   dispose: () => void;
 }
 
@@ -574,5 +576,5 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     }
   };
 
-  return { scene, camera, setSize, update, setTransitionTexture, setFrameTexture, setFrameProgress, dispose };
+  return { scene, camera, setSize, update, setTransitionTexture, setFrameTexture, setFrameProgress, getReelVelocity: () => reelVel, dispose };
 }
