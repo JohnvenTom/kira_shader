@@ -1,0 +1,118 @@
+/* /work/<slug> 详情页样式（WebGPU 版）
+ *
+ * 视图层全部在 canvas（workDetailExperience）；DOM 只剩：
+ * 顶栏（logo/Close）、boot 覆盖屏、滚动撑高、a11y 镜像。
+ * 色值/几何实测：logo 左 33/上 42（宽 189 资产含边）、Close 右 32/上 34 (111×46) #1a1918。
+ * TODO(未取证)：顶栏入 uikit（原站顶栏画在 WebGL 里）、悬停态。
+ */
+
+.wd-page {
+  position: relative;
+  background: #dbd7c6;
+  font-family: var(--font-stix);
+  min-height: 100vh;
+}
+
+/* ===== 文档滚动解锁（首页全局 html/body overflow:hidden） ===== */
+html.wd-scrolling,
+html.wd-scrolling body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  height: auto;
+}
+html.wd-scrolling #root {
+  height: auto;
+  min-height: 100vh;
+}
+html.wd-booting,
+html.wd-booting body {
+  overflow: hidden !important;
+  height: 100%;
+}
+
+/* ===== boot 屏 ===== */
+.wd-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #00f;
+}
+.wd-boot-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ===== 顶栏 ===== */
+.wd-topbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 34px 32px 0 33px;
+  pointer-events: none;
+}
+.wd-topbar > * {
+  pointer-events: auto;
+}
+.wd-logo {
+  display: block;
+  margin-top: 8px;
+}
+.wd-logo img {
+  display: block;
+  width: 189px;
+  height: auto;
+}
+.wd-close {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  width: 111px;
+  height: 46px;
+  border-radius: 8px;
+  background: #1a1918;
+  color: #f4f1e8;
+  font-family: var(--font-stix);
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.wd-close-x {
+  font-size: 13px;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+
+/* ===== WebGPU 画布宿主 + 滚动撑高 ===== */
+.wd-canvas-host {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+.wd-canvas-host canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+.wd-spacer {
+  position: relative;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ===== a11y 镜像（视觉隐藏） ===== */
+.wd-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

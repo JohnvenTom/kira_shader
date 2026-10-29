@@ -4,6 +4,7 @@
  * 断点 {sm:640, md:768, lg:1024, xl:1280, "2xl":1536}（04kr:21681），min-width 语义。
  */
 import YGPackage from 'yoga-layout';
+import type * as THREE from 'three/webgpu';
 import { createTextMeasurer, MeasureMode, resolveLineHeight, type TextMeasurer } from './text.ts';
 import type { UIKitFont } from './font.ts';
 
@@ -16,13 +17,16 @@ export type Responsive<T> = T | { base?: T; sm?: T; md?: T; lg?: T; xl?: T; '2xl
 
 export function resolveResponsive<T>(value: Responsive<T> | undefined, width: number): T | undefined {
   if (value == null) return undefined;
-  if (typeof value !== 'object' || Array.isArray(value) || !('base' in (value as any) || 'sm' in (value as any) || 'md' in (value as any) || 'lg' in (value as any) || 'xl' in (value as any) || '2xl' in (value as any))) {
-    return value as T;
-  }
+  if (typeof value !== 'object' || Array.isArray(value)) return value as T;
   const layers = value as { base?: T; sm?: T; md?: T; lg?: T; xl?: T; '2xl'?: T };
+  // 标量层（fontSize/lineHeight/gap 等响应式标量）：按断点取层值本身；
+  // 样式对象层（navBar 既有用法）：按断点合并 partial style。以 base 层类型区分。
+  const scalarLayers = typeof (layers as any).base !== 'object';
   let out: T | undefined = layers.base;
   for (const key of ['sm', 'md', 'lg', 'xl', '2xl'] as const) {
-    if (width >= BREAKPOINTS[key] && layers[key] != null) out = { ...(out as any), ...(layers[key] as any) } as T;
+    if (width >= BREAKPOINTS[key] && layers[key] != null) {
+      out = scalarLayers ? layers[key] : ({ ...(out as any), ...(layers[key] as any) } as T);
+    }
   }
   return out;
 }
@@ -39,6 +43,7 @@ export interface StyleProps {
   maxWidth?: number;
   minWidth?: number;
   minHeight?: number;
+  maxHeight?: number;
   padding?: number;
   paddingTop?: number;
   paddingBottom?: number;
@@ -51,6 +56,8 @@ export interface StyleProps {
   marginBottom?: number;
   marginLeft?: number;
   marginRight?: number;
+  /** 上下 margin（'auto' → yoga setMarginAuto，原站 marginY:"auto" 垂直居中语义） */
+  marginY?: number | 'auto';
   borderWidth?: number;
   borderTopWidth?: number;
   borderBottomWidth?: number;
@@ -72,6 +79,8 @@ export interface StyleProps {
   color?: string | number;
   /** 元素不透明度（面板=整体；文本=字形） */
   opacity?: number;
+  /** 纵横比（yoga setAspectRatio；width/height 一侧定值时另一侧按比值，原站媒体卡 p1 实证） */
+  aspectRatio?: number;
   renderOrder?: number;
   zIndex?: number;
   /** 原站默认 false（04kr:26404） */
@@ -133,6 +142,19 @@ export class UIElement {
   }
 
   __image?: { url: string };
+
+  /**
+   * mesh 槽位（原站 uF/nf 模式，04kr:62390：uk 容器 → uF absolute inset0 → nf mesh）。
+   * 宿主 mesh 由 renderer 摆到该元素的布局矩形（globalPanelMatrix），材质任意（TSL）。
+   */
+  __meshSlot?: { mesh: THREE.Mesh };
+
+  /** 静态工厂：mesh 槽位元素（布局占位 + 宿主 mesh） */
+  static meshSlot(mesh: THREE.Mesh, style: StyleProps = {}): UIElement {
+    const el = new UIElement(style, null);
+    el.__meshSlot = { mesh };
+    return el;
+  }
 
   /** applyViewport 解析后的文本渲染参数（renderer.ts 消费） */
   __textResolved?: {
@@ -276,6 +298,10 @@ function applyStyle(el: UIElement, viewportWidth: number): void {
   if (num(minWidth)) n.setMinWidth(minWidth);
   const minHeight = r(s.minHeight as any) ?? s.minHeight;
   if (num(minHeight)) n.setMinHeight(minHeight);
+  const maxHeight = r(s.maxHeight as any) ?? s.maxHeight;
+  if (num(maxHeight)) n.setMaxHeight(maxHeight);
+  // 纵横比（媒体卡：height 100% + aspectRatio → 宽度由 yoga 按比值算）
+  if (num(s.aspectRatio)) n.setAspectRatio(s.aspectRatio);
 
   // padding：先 ALL 再具体边覆盖（与原站属性覆盖序一致）
   const pad = (edge: number, v: unknown) => num(v) && n.setPadding(edge, v);
@@ -292,6 +318,13 @@ function applyStyle(el: UIElement, viewportWidth: number): void {
   marg(S.EDGE_BOTTOM, s.marginBottom);
   marg(S.EDGE_LEFT, s.marginLeft);
   marg(S.EDGE_RIGHT, s.marginRight);
+  if (s.marginY === 'auto') {
+    n.setMarginAuto(S.EDGE_TOP);
+    n.setMarginAuto(S.EDGE_BOTTOM);
+  } else {
+    marg(S.EDGE_TOP, s.marginY);
+    marg(S.EDGE_BOTTOM, s.marginY);
+  }
   // border
   const bord = (edge: number, v: unknown) => num(v) && n.setBorder(edge, v);
   bord(S.EDGE_ALL, s.borderWidth);

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>wd textlab2</title></head>
+<body style="background:#222;color:#fff;font-family:monospace">
+<pre id="out">running…</pre>
+<script type="module">
+  const out = document.getElementById('out');
+  const log = (s) => { out.textContent += '\n' + s; console.error('[textlab2]', s); };
+  try {
+    const { loadFont } = await import('/src/uikit/font.ts');
+    const { UIElement } = await import('/src/uikit/element.ts');
+    const font = await loadFont('/fonts/stix_regular.json');
+
+    // 与 workDetailExperience.buildTree 完全一致的结构
+    const root = UIElement.container({
+      width: 7 * 1578, gap: 32, paddingTop: 80, paddingLeft: 120, paddingRight: 100,
+      color: '#2B2B29', flexGrow: 0, height: '100%', marginY: 'auto',
+      alignItems: 'center', flexDirection: 'row',
+    });
+    const inner = UIElement.container({ height: '100%', maxHeight: 726, flexDirection: 'row', alignItems: 'center' });
+    const textCol = UIElement.container({
+      width: 750, height: '100%', paddingLeft: 60, paddingRight: 32, marginRight: 60,
+      flexDirection: 'column', flexShrink: 0,
+    });
+    textCol.add(UIElement.container({ height: 60 }));
+    const title = UIElement.text('eHealth Arena', {
+      font,
+      fontSize: { base: 58, sm: 64, lg: 100 },
+      lineHeight: { base: '58px', sm: '64px', lg: '100px' },
+    });
+    textCol.add(title);
+    const sub = UIElement.text('3D Showroom with Markus Reklambyrå', {
+      font, fontSize: { base: 26, lg: 32 },
+    }, { marginTop: 0, maxWidth: 600 });
+    textCol.add(sub);
+    inner.add(textCol);
+    root.add(inner);
+
+    root.applyViewport(1578);
+    root.calculateLayout(1578, 926);
+    log('title size=' + JSON.stringify(title.size));
+    log('sub size=' + JSON.stringify(sub.size));
+    log('textCol size=' + JSON.stringify(textCol.size));
+    log('title.__textResolved.fontSize=' + title.__textResolved?.fontSize);
+    log('title.__textResolved.lineHeight=' + title.__textResolved?.lineHeight);
+    const m = title.measurer;
+    log('title.measure(750, AT_MOST)=' + JSON.stringify(m ? m.measure(750, 1) : null));
+  } catch (e) {
+    log('ERROR: ' + (e.stack || e).slice(0, 600));
+  }
+</script>
+</body>
+</html>

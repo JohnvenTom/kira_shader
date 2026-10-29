@@ -97,6 +97,35 @@ export interface HeroComposeFrame {
   transition?: { t: number; type: number } | null;
   /** P2 跨段导航转场（原站 isTransitioningToSection）：星星阵列场景 RT + 进度 0..1 */
   navTransition?: { tex: THREE.Texture; t: number } | null;
+  /**
+   * 子页覆盖（原件 `subPageTexture` / `subPageTransition` / `subPageEffectsMap`）
+   *
+   * 用途：Selected Work 点击胶片打开 /work/<slug> 时，详情页 ProjectScene 渲进自己的 FBO，
+   * 作为子页纹理在本帧场景合成 pass 内替换主画面（原件 `e.rgb.assign(i.rgb)` 语义）。
+   *
+   * 参数：
+   *  - tex        {THREE.Texture} 子页纹理（ProjectScene + GrainPass 输出）
+   *  - mix        {number} 0..1 覆盖权重（原件 subPageTransitionDid 门控；本地用 1 常显）
+   *  - brightness {number} 子页亮度（原件 `0.5 + 0.5·subPageTransition`）
+   *  - lens       {number} 子页桶形畸变（原件 subPageEffectsMap.project.lensDistortion = 0.16）
+   *  - border     {number} 子页镜头边框补偿
+   */
+  subPage?: {
+    tex: THREE.Texture;
+    mix: number;
+    brightness: number;
+    lens: number;
+    border: number;
+    /** 子页缩放（屏幕中心 1 → 0.5 = 半尺寸小窗；原站入场从 0.5 弹到 1） */
+    zoom?: number;
+  } | null;
+  /**
+   * 主页面缩放（胶片 → 详情时整幅胶片扎进画面）
+   *
+   * 说明：>1 = 放大中央区域（采样 uv 反向收缩），与子页 zoom 联动即可复刻
+   *      原站「胶片推近 + 详情页由中心弹出」的入场。
+   */
+  mainZoom?: number;
   /** 动态页表的逐页效果加权和（宿主用动态边界算好递入） */
   effects?: HeroEffects;
   /** UI 烘焙层逐帧输入（缺省 uiTransition=0，不画 UI） */
@@ -109,6 +138,8 @@ export interface HeroComposeFrame {
     border: number;
     logoHover: number;
     pageActionHover: number;
+    /** navbar 层可见度（0 = 隐藏；详情子页打开时用） */
+    navVisible?: number;
   };
 }
 
@@ -234,8 +265,10 @@ const sdRoundBox = (p: any, b: any, r: any) => {
  * 注意事项：本页不做 UI 贴图合成，但这条遮罩必须保留 —— 它是画面轮廓的一部分
  */
 const edgeFade = (color: any, uvBase: any, border: any, dimensions: any) => {
+  // border=0 时 aa 也必须 >0：smoothstep(0,0,x) 会除零产生 NaN（整屏消失）。
+  // 原件 border=0 的页（如详情子页）走「无圆角 + 极细边缘抗锯齿」分支。
   const radius = N.mix(N.float(0), N.float(0.04), border);
-  const aa = N.mix(N.float(0), N.float(0.005), border);
+  const aa = N.mix(N.float(0.0005), N.float(0.005), border);
   const perimeter = N.smoothstep(aa.negate(), aa, uvBase.x)
     .mul(N.smoothstep(aa.negate(), aa, uvBase.y))
     .mul(N.smoothstep(aa.negate(), aa, N.float(1).sub(uvBase.x)))
@@ -488,12 +521,28 @@ export function createHeroCompose(
     /** P2 跨段导航转场（原站 isTransitioningToSection）：星星阵列场景 RT + 进度 0..1 */
     transitionTex: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     sectionTransition: N.uniform(0),
+    // ---- 子页覆盖（原件 subPageTexture 一组） ----
+    /** 子页 RT（详情页 ProjectScene + GrainPass）；缺省 1×1 透明 */
+    subPageTex: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    /** 子页覆盖权重 0..1（0 = 完全走主页面） */
+    subPageMix: N.uniform(0),
+    /** 子页亮度（原件 `0.5 + 0.5·subPageTransition`） */
+    subPageBrightness: N.uniform(1),
+    /** 子页镜头畸变 / 边框（原件 subPageEffectsMap） */
+    subPageLens: N.uniform(0),
+    subPageBorder: N.uniform(0),
+    /** 子页缩放（1 = 铺满；0.5 = 半屏小窗，原站入场起点） */
+    subPageZoom: N.uniform(1),
+    /** 主页面缩放（>1 放大中央，胶片推近） */
+    mainZoom: N.uniform(1),
     // ---- UI 烘焙层（原件 uikit：场景 pass 内按畸变 uv 采样并 over 合成） ----
     uiLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     uiDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     /** navbar uikit 层（2026-10-25 P1：uikit 导航树独立 RT，按 alpha 压在 canvas UI 之上） */
     navLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     navDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
+    /** navbar 层可见度（详情子页打开时为 0：否则会残留胶片页的导航） */
+    navVisible: N.uniform(1),
     /** light=0 → dark=1（原件 uiModeTransition） */
     uiMode: N.uniform(0),
     /** UI 显隐标量（原件 uiTransition，spring 驱动） */
@@ -552,26 +601,29 @@ export function createHeroCompose(
      * 顺序照原件：畸变 → 越界判 → 圆角/四边渐隐（AV）→ 饱和度（ApplySaturation）。
      * 注意每个 section 用的是**自己的**镜头参数，而不是加权后的全局值。
      */
-    const sampleSection = (tex: any, lens: any, border: any, saturation: any) => {
-      const warped = barrel(uvB, lens, border);
+    const sampleSection = (tex: any, lens: any, border: any, saturation: any, uvBase: any) => {
+      const warped = barrel(uvBase, lens, border);
       const active = N.step(N.float(0.01), lens); // 原件 `A = l > 0.01`
       const inRange = N.step(N.float(0), warped.x)
         .mul(N.step(warped.x, N.float(1)))
         .mul(N.step(N.float(0), warped.y))
         .mul(N.step(warped.y, N.float(1)));
-      const raw = tex.uv(uvB);
+      const raw = tex.uv(uvBase);
       // 原件 AW：畸变 uv 出界时整颗输出透明黑（圆角黑边与四角切角由此而来），界内再走 AV 边遮罩
       const awColor = edgeFade(tex.uv(warped), warped, border, u.dimensions);
       const masked = N.mix(N.vec4(0, 0, 0, 0), awColor, inRange);
       return applySaturation(N.mix(raw, masked, active), saturation);
     };
+    /** 画面缩放：uv' = (uv − .5)/zoom + .5（zoom>1 → 采样中央小区域 = 放大） */
+    const zoomUv = (uvBase: any, zoom: any) => uvBase.sub(0.5).div(zoom).add(0.5);
+    const curUv = zoomUv(uvB, u.mainZoom);
 
     // 当前页与下一页各自采样：镜头/边框/饱和度逐页原值（原件 sceneMode=2 的 current/next）
     // 本管线最多只有两张场景纹理：sceneRT（第一场景）与 projectsTexture（第二场景）。
     // 当前页落到第二页及以后时由 writeUniforms 把 curTexture 换成 projectsTexture ——
     // 否则 HeroOneToOne 的胶片页在 scroll≥1 会突然闪回第一个场景。
-    const curScene = sampleSection(u.curTexture, u.curLens, u.curBorder, u.curSaturation);
-    const nextScene = sampleSection(u.nextTexture, u.nextLens, u.nextBorder, u.nextSaturation);
+    const curScene = sampleSection(u.curTexture, u.curLens, u.curBorder, u.curSaturation, curUv);
+    const nextScene = sampleSection(u.nextTexture, u.nextLens, u.nextBorder, u.nextSaturation, uvB);
     // 转场类型分支（原件场景 pass 原文）：默认 smoothstep mix；overlay 用下一页 alpha 门控、
     // below 用当前页 alpha 门控。select 三路都求值（无副作用），避免 If/toVar 的 currentStack 问题。
     const isOverlay = u.nextTransitionType.equal(N.float(2));
@@ -605,6 +657,26 @@ export function createHeroCompose(
     const g = u.vigRadius.sub(N.length(uvS.sub(0.5)));
     const vf = N.smoothstep(u.vigSmooth.negate(), u.vigSmooth, g);
     const vignetted = N.mix(withNav, N.clamp(withNav.mul(vf), 0, 1), u.vigIntensity);
+    // ---- 子页覆盖（原件 subPageTexture 分支：`If(i.a>0) e.rgb.assign(i.rgb)`） ----
+    // 位置照原件：在暗角之后、UI 合成之前 —— 子页吃主页面暗角，但 UI 仍压在最上层。
+    // 采样同样先过桶形畸变 + 四边渐隐（原件 AW(subPageTexture, lens, border)）。
+    const subLensC = u.subPageLens;
+    const subBorderC = u.subPageBorder;
+    // 子页 FBO（详情页 grain pass 输出）在纹理里是上下翻转存的 —— 与其它页 RT 一致，
+    // 采样必须走 baseUv（flipY）；直接用 uvS 会把整页上下颠倒（2026-10-29 实拍确认）
+    const subPageUv = zoomUv(baseUv(uvS), u.subPageZoom);
+    const subWarped = barrel(subPageUv, subLensC, subBorderC);
+    const subInRange = N.step(N.float(0), subPageUv.x)
+      .mul(N.step(subPageUv.x, N.float(1)))
+      .mul(N.step(N.float(0), subPageUv.y))
+      .mul(N.step(subPageUv.y, N.float(1)));
+    const subRaw = N.mix(
+      N.vec4(0, 0, 0, 0),
+      edgeFade(u.subPageTex.uv(subWarped), subWarped, subBorderC, u.dimensions),
+      subInRange
+    );
+    const subMix = N.clamp(u.subPageMix, 0, 1).mul(subRaw.a);
+    const withSub = N.mix(vignetted, subRaw.rgb.mul(u.subPageBrightness), subMix);
     // alpha 随 portalBlend 过渡到下一页的门禁结果（0/1 硬边）：单页时保持 1 不变，
     // 出界页的门禁黑边必须是「透明黑」，后续 bloom 混合按它遮罩（见 makeBloomBlendMat）。
     // overlay/below 转场时 alpha 走类型分支的混合结果（原件 mix(a,s,s.a) 连 alpha 一起混）
@@ -629,7 +701,7 @@ export function createHeroCompose(
     const uiRawC = N.mix(u.uiLight.uv(uiA), u.uiDark.uv(uiA), u.uiMode);
     const navRaw = N.mix(u.navLight.uv(uiA), u.navDark.uv(uiA), u.uiMode);
     // navbar uikit 层按自身 alpha 压在 canvas UI 之上（两者元素不重叠，语义安全）
-    const uiRaw = N.mix(uiRawC, navRaw, navRaw.a);
+    const uiRaw = N.mix(uiRawC, navRaw, navRaw.a.mul(u.navVisible));
     // hover 区域（CSS px、y 向下）：logo 左上 240×96，pageAction 右上 220×96；
     // bool 节点必须 .toFloat() 才能参与乘加（直接 mul 会编译出 bool*bool 的非法 GLSL）
     const uiPxX = uiA.x.mul(u.dimensions.x);
@@ -642,7 +714,7 @@ export function createHeroCompose(
       .add(1);
     const uiT = N.clamp(u.uiTransition, 0, 1).mul(uiIn);
     const uiCol = N.vec4(uiRaw.rgb.mul(uiBoost).mul(uiT), uiRaw.a.mul(uiT));
-    const composited = N.mix(vignetted, uiCol.rgb, uiCol.a);
+    const composited = N.mix(withSub, uiCol.rgb, uiCol.a);
     sceneComposeMat.colorNode = N.vec4(composited, alphaNow);
   }
 
@@ -942,11 +1014,26 @@ export function createHeroCompose(
       u.uiBorder.value = frame.ui.border;
       u.logoHover.value = frame.ui.logoHover;
       u.pageActionHover.value = frame.ui.pageActionHover;
+      // 详情子页打开时隐藏胶片页的 uikit 导航层（否则会在子页顶栏之上残留一行导航）
+      u.navVisible.value = frame.ui.navVisible ?? 1;
     }
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');
     u.vigIntensity.value = eff('vignetteIntensity');
     u.loadingActive.value = loadingActive ? 1 : 0;
+    // ---- 子页覆盖（Selected Work → /work/<slug> 的 spring 入场） ----
+    if (frame.subPage) {
+      u.subPageTex.value = frame.subPage.tex;
+      u.subPageMix.value = frame.subPage.mix;
+      u.subPageBrightness.value = frame.subPage.brightness;
+      u.subPageLens.value = frame.subPage.lens;
+      u.subPageBorder.value = frame.subPage.border;
+      u.subPageZoom.value = frame.subPage.zoom ?? 1;
+    } else {
+      u.subPageMix.value = 0;
+      u.subPageZoom.value = 1;
+    }
+    u.mainZoom.value = frame.mainZoom ?? 1;
 
     // ---- bloom ----
     u.bloomThreshold.value = eff('bloomThreshold');

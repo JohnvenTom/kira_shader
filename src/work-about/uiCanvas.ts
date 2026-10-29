@@ -18,8 +18,10 @@ import * as THREE from 'three/webgpu';
 
 export type UiRegionKey =
   | 'logo' | 'navHome' | 'navWork' | 'navAbout' | 'navContact'
-  | 'book' | 'burger' | 'prevArrow' | 'nextArrow' | 'hint'
-  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook';
+  | 'book' | 'burger' | 'prevArrow' | 'nextArrow' | 'hint' | 'viewProject'
+  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook'
+  /** /work/<slug> 子页顶栏：logo 与 Close（画在 canvas 里，随镜头畸变一起变形） */
+  | 'projectLogo' | 'projectClose';
 
 export interface UiRect { x: number; y: number; w: number; h: number }
 
@@ -36,8 +38,21 @@ export interface UiDrawState {
   mode: number;
   /** tie 文案透明度 */
   tieCopy: number;
+  /**
+   * projects 段当前激活项目（SELECTED_PROJECTS 索引；仅 view==='work' 时传入）。
+   * 有值时在棱柱标题下绘制 "{subtitle} • View Project" 行 + viewProject 命中区
+   * （原站 projects-view 按钮，04kr a11y 映射 12vmxu4i7:26）。
+   */
+  projectIndex?: number;
   /** navbar 已迁 uikit 层（2026-10-25 P1）：跳过 header/菜单绘制，只留 work 箭头/提示 */
   headerless?: boolean;
+  /**
+   * /work/<slug> 子页模式：只画子页顶栏（logo + Close），其余 chrome 全部隐藏
+   *
+   * 说明：原站详情页顶栏也画在 canvas 里，因此和页面一起过桶形畸变；
+   *      DOM 顶栏会「浮在畸变之外」，这正是要替换掉旧实现的原因。
+   */
+  projectOpen?: boolean;
 }
 
 export interface UiCanvasHandle {
@@ -247,13 +262,14 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     void st;
   };
 
-  /** work 页：左右箭头 + 底部提示 */
+  /** work 页：左右箭头 + 底部提示 + 标题下 View Project 行（projects-view 入口） */
   const drawWorkExtras = (ctx: any, st: UiDrawState) => {
     const fade = st.fade;
     if (fade <= 0.01) {
       delete regions.prevArrow;
       delete regions.nextArrow;
       delete regions.hint;
+      delete regions.viewProject;
       return;
     }
     ctx.save();
@@ -307,6 +323,16 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     text(ctx, label, x + handS + 12, cy + handS / 2 + S(6) / dpr, { size: 19, ink: '#fff', baseline: 'middle' });
     drawHand(W / 2 + total / 2 - handS);
     regions.hint = { x: W / 2 - total / 2 - 10, y: H - 72 - 10, w: total + 20, h: handS + 20 };
+
+    // 标题下 View Project 行：**视觉已由棱柱侧面纹理提供**（titleTextures.ts
+    // "subtitle · View project →"，本地 projects 段此前已 1:1 复刻），
+    // 这里只补命中区（原站 a11y id = projects-view，整行可点；
+    // 位置按 entry-selected-work.png 实测：行中心 ~32% 屏高、居中）
+    if (st.projectIndex != null) {
+      regions.viewProject = { x: W / 2 - 260, y: H * 0.22, w: 520, h: H * 0.08 };
+    } else {
+      delete regions.viewProject;
+    }
     ctx.restore();
   };
 
@@ -315,12 +341,55 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
 
   /** contact 正文已迁至 contactScene 的 3D 长列（CanvasTexture 平面，随相机滚动）——此处只保留 header */
 
+  /**
+   * /work/<slug> 子页顶栏：logo + Close（原站详情页 chrome，全部画在 canvas 里）
+   *
+   * 参数：
+   *  - ctx   {CanvasRenderingContext2D} 目标层上下文
+   *  - theme {'light'|'dark'}          主题（详情页恒为 light）
+   *  - st    {UiDrawState}             绘制状态（仅用于 mobile 等留白）
+   *
+   * 返回值：无
+   * 异常：无
+   * 注意事项：与 DOM 版数值同源（logo 左 33/上 42、Close 右 32/上 34，111×46 #1a1918）；
+   *          画在 canvas 后随合成链的桶形畸变一起变形，不再「浮」在畸变外。
+   */
+  const drawProjectChrome = (ctx: any, theme: 'light' | 'dark', st: UiDrawState) => {
+    if (theme !== 'light') return;
+    const padL = st.mobile ? 8 : Math.min(40, Math.max(20, W * 0.021));
+    const logoW = st.mobile ? Math.min(160, W * 0.3) : Math.min(190, Math.max(150, W * 0.1066));
+    const logoY = 34 + 8;
+    const box = drawImg(ctx, imgs.logoLight, padL, logoY, logoW);
+    regions.projectLogo = box ?? { x: padL, y: logoY, w: logoW, h: 40 };
+
+    const bw = 111;
+    const bh = 46;
+    const bx = W - 32 - bw;
+    const by = 34;
+    ctx.fillStyle = '#1a1918';
+    ctx.beginPath();
+    ctx.roundRect(S(bx), S(by), S(bw), S(bh), S(8));
+    ctx.fill();
+    ctx.font = `400 ${S(15)}px ${SERIF}`;
+    ctx.fillStyle = '#f4f1e8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Close ✕', S(bx + bw / 2), S(by + bh / 2));
+    regions.projectClose = { x: bx, y: by, w: bw, h: bh };
+    void st.activeNav;
+  };
+
   const drawLayer = (layer: { ctx: any }, theme: 'light' | 'dark', st: UiDrawState) => {
     const ctx = layer.ctx;
     regions = regionsByTheme[theme];
     for (const k of Object.keys(regions)) delete regions[k as UiRegionKey];
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, pxW, pxH);
+    // 子页模式：只画详情页顶栏（logo + Close），其它 chrome 全部隐藏
+    if (st.projectOpen) {
+      drawProjectChrome(ctx, theme, st);
+      return;
+    }
     if (st.headerless) {
       // navbar/菜单已由 uikit 层渲染（navUiScene）；canvas 只画 work 箭头/提示
       if (theme === 'light' && st.page === 'work') drawWorkExtras(ctx, st);
@@ -342,6 +411,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   const stateKey = (st: UiDrawState) =>
     [
       st.page, st.activeNav, st.mobile ? 1 : 0, st.menuOpen,
+      st.projectOpen ? 1 : 0,
       Math.round(st.fade * 50), Math.round(st.tieCopy * 40),
       assetsReady ? 1 : 0, W, H,
     ].join('|');

@@ -43,7 +43,7 @@ export function createMsdfMaterial(opts: MsdfMaterialOptions): THREE.MeshBasicNo
   const l = uvOffset.xy.add(T.uv().mul(uvOffset.zw));
 
   // 4 平面裁剪（等价 04kr:25535-25552 的 a8 轴对齐展开）
-  // clipRect = (topY, rightX, bottomY, leftX)；关闭 = (+1e7,+1e7,-1e7,-1e7)
+  // clipRect = (topY, rightX, bottomY, leftX)；关闭 = 恒通过矩形（哨兵 ±1e3，见 glyphBatch.writeClippingDefault）
   const posWorld = T.positionWorld;
   const d0 = clipRect.x.sub(posWorld.y); // top:    -y + topY
   const d1 = clipRect.y.sub(posWorld.x); // right:  -x + rightX

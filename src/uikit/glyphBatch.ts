@@ -387,8 +387,10 @@ export class GlyphBatch {
   }
 
   writeClippingDefault(index: number): void {
-    // 关闭 = 恒通过矩形（+1e7, +1e7, −1e7, −1e7）
-    this.writeClipRect(index, 1e7, 1e7, -1e7, -1e7);
+    // 关闭 = 恒通过矩形。哨兵不能太大：float32 在 1e7 量级 ulp≈1，
+    // d = 1e7 − posWorld 经插值后导数被量化成 0 → smoothstep(0,0,d) 除零 → NaN → 整字消失。
+    // uikit 世界坐标在 ±100 内，±1e3 足够「恒通过」且远离精度悬崖（2026-10-28 详情页实证）
+    this.writeClipRect(index, 1e3, 1e3, -1e3, -1e3);
   }
 
   /** 轴对齐裁剪矩形 (topY, rightX, bottomY, leftX)（世界空间） */

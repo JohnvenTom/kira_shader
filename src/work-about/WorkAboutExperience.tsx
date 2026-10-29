@@ -3,6 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 import { createSelectedWorkScene } from '../selected-work/scene';
+import { SELECTED_PROJECTS } from '../selected-work/data';
+import { WORK_PROJECTS } from '../work-detail/data';
+import { findWorkProject } from '../work-detail/data';
+import { createWorkDetailExperience, type WorkDetailExperience } from '../work-detail/workDetailExperience';
+import { PROJECT_PAGE_EFFECTS } from '../work-detail/workDetailConfig';
+import WorkDetailBootOverlay from '../work-detail/WorkDetailBootOverlay';
+import { consumeSpaNav } from '../work-detail/navigate';
 import { createAboutOfficeScene } from '../about/officeScene';
 import { createAboutContactScene, AboutContactHandle } from '../about/contactScene';
 import { createNavUiScene, type NavUiSceneHandle } from './navUiScene';
@@ -13,6 +20,7 @@ import { createUiCanvas, type UiCanvasHandle, type UiDrawState } from './uiCanva
 import {
   HERO_PAGES,
   resolvePageEffectsFor,
+  type HeroEffects,
   type HeroPageConfig,
 } from '../hero/heroConfig';
 import { createAboutPaper, disposeAboutPaper, AboutPaperResult } from './paperContent';
@@ -22,9 +30,12 @@ import { createGoldenTieRevealScene, GoldenTieRevealHandle } from './goldenTieRe
 import { createGoldenTieScene, GoldenTieSceneHandle } from './goldenTieScene';
 import {
   bootStore,
+  skipBoot,
 } from '../boot/bootStore';
 import type { AboutTheme } from './AboutUI';
 import './about.css';
+// 项目子页复用独立详情页的 boot 屏 / 顶栏样式（.wd-boot / .wd-topbar / .wd-close）
+import '../work-detail/work-detail.css';
 
 const T = TSL as any;
 /** Lenis 默认 `lerp: 0.1` → 阻尼系数 `lerp·60 = 6/s`（原站未改 lerp） */
@@ -84,7 +95,8 @@ const CLEAR_CONTACT = new THREE.Color(0x040405);
 const CLEAR_TRANSPARENT = new THREE.Color(0x000000);
 
 type View = 'hero' | 'work' | 'about';
-type RouteMode = View | 'contact';
+/** project = /work/<slug> 子页（原站同构：同一套 experience，胶片在底下，详情作为 subPage 叠加） */
+type RouteMode = View | 'contact' | 'project';
 
 interface ExperienceState {
   ready: boolean;
@@ -121,6 +133,31 @@ const smoothstep = (a: number, b: number, v: number) => {
 const smootherstep = (a: number, b: number, v: number) => {
   const x = clamp((v - a) / (b - a), 0, 1);
   return x * x * x * (x * (x * 6 - 15) + 10);
+};
+
+/**
+ * 两套页效果参数线性混合
+ *
+ * 功能：胶片 → 详情子页期间把 projects 页参数（有 bloom/强运动模糊）平滑过渡到
+ *      projectPageEffectsConfig（无 bloom），避免切换瞬间「辉光突然消失」的跳变
+ *
+ * 参数：
+ *  - a {HeroEffects} 起始效果（projects 页）
+ *  - b {HeroEffects} 目标效果（详情页）
+ *  - t {number}      0..1 混合权重
+ *
+ * 返回值：HeroEffects 逐字段插值后的新对象
+ * 异常：无
+ * 注意事项：所有字段都是数值；返回新对象，避免污染页表里的静态配置
+ */
+const blendEffects = (a: HeroEffects, b: HeroEffects, t: number): HeroEffects => {
+  const out: Record<string, number> = {};
+  for (const k of Object.keys(b)) {
+    const av = Number((a as unknown as Record<string, number>)[k] ?? 0);
+    const bv = Number((b as unknown as Record<string, number>)[k] ?? 0);
+    out[k] = av + (bv - av) * t;
+  }
+  return out as unknown as HeroEffects;
 };
 
 /**
@@ -232,9 +269,10 @@ function makeFoldMaterial(officeTex: THREE.Texture, paperTex: THREE.Texture) {
   return { mat, uEnter };
 }
 
-/** 原站通用 fade 已并入合成链 sceneMode（type 0），不再需要独立 fade 材质 */
+/** 点击进入详情时胶片镜头的推近峰值倍数（画格放大成遮罩窗口，铺满后交给全屏子页） */
+const PROJECT_FRAME_ZOOM = 3;
 
-export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
+export default function WorkAboutExperience({ mode, projectSlug }: { mode: RouteMode; projectSlug?: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const hotspotRef = useRef<HTMLAnchorElement>(null);
   const veilRef = useRef<HTMLDivElement>(null);
@@ -244,9 +282,21 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     jumpToHero: () => void;
     jumpToContact: () => void;
     jumpToAboutTop: () => void;
+    /** 打开项目子页（Selected Work 胶片点击 / 路由直链） */
+    openProject: (uid: string, pushUrl: boolean, zoomReveal?: boolean) => void;
+    /** 关闭项目子页（Close ✕ / Esc）：spring 退场后回 #selected-work */
+    closeProject: (pushUrl?: boolean) => void;
   } | null>(null);
 
-  const initialView: View = mode === 'hero' ? 'hero' : mode === 'work' ? 'work' : 'about';
+  /**
+   * 直链 / 刷新 /work/<slug> 的 boot 门：
+   * SPA 内部点击进入不播 boot（原站实证），硬加载才播；
+   * 初值只在挂载时求一次，之后由 <WorkDetailBootOverlay onDone> 推进。
+   */
+  const [bootProject] = useState(() => (mode === 'project' && projectSlug && !consumeSpaNav() ? findWorkProject(projectSlug) ?? null : null));
+  const [bootDone, setBootDone] = useState(() => !bootProject);
+
+  const initialView: View = mode === 'hero' ? 'hero' : mode === 'work' || mode === 'project' ? 'work' : 'about';
   const [ready, setReady] = useState(false);
   // chrome UI 已全部由 canvas 烘焙层绘制：视图/主题/阶段只活在 stateRef 里，不再驱动 React 渲染
   void initialView;
@@ -258,7 +308,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     theme: mode === 'about' ? 'dark' : 'light',
     contactActive: mode === 'contact',
     about: {
-      // 全局 0 基轴：#hero 从 0 起步（boot 播放）；#selected-work 落停驻点 1.0；
+      // 全局 0 基轴：#hero 从 0 起步（boot 播放）；#selected-work / #work 落停驻点 1.0；
       // #about-us 直链落 About 内容页首；contact 由 pendingContact 流程落黑场起点
       s: mode === 'hero' ? 0 : mode === 'about' ? ABOUT_START : WORK_REST_S,
       target: mode === 'hero' ? 0 : mode === 'about' ? ABOUT_START : WORK_REST_S,
@@ -286,11 +336,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
   });
 
   const prevModeRef = useRef<RouteMode>(mode);
+  /** 当前路由模式（渲染循环里读；mode 变化时由 effect 同步） */
+  const modeRef = useRef<RouteMode>(mode);
   useEffect(() => {
+    modeRef.current = mode;
     if (!ready) return;
     const prev = prevModeRef.current;
     prevModeRef.current = mode;
     const st = stateRef.current;
+    // 浏览器 Back / 外部路由离开 /work/<slug> → 子页退场（URL 已由路由层改好，不再推）
+    if (prev === 'project' && mode !== 'project') {
+      apiRef.current?.closeProject(false);
+    }
     if (mode === 'contact') {
       apiRef.current?.jumpToContact();
       return;
@@ -307,6 +364,19 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     }
     if (st.view !== 'work') apiRef.current?.switchToWork();
   }, [mode, ready]);
+
+  /**
+   * /work/<slug> 直链 / SPA 路由进入 → 打开项目子页
+   *
+   * 说明：点击进入时 openProject 已在点击回调里先启动（避免等待 React 渲染一拍），
+   *      这里再调一次是幂等的（projectActive/projectPending 门直接返回）；
+   *      硬加载则等 boot 屏 onDone（bootDone=true）后才拉起，boot 期间不渲染子页。
+   */
+  useEffect(() => {
+    if (!ready || !bootDone) return;
+    if (mode !== 'project' || !projectSlug) return;
+    apiRef.current?.openProject(projectSlug, false);
+  }, [mode, projectSlug, ready, bootDone]);
 
   useEffect(() => {
     let disposed = false;
@@ -333,6 +403,34 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
     let nextRT: THREE.RenderTarget | null = null;
     let paperPromise: Promise<void> | null = null;
     let paperToken = 0;
+    // ---------- 项目子页（/work/<slug>）运行时 ----------
+    /** 详情页 ProjectScene 句柄（复用主渲染器；嵌入模式，无自己的画布/合成链） */
+    let projectExp: WorkDetailExperience | null = null;
+    /** 正在异步创建（防重复点击） */
+    let projectPending = false;
+    /** 子页已上屏（compose 采样 subPageTexture 的门） */
+    let projectActive = false;
+    /** 子页 spring 已启动（原站 30 帧预热后才 animate） */
+    let projectEntered = false;
+    /** 预热起点：创建完成时的帧数 + 墙钟（SwiftShader 下 30 帧可能几十秒，取二者先到） */
+    let projectWarmFrom = 0;
+    let projectWarmT0 = 0;
+    /** 子页滚动目标（px；clamp 到 (pageCount-1)*视口高） */
+    let projectScrollPx = 0;
+    /** 退场中（防重复 Close） */
+    let projectClosing = false;
+    /** 子页创建代数（异步竞态防护） */
+    let projectGen = 0;
+    /** 最近一帧写给合成链的子页参数（调试/探针） */
+    let projectSubMix = 0;
+    let projectSubBrightness = 1;
+    /** 入场是否走「胶片推近 + 详情页中心弹出」（点击进入 true；直链 boot 后 false） */
+    let projectZoomReveal = false;
+    /**
+     * 预加载：指针悬停在胶片上时先把详情子页建好（字体/uikit/缩略图就绪），
+     * 点击时直接复用，避免「点了之后先卡 0.3~0.5s 才起转场」。
+     */
+    let preload: { uid: string; promise: Promise<WorkDetailExperience | null>; exp: WorkDetailExperience | null; stale: boolean } | null = null;
     /** P2 转场：星星阵列场景 + 它的 RT（原站 TransitionScene） */
     let starScene: ReturnType<typeof createStarTransitionScene> | null = null;
     /** 等纸页尺寸就绪后跳到 Contact（直链 / 从 Selected Work 进入 / 点导航） */
@@ -666,7 +764,185 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       hideHotspots();
     };
 
-    apiRef.current = { startAbout, switchToWork, jumpToHero, jumpToContact, jumpToAboutTop };
+    /**
+     * SPA URL 同步（不写 sessionStorage 的 boot 旗标）
+     *
+     * 功能：pushState + 派发 popstate，让 Root 的 pathname/hash 路由更新而**不卸载本体验**；
+     *      同一实例内的 /work/<slug> ↔ /#selected-work 切换不播 boot（原站客户端路由同语义）。
+     *
+     * 参数：
+     *  - url {string} 目标地址（同源绝对路径，可带 hash）
+     *
+     * 返回值：无
+     *
+     * 异常：无
+     *
+     * 注意事项：dispatch 是同步的，Root 会在本调用栈内重渲染；openProject/closeProject
+     *          自身的 projectActive/projectPending 门保证 mode effect 重复调用是幂等的。
+     */
+    const syncUrl = (url: string) => {
+      if (window.location.pathname + window.location.search + window.location.hash === url) return;
+      history.pushState(null, '', url);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    };
+
+    /**
+     * 打开项目子页（原站 `navigateToSubPage` + p7 ProjectScene 叠加）
+     *
+     * 功能：把详情页 ProjectScene 挂进主体验渲染器（嵌入模式），等首帧就绪后作为
+     *      subPage 纹理盖在胶片上，并按原站节奏做 30 帧预热 → spring 0→1 入场。
+     *
+     * 参数：
+     *  - uid     {string}  项目 slug（/work/<uid>）
+     *  - pushUrl {boolean} 是否同步 URL（点击进入 true；直链/路由进入 false）
+     *
+     * 返回值：无
+     *
+     * 异常：创建失败时回滚到胶片页并打印错误（不留半开状态）
+     *
+     * 注意事项：
+     *  - 胶片索引与项目序号反序（scene.ts：active = count-1-index），打开时先把胶片居中到该项目，
+     *    Close 后正好停在它上面（原站 Close 行为）
+     *  - 子页创建期间保持胶片可见、UI 淡出，不做黑场
+     */
+    /**
+     * 预建详情子页（悬停胶片时触发）
+     *
+     * 功能：把 `createWorkDetailExperience`（字体/uikit/缩略图）提前跑掉，点击时直接复用，
+     *      让「点击 → 起转场」没有 0.3~0.5s 的空白等待。
+     *
+     * 参数：
+     *  - uid {string} 目标项目 slug
+     *
+     * 返回值：无（结果存进 preload 单槽）
+     * 异常：创建失败时静默清空槽位（点击时再走正常创建路径）
+     * 注意事项：同一 uid 不重复创建；盘片翻页后只保留最新一个预建实例。
+     */
+    const ensurePreload = (uid: string) => {
+      if (!renderer || projectActive || projectPending) return;
+      if (preload?.uid === uid) return;
+      // 换目标：旧槽作废（已建好的实例立即释放；创建中的等 promise 完成时自行 dispose）
+      if (preload) {
+        preload.stale = true;
+        preload.exp?.dispose();
+        preload.exp = null;
+      }
+      const proj = findWorkProject(uid);
+      if (!proj) return;
+      const gen = projectGen;
+      const slot: { uid: string; promise: Promise<WorkDetailExperience | null>; exp: WorkDetailExperience | null; stale: boolean } = {
+        uid,
+        exp: null,
+        stale: false,
+        promise: Promise.resolve(null),
+      };
+      slot.promise = createWorkDetailExperience(host, proj, { renderer })
+        .then((exp) => {
+          if (disposed || gen !== projectGen || slot.stale) {
+            exp.dispose();
+            return null;
+          }
+          slot.exp = exp;
+          return exp;
+        })
+        .catch(() => null);
+      preload = slot;
+    };
+
+    const openProject = (uid: string, pushUrl: boolean, zoomReveal = false) => {
+      if (!st.ready || !renderer) return;
+      if (projectActive || projectPending) return;
+      const proj = findWorkProject(uid);
+      const idx = WORK_PROJECTS.findIndex((p) => p.uid === uid);
+      if (!proj || idx < 0) return;
+      resetWorkInput();
+      lockSnap(1e9);
+      // 胶片索引 = 项目序（titlePrism 按 SELECTED_PROJECTS[index] 直取）；
+      // 打开时先把胶片居中到该项目，Close 后正好停在它上面（原站 Close 行为）
+      work.index = idx;
+      work.dragPx = 0;
+      work.wheelAcc = 0;
+      projectPending = true;
+      projectClosing = false;
+      projectEntered = false;
+      projectZoomReveal = zoomReveal;
+      projectScrollPx = 0;
+      setViewState('work');
+      setUiVisibleState(false);
+      setThemeState('light');
+      hideHotspots();
+      /** 命中预建实例则直接复用 */
+      const slot = preload && preload.uid === uid ? preload : null;
+      if (slot) preload = null;
+      const gen = ++projectGen;
+      void (async () => {
+        try {
+          let exp: WorkDetailExperience | null = slot?.exp ?? null;
+          if (!exp && slot) exp = await slot.promise;
+          if (!exp) exp = await createWorkDetailExperience(host, proj, { renderer: renderer as THREE.WebGPURenderer });
+          if (disposed || gen !== projectGen || !st.ready) {
+            exp.dispose();
+            return;
+          }
+          projectExp?.dispose();
+          projectExp = exp;
+          projectPending = false;
+          projectActive = true;
+          projectWarmFrom = exp.getFrames();
+          projectWarmT0 = performance.now();
+          exp.setScrollTarget(projectScrollPx);
+          if (pushUrl) syncUrl(`/work/${uid}`);
+        } catch (err) {
+          projectPending = false;
+          snapLockUntil = 0;
+          // eslint-disable-next-line no-console
+          console.error('[WorkAbout] 项目子页创建失败：', err);
+        }
+      })();
+    };
+
+    /**
+     * 关闭项目子页（Close ✕ / Esc）
+     *
+     * 功能：spring 1→0 退场（相机 z 5→10、亮度 1→0.5），收敛后释放子页并回 `/#selected-work`；
+     *      胶片保持打开时居中的那个项目（原站实证行为）。
+     *
+     * 参数：无
+     * 返回值：无
+     * 异常：无
+     * 注意事项：创建未完成时直接取消（projectGen 递增使迟到的实例自行 dispose）。
+     */
+    const closeProject = (pushUrl = true) => {
+      if (projectClosing) return;
+      if (projectPending) {
+        projectPending = false;
+        projectGen++;
+        setViewState('work');
+        snapLockUntil = 0;
+        return;
+      }
+      if (!projectActive || !projectExp) return;
+      projectClosing = true;
+      const exp = projectExp;
+      exp.exit(() => {
+        if (disposed) return;
+        projectActive = false;
+        projectClosing = false;
+        projectExp = null;
+        exp.dispose();
+        snapLockUntil = 0;
+        setViewState('work');
+        setUiVisibleState(false);
+        setThemeState('light');
+        work.dragPx = 0;
+        work.pending = false;
+        work.dragging = false;
+        work.dragAxis = null;
+        if (pushUrl) syncUrl('/#selected-work');
+      });
+    };
+
+    apiRef.current = { startAbout, switchToWork, jumpToHero, jumpToContact, jumpToAboutTop, openProject, closeProject };
 
     // ---------- P2 导航跳转入口（navbar 点击统一走这里） ----------
     const navTargetS = (page: NavPage): number | null => {
@@ -721,11 +997,6 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (!st.ready) return;
       if (document.body.dataset.aboutMenu === '1') return;
       e.preventDefault();
-      if (pendingContact) return;
-      // P2 导航跳转期间锁滚动输入（原站 lenis.stop() 语义）
-      if (navNav) return;
-      // boot 弹簧收敛前锁滚动（与 bootInteractionUnlocked 同一意图）
-      if (!bootStore.springDone) return;
       let dx = e.deltaX;
       let dy = e.deltaY;
       // 原站 Lenis 1.3.3 的滚轮归一化：行模式 ×100/6，页模式 × 视口尺寸
@@ -736,6 +1007,20 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         dx *= window.innerWidth;
         dy *= window.innerHeight;
       }
+      // 子页（/work/<slug>）：滚轮驱动内容条横移（workDetailExperience 内部阻尼）
+      if (projectActive || projectPending) {
+        if (projectActive && projectExp) {
+          const maxPx = Math.max(0, (projectExp.getPageCount() - 1) * window.innerHeight);
+          projectScrollPx = clamp(projectScrollPx + dy, 0, maxPx);
+          projectExp.setScrollTarget(projectScrollPx);
+        }
+        return;
+      }
+      if (pendingContact) return;
+      // P2 导航跳转期间锁滚动输入（原站 lenis.stop() 语义）
+      if (navNav) return;
+      // boot 弹簧收敛前锁滚动（与 bootInteractionUnlocked 同一意图）
+      if (!bootStore.springDone) return;
 
       // 横向滚轮 = 胶片翻帧（film 段 scroll > 0.9 起生效，原站 FilmReel 同款手势）
       if (scrollNow() > 0.9 && Math.abs(dx) > Math.abs(dy)) {
@@ -767,10 +1052,38 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       mouse.y = 1 - (e.clientY / window.innerHeight) * 2;
       mouse.cssX = e.clientX;
       mouse.cssY = e.clientY;
+      // 悬停胶片中心 → 预建对应项目的详情子页（点击时零等待起转场）
+      if (!projectActive && !projectPending && scrollNow() > 0.9 && scrollNow() < 1.1) {
+        const inFilmHover =
+          Math.abs(e.clientX - window.innerWidth / 2) <= window.innerWidth * 0.3 &&
+          e.clientY >= window.innerHeight * 0.28 &&
+          e.clientY <= window.innerHeight * 0.92;
+        if (inFilmHover) {
+          const nn = SELECTED_PROJECTS.length;
+          const activeIdx = ((work.index % nn) + nn) % nn;
+          ensurePreload(WORK_PROJECTS[activeIdx].uid);
+        }
+      }
     };
 
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
+      // 子页打开：只接管 canvas 烘焙层的顶栏命中（Close / logo），其余拖拽/点击全部让位。
+      // 这里必须用 ui.hitTest（canvas 区域表），不能走 uiHit —— 后者会先命中已冻结的 navbar 表。
+      if (projectActive || projectPending) {
+        const hit = ui?.hitTest(e.clientX, e.clientY) ?? null;
+        if (hit === 'projectClose') {
+          e.preventDefault();
+          closeProject();
+        } else if (hit === 'projectLogo') {
+          // logo = 回首页（原站顶栏 logo 语义）：URL 交给导航跳转，
+          // 子页退场不再自行 push，避免两次 replaceState 互相覆盖
+          e.preventDefault();
+          closeProject(false);
+          navNavigate('hero');
+        }
+        return;
+      }
       if (navNav) return; // P2 跳转期间锁拖拽滚动
       if (!bootStore.springDone) return;
       // contact 段链接命中（3D 投影区域，优先于 canvas UI——原站 uikit 点击语义）
@@ -833,6 +1146,15 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             case 'hint':
               startAbout('scroll');
               break;
+            case 'viewProject': {
+              // 原站 projects-view：打开子页 /work/<slug>（同 canvas 叠加，不卸载 experience）
+              // 映射：标题/画格数据按 SELECTED_PROJECTS[index] 直取（titlePrism 同源），
+              // 不是 3D 场景内部 activeIndex 的反序（那只服务着色器画格编号）
+              const n = SELECTED_PROJECTS.length;
+              const activeIdx = ((work.index % n) + n) % n;
+              openProject(WORK_PROJECTS[activeIdx].uid, true, true);
+              break;
+            }
           }
           return;
         }
@@ -844,7 +1166,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       if (scrollNow() > 0.9) {
         // film 段：横拖翻帧 / 纵拖滚动轴（原件同款双意图判定）
         const yRatio = e.clientY / window.innerHeight;
-        if (yRatio < 0.15 || yRatio > 0.85) return;
+        if (yRatio < 0.18 || yRatio > 0.92) return;
         work.pending = true;
         work.dragging = false;
         work.dragAxis = null;
@@ -904,14 +1226,59 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         if (Math.abs(work.lastD) > 0.1 * window.innerWidth) {
           work.index += work.lastD > 0 ? -1 : 1;
         }
-      } else {
+        return;
+      }
+      if (work.dragging) {
         work.dragging = false;
         work.dragPx = 0;
+        return;
       }
+      // 未拖动 = 单击：胶片段点激活画格 → 打开详情子页（用户要求「点具体胶片内容」）
+      const cx = work.startX;
+      const cy = work.startY;
+      const inFilm =
+        Math.abs(cx - window.innerWidth / 2) <= window.innerWidth * 0.3 &&
+        cy >= window.innerHeight * 0.28 &&
+        cy <= window.innerHeight * 0.92;
+      if (inFilm && scrollNow() > 0.9 && scrollNow() < 1.1) {
+        const n = SELECTED_PROJECTS.length;
+        const activeIdx = ((work.index % n) + n) % n;
+        openProject(WORK_PROJECTS[activeIdx].uid, true, true);
+      }
+      work.dragPx = 0;
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!st.ready) return;
+      // 子页：Esc = Close，翻页键驱动内容条横移
+      if (projectActive || projectPending) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeProject();
+          return;
+        }
+        if (projectExp && !projectPending) {
+          const maxPx = Math.max(0, (projectExp.getPageCount() - 1) * window.innerHeight);
+          if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+            e.preventDefault();
+            projectScrollPx = clamp(projectScrollPx + window.innerHeight * 0.8, 0, maxPx);
+            projectExp.setScrollTarget(projectScrollPx);
+          } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+            e.preventDefault();
+            projectScrollPx = clamp(projectScrollPx - window.innerHeight * 0.8, 0, maxPx);
+            projectExp.setScrollTarget(projectScrollPx);
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            projectScrollPx = 0;
+            projectExp.setScrollTarget(0);
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            projectScrollPx = maxPx;
+            projectExp.setScrollTarget(maxPx);
+          }
+        }
+        return;
+      }
       if (navNav) return; // P2 跳转期间锁键盘滚动
       if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
       const aim = st.about;
@@ -954,6 +1321,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       shredder?.setSize(w, h);
       reveal?.setSize(w, h);
       tie?.setSize(w, h);
+      projectExp?.resize();
       rebuildRTs();
       if (paper && paper.mobile !== (window.innerWidth < 768)) void ensurePaper();
     };
@@ -1009,6 +1377,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       cleanups.push(reveal.dispose);
       cleanups.push(tie.dispose);
       // hero 段场景（boot 只在 #hero 首载播放；直链/回访 skipBoot）
+      // 非 hero/project 模式：bootStore 单例必须显式收敛（springDone=true），否则
+      // onPointerDown/wheel 的 springDone 门会锁死本页全部交互。
+      // project 硬加载由 <WorkDetailBootOverlay> 自己 reset/tick（与独立详情页同一套 BIOS），
+      // 所以这里不能抢先把 springDone 置真。
+      if (mode === 'work' || mode === 'about' || mode === 'contact') skipBoot();
       try {
         hero = createHeroScene(r, host, host.clientWidth, host.clientHeight, { playBoot: mode === 'hero' });
         cleanups.push(hero.dispose);
@@ -1187,7 +1560,7 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
 
           // ---- 视图切换与 hash 窗口（pageOffset 滞回：向下 0.9/2.0，向上 0.8/1.3）----
           // P2 跳转期间跳过：URL 已由 navNavigate 立即 replaceState，别覆盖成出发段 hash
-          if (!pendingContact && !navNav) {
+          if (!pendingContact && !navNav && !projectActive && !projectPending && modeRef.current !== 'project') {
             if (st.view === 'hero' && scroll >= HERO_PAGE_DOWN_S) setViewState('work');
             else if (st.view === 'work' && scroll >= PAGE_SWITCH_S) setViewState('about');
             else if (st.view === 'work' && scroll < HERO_PAGE_UP_S) setViewState('hero');
@@ -1210,7 +1583,11 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           }
 
           // projects UI 淡入淡出：uiPageOffset 窗口 [0.7, 2)，实际淡入 [0.7,0.9]、在蒙版前淡出 [1.1,1.3]
-          const swFade = smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
+          // 子页打开/创建期间：projects UI 强制淡出（原站 subPage 覆盖时 uikit 不画）
+          const projectOpen = projectActive || projectPending;
+          const swFade = projectOpen
+            ? 0
+            : smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
 
           // ---------- about 段时间轴（纸页/碎纸/reveal/tie/contact 共用的派生量） ----------
           // 页激活（原站 pageOffset.start = -0.9：contact 段提前 0.9 屏激活 stage/update/UI）
@@ -1357,19 +1734,34 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               mode: uiModeDamped,
               tieCopy: tieCopyOpacity,
               headerless: nav != null,
+              // 详情子页：canvas UI 只画子页顶栏（logo + Close），随页面一起过桶形畸变
+              projectOpen,
+              // projects 段激活项目 → 棱柱标题下绘制 View Project 入口行（原站 projects-view）
+              // 与 titlePrism / 点击映射同源：SELECTED_PROJECTS[index] 直取
+              projectIndex:
+                !st.contactActive && st.view === 'work' && stage !== 'tie'
+                  ? ((work.index % SELECTED_PROJECTS.length) + SELECTED_PROJECTS.length) % SELECTED_PROJECTS.length
+                  : undefined,
             });
+            (window as any).__ui = ui;
+            (window as any).__uiVisible = ui ? ui.visibleRegions() : 'UI-NULL';
             const uiModeTarget = st.theme === 'dark' ? 1 : 0;
             uiModeDamped += (uiModeTarget - uiModeDamped) * Math.min(1, dt * 8);
-            const uiTransTarget = st.uiVisible || st.view === 'hero' || st.view === 'work' ? 1 : 0;
-            uiTransitionDamped += (uiTransTarget - uiTransitionDamped) * Math.min(1, dt * 8);
+            // 子页打开时 UI 层转为「子页顶栏集」（draw 只画 logo + Close），仍需可见；
+            // 隐藏的只是胶片页 navbar 层（compose 的 navVisible=0）
+            const uiTransTarget = projectOpen || st.uiVisible || st.view === 'hero' || st.view === 'work' ? 1 : 0;
+            // 子页打开时 UI 以更快速率淡出（原站转场帧里 navbar/标题是渐隐而非瞬切）
+            const uiRate = projectOpen ? 14 : 8;
+            uiTransitionDamped += (uiTransTarget - uiTransitionDamped) * Math.min(1, dt * uiRate);
             if (ui) {
               const hit = uiHit(mouse.cssX, mouse.cssY);
               logoHoverDamped += ((hit === 'logo' ? 1 : 0) - logoHoverDamped) * Math.min(1, dt * 10);
               actionHoverDamped += ((hit === 'book' || hit === 'burger' ? 1 : 0) - actionHoverDamped) * Math.min(1, dt * 10);
             }
             // navbar uikit 层逐帧驱动（spring/菜单动画/镜像/双 RT 渲染）
+            // 子页打开时冻结 navbar 绘制：合成链的 uiTransition 已收敛到 0，旧纹理不可见
             navMenuT += ((menuOpen ? 1 : 0) - navMenuT) * Math.min(1, dt * 10);
-            if (nav) {
+            if (nav && !projectOpen) {
               await nav.update(
                 {
                   activeNav: st.contactActive
@@ -1389,6 +1781,24 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
               );
             }
 
+            // ---------- 项目子页逐帧推进（必须先于 film 渲染） ----------
+            // 画格蒙版按 screenUV 采样子页 grainFBO —— 若 grainFBO 在 film 之后才渲，
+            // WebGPU 侧「先采样后写入」的跨帧资源状态容易拿到空绑定（画格内全黑的根因之一）；
+            // 提前到 film 前即「先写后读」的常规 pass 顺序，画格内永远拿到本帧内容。
+            // 原站：子页 RT 就绪后先数 30 帧（onSubPageFrameRendered），再 animate(subPageTransition,1)。
+            // 这里退化条件用「30 帧 或 0.6s 墙钟」——SwiftShader 下一帧可能几百 ms，纯帧数会让入场迟滞。
+            if (projectActive && projectExp) {
+              await projectExp.frame(dt, time);
+              if (!projectEntered) {
+                const warmFrames = projectExp.getFrames() - projectWarmFrom;
+                if (warmFrames >= 30 || performance.now() - projectWarmT0 > 600) {
+                  projectEntered = true;
+                  // 点击入场：不做相机 z 飞入（页面缩放由胶片场景 camera.zoom 承担）
+                  projectExp.enter({ cameraFlight: !projectZoomReveal });
+                }
+              }
+            }
+
             // ---------- 逐页 RT 渲染（renderRange ≈ start − max(beforeStart, 转场 TL)，stale 尾部同原站） ----------
             // 依赖顺序：office → film（蒙版按屏幕坐标采样）/ about（折页下层）；contact → tie → reveal
             const dynEnd = shredStart + ENDING_SCREENS;
@@ -1403,16 +1813,28 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
             }
             if (filmRT && scroll < 2.0) {
               // 胶片场景逐帧推进（弹簧/图集上传/蒙版 uniform 都在 update 里）
+              const filmSpring = projectActive && projectExp ? Math.min(1, Math.max(0, projectExp.getSpring())) : 0;
               workScene.update(dt, time, {
                 mouseX: mouse.x,
                 mouseY: mouse.y,
                 selectedIndex: work.index,
                 dragPx: work.dragPx,
                 pageScroll: scroll,
-                exitProgress: mask,
+                // 子页开启时不用 projects→office 的 exit 蒙版
+                exitProgress: projectActive ? 0 : mask,
+                // 镜头推近：画格放大成遮罩；直链 boot 后直接满值（不走遮罩）
+                frameZoom: projectActive && projectExp
+                  ? (projectZoomReveal ? 1 + (PROJECT_FRAME_ZOOM - 1) * filmSpring : PROJECT_FRAME_ZOOM)
+                  : 1,
               });
               // 胶片蒙版：激活画格内按屏幕坐标混入 office 页 RT（原件 transitionTexture）
-              workScene.setTransitionTexture(mask > 0 && officeRT ? officeRT.texture : null);
+              workScene.setTransitionTexture(!projectActive && mask > 0 && officeRT ? officeRT.texture : null);
+              // 详情子页：整页按屏幕坐标采样、由激活画格当遮罩（与 office 同一机制）；
+              // 前 25% spring 内换入页面，其余行程只放大画格把页面「揭」满
+              workScene.setFrameTexture(projectActive && projectZoomReveal && projectExp ? projectExp.getTexture() : null);
+              workScene.setFrameProgress(
+                projectActive && projectZoomReveal ? Math.min(1, filmSpring * 4) : 0
+              );
               renderer.setRenderTarget(filmRT);
               await (renderer as any).renderAsync(workScene.scene, workScene.camera);
             }
@@ -1629,7 +2051,61 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                     : 0
               : 0;
             const pageEffects = resolvePageEffectsFor(pages, scroll);
+            // 子页激活时渐混到 projectPageEffectsConfig（原件详情页参数：bloom=0 / pow1.4 /
+            // sepia.1 / brightness1 / vignette0）；入场期间保持 projects 的 bloom/运动模糊，
+            // 否则胶片推近的辉光会突然消失（混合权重 = 入场 reveal）
             const bootActive = bootStore.phase === 'loading' || bootStore.phase === 'warmup';
+            // ---------- 项目子页逐帧：ProjectScene → GrainPass → subPageTexture ----------
+            // 原站：子页 RT 就绪后先数 30 帧（onSubPageFrameRendered），再 animate(subPageTransition,1)。
+            // 这里退化条件用「30 帧 或 0.6s 墙钟」——SwiftShader 下一帧可能几百 ms，纯帧数会让入场迟滞。
+            let subPageFrame: {
+              tex: THREE.Texture;
+              mix: number;
+              brightness: number;
+              lens: number;
+              border: number;
+              zoom: number;
+            } | null = null;
+            let mainZoom = 1;
+            if (projectActive && projectExp) {
+              // frame() 已在本帧开头（film 渲染前）推进过 —— 这里只读 spring 并算覆盖参数
+              /** 入场进度：点击进入用 spring（缩放+亮度+效果混合），直链 boot 后直接满值 */
+              const springNow = Math.min(1, Math.max(0, projectExp.getSpring()));
+              // 点击入场：详情页先通过「胶片格蒙版」显现，画格被推近到铺满屏幕后才交给
+              // subPage 全屏叠加（原站 subPageTransitionIsDone 后由合成链接管）。
+              // 关闭时反之：spring 掉到 0.985 以下立刻交回画格蒙版，页面随画格缩回。
+              const overlayMix = projectZoomReveal
+                ? (springNow > 0.985 ? 1 : 0)
+                : (projectClosing ? springNow : 1);
+              subPageFrame = {
+                tex: projectExp.getTexture(),
+                mix: overlayMix,
+                brightness: 1,
+                // 页面不再做中心小窗缩放：显现交给胶片格蒙版（画格自身带透视/弯曲）
+                zoom: 1,
+                lens: 0.16,
+                border: 0,
+              };
+              // 注意：这里**不再**做屏幕级缩放 —— 放大由胶片场景的 camera.zoom 承担，
+              // 否则会连画格里 1:1 采样的详情页一起放大，交接瞬间页面尺寸会跳变
+              projectSubMix = subPageFrame.mix;
+              projectSubBrightness = subPageFrame.brightness;
+              // 调试探针（CDP eval 用）：当前子页 spring / 合成混合 / 胶片推近
+              (window as any).__project = {
+                spring: +springNow.toFixed(3),
+                mix: overlayMix,
+                zoom: projectZoomReveal ? +(1 + (PROJECT_FRAME_ZOOM - 1) * springNow).toFixed(2) : PROJECT_FRAME_ZOOM,
+                closing: projectClosing,
+              };
+            }
+            /** 入场进度（0=胶片页效果，1=详情页效果）：与胶片推近同根 spring */
+            const projectReveal =
+              projectActive && projectExp
+                ? projectZoomReveal
+                  ? Math.min(1, Math.max(0, projectExp.getSpring()))
+                  : 1
+                : 0;
+            const composeEffects = projectActive ? blendEffects(pageEffects, PROJECT_PAGE_EFFECTS, projectReveal) : pageEffects;
             if (compose) {
               await compose.render(renderer, (hero ?? workScene).scene, (hero ?? workScene).camera, {
                 time,
@@ -1643,7 +2119,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                 sectionPage: idx,
                 transition: nextPage ? { t: tt, type: tType } : null,
                 navTransition: null, // 星星转场走画布 overlay（WebGPU RT 渲染不画内容，见 starTransitionScene 注释）
-                effects: pageEffects,
+                subPage: subPageFrame,
+                mainZoom,
+                effects: composeEffects,
                 ui: {
                   mode: uiModeDamped,
                   transition: uiTransitionDamped,
@@ -1652,6 +2130,8 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
                   border: ABLATE_UI_FLAT ? 0 : pageEffects.lensDistortionBorders,
                   logoHover: logoHoverDamped,
                   pageActionHover: actionHoverDamped,
+                  // 子页打开：胶片页 uikit 导航层隐藏（子页顶栏由 canvas 烘焙层单独绘制）
+                  navVisible: projectOpen ? 0 : 1,
                 },
               });
               // P2 星星转场 overlay：星星场景直渲画布（autoClear=false 叠在 compose 输出上）。
@@ -1753,6 +2233,20 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
         work,
         compose,
         lastTime: () => lastTime,
+        /** 项目子页探针（自动化验证用） */
+        project: () => ({
+          active: projectActive,
+          pending: projectPending,
+          closing: projectClosing,
+          entered: projectEntered,
+          spring: projectExp?.getSpring() ?? null,
+          frames: projectExp?.getFrames() ?? null,
+          pageCount: projectExp?.getPageCount() ?? null,
+          scrollPx: projectScrollPx,
+          subMix: projectSubMix,
+          subBrightness: projectSubBrightness,
+          debug: projectExp?.__debug() ?? null,
+        }),
       };
     })().catch((err) => {
       // eslint-disable-next-line no-console
@@ -1766,6 +2260,18 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
       work.wheelResetTimer !== null && window.clearTimeout(work.wheelResetTimer);
       for (const id of navTimers) window.clearTimeout(id);
       navNav = null;
+      // 子页资源：取消未完成的创建（代数自增）并释放已就绪实例
+      projectGen++;
+      projectExp?.dispose();
+      projectExp = null;
+      projectActive = false;
+      projectPending = false;
+      if (preload) {
+        preload.stale = true;
+        preload.exp?.dispose();
+        preload.exp = null;
+        preload = null;
+      }
       const probe = (window as unknown as { __workAboutProbe?: { renderer?: any } }).__workAboutProbe;
       probe?.renderer?.dispose?.();
       delete (window as unknown as { __workAboutProbe?: unknown }).__workAboutProbe;
@@ -1805,6 +2311,9 @@ export default function WorkAboutExperience({ mode }: { mode: RouteMode }) {
           （原件 uikit 路径，随场景一起过桶形畸变）；此处只留内容性覆盖层 */}
 
       <div ref={veilRef} className="ab-veil" aria-hidden="true" />
+
+      {/* /work/<slug> 硬加载 boot 屏（与独立详情页同一套 BIOS：bootStore 单例 + 视频缩略图进度） */}
+      {bootProject && !bootDone && <WorkDetailBootOverlay project={bootProject} onDone={() => setBootDone(true)} />}
 
       <a ref={hotspotRef} className="ab-hotspot" href={BOOK_URL} aria-label="Book a Call Today" style={{ display: 'none' }}>
         Book a Call Today

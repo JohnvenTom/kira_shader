@@ -95,7 +95,8 @@ export interface SelectedWorkSceneHandle {
    *  - pageScroll     原站主页面 scroll（屏；1.0=projects 页起点）。缺省按 1.05 摆位，
    *                   供 hero 页沿用现有画面；WorkAbout 传真实 scroll。
    *  - exitProgress   原站画格蒙版进度（projects.end−0.7 → +0.2，0..1）
-   */
+   *  - frameZoom      镜头推近倍数（详情子页入场：1 = 原位，≈3 = 激活画格铺满屏幕）
+  */
   update: (
     dt: number,
     time: number,
@@ -106,10 +107,20 @@ export interface SelectedWorkSceneHandle {
       dragPx?: number;
       pageScroll?: number;
       exitProgress?: number;
+      frameZoom?: number;
     }
   ) => void;
   /** office 场景纹理（raw，projects 页 shader 以屏幕坐标采样进激活画格） */
   setTransitionTexture: (texture: THREE.Texture | null) => void;
+  /**
+   * 详情子页纹理（胶片格蒙版，按画格自身 uv 采样）
+   *
+   * 说明：与 office 的 screenUV 采样不同 —— 详情页要「整页塞进胶片格」，
+   *      所以用画格内框 uv（f）采样；镜头推近时整格放大直到铺满屏幕。
+   */
+  setFrameTexture: (texture: THREE.Texture | null) => void;
+  /** 画格蒙版进度 0..1（0 = 胶片画面，1 = 详情页完全占据画格） */
+  setFrameProgress: (progress: number) => void;
   dispose: () => void;
 }
 
@@ -192,6 +203,11 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   const transitionPlaceholder = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   transitionPlaceholder.colorSpace = THREE.NoColorSpace;
   transitionPlaceholder.needsUpdate = true;
+  // 详情子页占位：必须与 transitionPlaceholder 分开实例 —— 两个 TextureNode 共用一个
+  // THREE.Texture 时 WebGPU 绑定表会复用同一 binding，后绑定的那个采样恒为黑
+  const framePlaceholder = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  framePlaceholder.colorSpace = THREE.NoColorSpace;
+  framePlaceholder.needsUpdate = true;
 
   // ---------- 胶片材质 ----------
   const u = {
@@ -210,6 +226,10 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     activeIndex: T.uniform(-1),
     /** 下一场景纹理（raw office），screenUV 采样 */
     transitionTexture: T.texture(transitionPlaceholder),
+    /** 详情子页纹理（胶片格蒙版，画格内框 uv 采样） */
+    frameTexture: T.texture(framePlaceholder),
+    /** 画格蒙版进度 0..1 */
+    frameProgress: T.uniform(0),
   };
 
   const reelMat = new THREE.MeshBasicNodeMaterial();
@@ -288,10 +308,25 @@ export function createSelectedWorkScene(width: number, height: number): Selected
       .and(u.exitProgress.greaterThan(0))
       .and(isActiveFrame);
     const withOffice = T.select(showOffice, T.mix(x, officeScreen, u.exitProgress), x);
+    // 详情子页：用**胶片格内框当遮罩**，页面本身按屏幕坐标采样（与 projects→office 的
+    // transitionTexture 同一机制）——
+    //  · 页面在遮罩里保持 1:1 屏幕尺度，画格/镜头推近时只是「窗口变大」，不是把整页拉伸进画格；
+    //  · 遮罩铺满屏幕的那一刻，格内画面与合成链的 subPage 全屏纹理完全重合，交接零跳变。
+    // 进度由合成层 spring 驱动：0 = 胶片画面，1 = 详情页完全占据画格
+    // TextureNode 的采样必须走 `.uv()`（T.texture() 只吃 THREE 纹理对象，传 TextureNode 会抛错）。
+    // 约定与 officeScreen 完全一致：RT 纹理由 TSL 依 isRenderTargetTexture 自动翻 V，
+    // 这里不再手动 flipY（图集诊断实证 screenUV 直采正立；手动叠加 flipY 会双重翻转）
+    const framePage = u.frameTexture.uv(T.screenUV).rgb;
+    const showFrame = uv.x.lessThan(0.35)
+      .and(u.frameProgress.greaterThan(0))
+      .and(isActiveFrame);
+    const withFrame = T.select(showFrame, T.mix(withOffice, framePage, u.frameProgress), withOffice);
     // 原件 `mix(_, 1, e·1.1)` / `mix(z, 0, e·1.1)`：不做 clamp，e=1 时会外推到纯白 / 负高光
-    const exitLight = u.exitProgress.mul(1.1);
-    const brightMix = T.mix(frameBrightness, T.float(1), u.exitProgress);
-    const shade = withOffice.mul(brightMix).toVar();
+    // 画格蒙版（详情页）也吃同一套「去风格化」权重：页面占满画格时亮度/光照归一、镜面高光消失
+    const flatT = T.max(u.exitProgress, u.frameProgress);
+    const exitLight = flatT.mul(1.1);
+    const brightMix = T.mix(frameBrightness, T.float(1), flatT);
+    const shade = withFrame.mul(brightMix).toVar();
 
     const border = h.lessThan(u.borderX)
       .or(h.greaterThan(T.oneMinus(u.borderX)))
@@ -430,6 +465,8 @@ export function createSelectedWorkScene(width: number, height: number): Selected
   /** 相机视差阻尼（原站 useSpringMouse spring(60,30)，跟 offset 语义 ±0.5） */
   const camMouse = createSpringMouse();
   let firstFrame = true;
+  /** 上一帧相机 zoom（只在变化时重算投影矩阵） */
+  let lastZoom = 1;
 
   const update: SelectedWorkSceneHandle['update'] = (dt, time, state) => {
     const dts = clamp(dt, 0.001, 0.05);
@@ -481,6 +518,14 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     // 原件 `.2 * mouseOffset.x` / `-r + .2 * mouseOffset.y`（offset=0.5−mouse01 ∈ ±0.5，spring 阻尼）
     camera.position.set(0.2 * camMouse.px, -r + 0.2 * camMouse.py, 5 - 5 * t);
     camera.lookAt(0, lookY, 0);
+    // 详情子页入场的镜头推近：调 camera.zoom（改投影矩阵、不改机位），
+    // 胶片格被放大成遮罩窗口；格内的详情页按 screenUV 采样，保持屏幕 1:1 尺度不变
+    const zoom = Math.max(0.1, state.frameZoom ?? 1);
+    if (Math.abs(zoom - lastZoom) > 1e-4) {
+      lastZoom = zoom;
+      camera.zoom = zoom;
+      camera.updateProjectionMatrix();
+    }
 
     u.exitProgress.value = state.exitProgress ?? 0;
     const active = ((PROJECT_COUNT - 1 - selectedIndex) % PROJECT_COUNT + PROJECT_COUNT) % PROJECT_COUNT;
@@ -496,6 +541,21 @@ export function createSelectedWorkScene(width: number, height: number): Selected
 
   const setTransitionTexture = (texture: THREE.Texture | null) => {
     u.transitionTexture.value = texture ?? transitionPlaceholder;
+  };
+
+  /** 详情子页纹理（胶片格蒙版）：页面按屏幕坐标采样、由激活画格的内框当遮罩 */
+  const setFrameTexture = (texture: THREE.Texture | null) => {
+    const next = texture ?? framePlaceholder;
+    if (next === u.frameTexture.value) return;
+    u.frameTexture.value = next;
+    // 占位是 rgba8 DataTexture，换成 rgba16f 的 RenderTarget 纹理后必须重建材质：
+    // three 的 WebGPU 绑定布局按纹理格式编译，不重建会一直按旧格式采样（恒为黑）
+    reelMat.needsUpdate = true;
+  };
+
+  /** 画格蒙版进度（0..1） */
+  const setFrameProgress = (progress: number) => {
+    u.frameProgress.value = progress;
   };
 
   const dispose = () => {
@@ -514,5 +574,5 @@ export function createSelectedWorkScene(width: number, height: number): Selected
     }
   };
 
-  return { scene, camera, setSize, update, setTransitionTexture, dispose };
+  return { scene, camera, setSize, update, setTransitionTexture, setFrameTexture, setFrameProgress, dispose };
 }

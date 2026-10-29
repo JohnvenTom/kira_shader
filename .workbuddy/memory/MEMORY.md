@@ -52,6 +52,11 @@
 - **全场景统一 spring(60,30) 阻尼**（src/work-about/springMouse.ts，半隐式欧拉）——原站 useSpringMouse 单一阻尼器：getMouseOffset()=0.5−mouse01 ∈ ±0.5。消费系数：hero 0.3·(1−u)/projects 0.2/contact 0.25/golden-tie lookAt 0.25/reveal lookAt 0.5/office rot 0.025（rot.y=(0.5−off.x)·0.025 原站就不对称）。NDC 入参换算=−0.5·NDC。
 - 已修：contact 原 ±0.25（2 倍超差）→±0.125；goldenTie/goldenTieReveal lookAt 方向反→已反向；所有场景阻尼从 8/s 指数/零阻尼统一为 spring。**单位链全程换算是对照原站系数的纪律**（NDC±1 vs offset±0.5 差 2 倍）。
 
+## /work/<slug> 详情页（2026-10-27 立项+RE 完成，待打样）
+- 原站无 /work 索引页（307→/）；11 个 /work/<slug> 详情页与 SELECTED_PROJECTS 一一对应。**整页=一块全屏 r3f canvas**（文字/媒体/按钮全 WebGL，DOM 仅滚动容器+a11y 镜像含真实 Continue <a>）。**demo 区 100% mux 视频纹理回放（含"交互产品"也是录屏，0 iframe/0 video tag）→"视频回放"=原站本体**。boot 每次硬导航都播→星星转场→页面；Close→/#selected-work 当前项目居中；入口=#selected-work 的 "View Project"；description 多段=字面"\n"分隔；字体 STIX Two Text。报告 docs/re-work-detail-report.md，证据 screenshots/re-work/。
+- 决策：路径路由 /work/<slug>（静态部署需 404.html 兜底+main.tsx 双模路由）；资产全量本地化 public/work-media/<slug>/；独立 lazy 路由页；打样 1 页→铺量。不编造四规则见 2026-10-27.md。
+- 环境坑：会话代理劫持 CDP——ab.mjs 须 `env -u http_proxy -u https_proxy`，curl 探活 9222 须 `--noproxy '*'`；Chrome headless 每 ~2.5 页 crash→每 3 页重启（PowerShell 按 kira-cdp-profile 过滤杀，勿误杀用户浏览器）。
+
 ## 既有问题备忘
 - 钢琴 HUD "三角面 0k" 计数没接对数据源（显示 bug，未修）。
 - 磁带页 post.js 与钢琴页旧配置同款（共享深度+autoClear+MSAA）隐患，待统一修复。

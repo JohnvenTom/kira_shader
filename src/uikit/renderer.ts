@@ -48,6 +48,8 @@ interface NodeRecord {
   mesh: THREE.Mesh | null;
   uniforms: PanelMaterialUniforms | null;
   mapUrl: string | null;
+  /** mesh 槽位（__meshSlot：宿主外部 mesh，renderer 只负责摆位） */
+  slot: { mesh: THREE.Mesh } | null;
   /** 文本渲染状态（__text 元素） */
   text: TextState | null;
   relativeCenter: [number, number];
@@ -98,6 +100,7 @@ export class UIKitRenderer {
       mesh: null,
       uniforms: null,
       mapUrl: null,
+      slot: null,
       text: null,
       relativeCenter: [0, 0],
       globalMatrix: new THREE.Matrix4(),
@@ -106,6 +109,18 @@ export class UIKitRenderer {
     };
     this.records.set(el, rec);
 
+    // mesh 槽位（uF/nf 模式）：宿主 mesh 挂 rootObject，updateRecursive 摆位
+    if (el.__meshSlot != null) {
+      const host = el.__meshSlot.mesh;
+      host.matrixAutoUpdate = false;
+      host.frustumCulled = false;
+      host.renderOrder = (el.style.renderOrder as number) ?? this.preorderCounter++;
+      const mat = host.material as THREE.Material;
+      mat.depthTest = el.style.depthTest ?? false;
+      mat.depthWrite = false;
+      rec.slot = { mesh: host };
+      this.rootObject.add(host);
+    } else {
     const isText = el.__textResolved != null || el.__text != null;
     const imageUrl = el.__image?.url ?? (typeof el.style.map === 'string' ? el.style.map : null);
 
@@ -147,6 +162,7 @@ export class UIKitRenderer {
         lastPropsKey: '',
       };
     }
+    } // else (非 meshSlot)
 
     for (const child of el.children) this.buildRecord(child, rec);
     return rec;
@@ -204,7 +220,13 @@ export class UIKitRenderer {
     const contentH = Math.max(0, h - padT - padB - bordT - bordB);
 
     // ---- 面板 ----
-    if (rec.mesh != null && rec.uniforms != null) {
+    if (rec.slot != null) {
+      // mesh 槽位：面板矩阵直接给宿主 mesh（原站 uF absolute inset0 → nf 铺满）
+      rec.panelMatrix.copy(_m4b.makeScale(w * ps, h * ps, 1)).premultiply(rec.globalMatrix);
+      rec.slot.mesh.matrix.copy(rec.panelMatrix);
+      rec.slot.mesh.matrixWorldNeedsUpdate = true;
+      rec.slot.mesh.visible = displayed;
+    } else if (rec.mesh != null && rec.uniforms != null) {
       rec.panelMatrix.copy(_m4b.makeScale(w * ps, h * ps, 1)).premultiply(rec.globalMatrix);
       rec.mesh.matrix.copy(rec.panelMatrix);
       rec.mesh.matrixWorldNeedsUpdate = true;
@@ -471,6 +493,11 @@ export class UIKitRenderer {
             if (s != null && typeof s !== 'number') (s as GlyphInstance).hide();
           }
         }
+      }
+      if (rec.slot != null) {
+        // 槽位宿主 mesh 的材质/几何归场景代码所有，这里只摘除
+        this.rootObject.remove(rec.slot.mesh);
+        continue;
       }
       if (rec.mesh != null) {
         this.rootObject.remove(rec.mesh);
