@@ -814,7 +814,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
      *    Close 后正好停在它上面（原站 Close 行为）
      *  - 子页创建期间保持胶片可见、UI 淡出，不做黑场
      */
-    const openProject = (uid: string, pushUrl: boolean, zoomReveal = false) => {
+    const openProject = (uid: string, pushUrl: boolean, zoomReveal = false, syncLoading = false) => {
       if (!st.ready || !renderer) return;
       if (projectActive || projectPending) return;
       const proj = findWorkProject(uid);
@@ -837,9 +837,10 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       setThemeState('light');
       hideHotspots();
       // 原站手感：不做任何后台预建（拖动全程零冻结），点击后即时创建，
-      // 由底部「✳ Loading work...」提示掩盖等待（flushSync 保证提示立即上屏——
-      // 否则创建冻结结束前 React 批处理不会渲染，提示会错过整个等待窗口）
-      flushSync(() => setProjectLoading(true));
+      // 由底部「✳ Loading work...」提示掩盖等待。flushSync 仅在用户手势同步上下文
+      // 有效（点击路径传参开启）；React effect 内（直链）调用会警告且无效，用普通 setState。
+      if (syncLoading) flushSync(() => setProjectLoading(true));
+      else setProjectLoading(true);
       const gen = ++projectGen;
       void (async () => {
         try {
@@ -1108,7 +1109,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               // 不是 3D 场景内部 activeIndex 的反序（那只服务着色器画格编号）
               const n = SELECTED_PROJECTS.length;
               const activeIdx = ((work.index % n) + n) % n;
-              openProject(WORK_PROJECTS[activeIdx].uid, true, true);
+              openProject(WORK_PROJECTS[activeIdx].uid, true, true, true);
               break;
             }
           }
@@ -1199,7 +1200,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       if (inFilm && scrollNow() > 0.9 && scrollNow() < 1.1) {
         const n = SELECTED_PROJECTS.length;
         const activeIdx = ((work.index % n) + n) % n;
-        openProject(WORK_PROJECTS[activeIdx].uid, true, true);
+        openProject(WORK_PROJECTS[activeIdx].uid, true, true, true);
       }
       work.dragPx = 0;
     };
