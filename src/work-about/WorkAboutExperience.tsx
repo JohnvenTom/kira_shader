@@ -2038,12 +2038,13 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               };
               projectSubMix = subPageFrame.mix;
               projectSubBrightness = subPageFrame.brightness;
-              // 调试探针（CDP eval 用）：当前子页 spring / 合成混合
+              // 调试探针（CDP eval 用）：当前子页 spring / 合成混合 + 子页体验句柄（布局对账）
               (window as any).__project = {
                 spring: +springNow.toFixed(3),
                 mix: +overlayMix.toFixed(3),
                 closing: projectClosing,
               };
+              (window as any).__projectExp = projectExp;
             }
             /** 入场进度（0=胶片页效果，1=详情页效果）：与转场同根 spring */
             const projectReveal =

@@ -48,7 +48,7 @@ interface CardState {
   playbackId: string;
   preloadVideo: boolean;
   /** 卡尺寸约束（视频比例就绪后重算实际宽高用） */
-  layout: { heightPx: number; maxWPx?: number };
+  layout: { heightPx: number };
   handle: MuxVideoHandle | null;
   loading: Promise<MuxVideoHandle | null> | null;
   visible: boolean;
@@ -124,19 +124,15 @@ export async function createWorkDetailExperience(
     UIElement.text(text, { font: opts.font, fontSize: opts.fontSize, lineHeight: opts.lineHeight, textAlign: opts.textAlign }, style);
 
   /** 媒体卡（p1）：uk(aspectRatio) → mesh 槽位（TSL SDF 材质 plane）
-   *  - ownerUid  缩略图归属项目（Next 卡用下一项目的媒体）
-   *  - heightPx  卡高上限 px（载入视频真实比例后按 maxWPx 约束算最终宽高——
-   *              原站面板尺寸由视频比例决定，横视频不撑爆文字列） */
-  function buildCard(playbackId: string, preloadVideo: boolean, ownerUid: string, heightPx: number, maxWPx?: number): UIElement {
+   *  - ownerUid  缩略图归属项目（/work-media/<uid>/<id>-thumb.webp）
+   *  - heightPx  卡高（= 内层满高）；宽度 = 高 × 视频真实比例（原站无宽约束） */
+  function buildCard(playbackId: string, preloadVideo: boolean, ownerUid: string, heightPx: number): UIElement {
     const aspect = MEDIA_CARD.defaultAspect;
     const thumbUrl = `/work-media/${ownerUid}/${playbackId}-thumb.webp`;
-    // 实际尺寸：高上限 + 可选宽上限，保持视频比例（原站同款——面板宽高随媒体比例）
+    // 实际尺寸：高固定、宽随比例（原站同款——面板宽高随媒体比例）
     const applySize = (a: number): void => {
-      let w = heightPx * a;
-      let h = heightPx;
-      if (maxWPx && w > maxWPx) { w = maxWPx; h = w / a; }
-      el.style.width = Math.round(w);
-      el.style.height = Math.round(h);
+      el.style.width = Math.round(heightPx * a);
+      el.style.height = Math.round(heightPx);
     };
     new THREE.TextureLoader().load(thumbUrl, (t) => {
       t.colorSpace = THREE.SRGBColorSpace;
@@ -146,11 +142,13 @@ export async function createWorkDetailExperience(
       applySize(a);
       relayout();
     });
-    const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-    white.needsUpdate = true;
+    // 占位纹理：纸色（原站缩略图预载后才建卡；本地异步加载——缺图时兜底显示纸色
+    // 而非纯白，避免颗粒 pass 把纯白映射成比纸面更亮的白块）
+    const placeholder = new THREE.DataTexture(new Uint8Array([250, 250, 242, 255]), 1, 1);
+    placeholder.needsUpdate = true;
     // TSL uniform 节点（r169 无 uniformTexture → N.texture(tex) 节点 .value 可换）
-    const thumbNode = N.texture(white, N.uv());
-    const videoNode = N.texture(white, N.uv());
+    const thumbNode = N.texture(placeholder, N.uv());
+    const videoNode = N.texture(placeholder, N.uv());
     const u = {
       uImageOpacity: N.uniform(1),
       uVideoOpacity: N.uniform(0),
@@ -198,7 +196,7 @@ export async function createWorkDetailExperience(
       u,
       playbackId,
       preloadVideo,
-      layout: { heightPx, maxWPx },
+      layout: { heightPx },
       handle: null,
       loading: null,
       visible: false,
@@ -219,12 +217,13 @@ export async function createWorkDetailExperience(
     const vwPx = host.clientWidth;
     const vhPx = host.clientHeight;
     const innerMaxH = Math.min(CONTENT.innerMaxHeightCap, vhPx - 200);
-    const colW = Math.min(CONTENT.textColumn.width, Math.round(vwPx * 0.45));
-    const titleFs = Math.max(56, Math.round(CONTENT.textColumn.title.lg.fontSize * (colW / CONTENT.textColumn.width)));
+    // 文字列内容约束：原站 uP maxWidth:"80%" —— 断行实测对应 750 列的 80%（=600px，
+    // subtitle 一行放下、desc 断行点与原站一致；按内容宽 658 算 526 会多换行）
+    const textMaxW = Math.round(CONTENT.textColumn.width * CONTENT.textColumn.subtitle.maxWidthPct);
 
-    // 文字块
+    // 文字块（bundle 字面值：width 750 固定、flexShrink 0，小视口下溢出由内容条吸收）
     const textCol = UIElement.container({
-      width: colW,
+      width: CONTENT.textColumn.width,
       height: '100%',
       paddingLeft: CONTENT.textColumn.paddingLeft,
       paddingRight: CONTENT.textColumn.paddingRight,
@@ -233,10 +232,19 @@ export async function createWorkDetailExperience(
       justifyContent: 'center',
       flexShrink: 0,
     });
+    // 标题（bundle：58/58px，sm 64，lg 100——断点字号，非列宽缩放）
     const titleEl = T(project.title, {
       font: regular,
-      fontSize: titleFs,
-      lineHeight: `${titleFs}px`,
+      fontSize: {
+        base: CONTENT.textColumn.title.fontSize,
+        sm: CONTENT.textColumn.title.sm.fontSize,
+        lg: CONTENT.textColumn.title.lg.fontSize,
+      },
+      lineHeight: {
+        base: `${CONTENT.textColumn.title.lineHeight}px`,
+        sm: `${CONTENT.textColumn.title.sm.lineHeight}px`,
+        lg: `${CONTENT.textColumn.title.lg.lineHeight}px`,
+      },
     }, {});
     titleEl0 = titleEl;
     textCol.add(titleEl);
@@ -244,15 +252,16 @@ export async function createWorkDetailExperience(
       T(
         project.collaborator ? `${project.subtitle} with ${project.collaborator}` : project.subtitle,
         { font: regular, fontSize: { base: CONTENT.textColumn.subtitle.fontSize, lg: CONTENT.textColumn.subtitle.lg.fontSize } },
-        { marginTop: 0, maxWidth: 600 },
+        { marginTop: 0, maxWidth: textMaxW },
       ),
     );
     const desc = UIElement.container({
       gap: CONTENT.textColumn.desc.gap,
-      marginTop: CONTENT.textColumn.desc.marginTop,
+      // uikit margin 不走断点解析 → 取 lg 档字面值（桌面 1:1）
+      marginTop: CONTENT.textColumn.desc.lg.marginTop,
       display: 'flex',
       flexDirection: 'column',
-      maxWidth: 600,
+      maxWidth: textMaxW,
     });
     for (const p of project.descriptionParagraphs) {
       desc.add(
@@ -264,33 +273,45 @@ export async function createWorkDetailExperience(
       );
     }
     textCol.add(desc);
+    // Visit site 行（u5 规格：24px 下划线文字 + 右侧外链图标；uikit 无 textDecoration，
+    // 下划线用 borderBottomWidth 2 模拟，颜色同文字）
     const visitRow = UIElement.container({
       width: 'auto',
-      marginTop: CONTENT.textColumn.visitRow.marginTop,
+      // 原站 lg 档 marginTop 32（uikit margin 仅数值 → 取桌面值）
+      marginTop: 32,
       flexDirection: 'row',
-      alignItems: 'flex-start',
+      alignItems: 'center',
+      gap: 8,
     });
     if (project.siteLink) {
-      visitRow.add(
-        T(`Visit site ↗`, { font: regular, fontSize: 24, lineHeight: '24px' }, { marginTop: 12 }),
-      );
+      // 下划线画在容器上（text 元素无 panel mesh，borderBottom 不渲染）
+      const visitText = UIElement.container({
+        borderBottomWidth: 2,
+        borderColor: CONTENT.textColor,
+        paddingBottom: 2,
+      });
+      visitText.add(T(`Visit site`, { font: regular, fontSize: 24, lineHeight: '24px' }, {}));
+      visitRow.add(visitText);
+      visitRow.add(UIElement.image(20, 1, {}, '/textures/icons/external_link.svg'));
     }
     textCol.add(visitRow);
     textRootEl = textCol;
 
-    // 主 mux 面板（首屏右缘）：大卡 ~81% 视口高
-    const mainCard = buildCard(project.muxPlaybackId, true, project.uid, Math.round(innerMaxH * CONTENT.mediaCard.heightVh), Math.round(vwPx * CONTENT.mediaCard.maxWVw));
+    // 主 mux 面板（首屏右缘）+ 媒体条：卡高 = 内层满高（原站 p2 height:100%、p1 aspect 定宽，
+    // 宽度完全由视频真实比例决定——原站无最大宽约束）
+    const mainCard = buildCard(project.muxPlaybackId, true, project.uid, innerMaxH);
 
     // 媒体条：大卡横排（卡按 mux_playback_id 去重）
-    const mediaStrip = UIElement.container({ flexDirection: 'row', gap: CONTENT.mediaStrip.gap, flexShrink: 0, height: Math.round(innerMaxH * CONTENT.mediaCard.heightVh), alignItems: 'center' });
+    const mediaStrip = UIElement.container({ flexDirection: 'row', gap: CONTENT.mediaStrip.gap, flexShrink: 0, height: innerMaxH, alignItems: 'center' });
     const seen = new Set<string>();
     project.projectMedia.forEach((id) => {
       if (seen.has(id)) return;
       seen.add(id);
-      mediaStrip.add(buildCard(id, false, project.uid, Math.round(innerMaxH * CONTENT.mediaCard.heightVh), Math.round(vwPx * CONTENT.mediaCard.maxWVw)));
+      mediaStrip.add(buildCard(id, false, project.uid, innerMaxH));
     });
 
-    // Next Project 面板（pq 规格，横条尾段）：左媒体预览 + 右文字列（origin-next 实证横排）
+    // Next Project 面板（pq 规格 + son-2 实拍）：居中文字列——下划线 label / 大标题(medium) /
+    // 副标题 / Continue 黑按钮；**无左侧媒体预览卡**（媒体大卡属当前项目媒体流，勿混淆）
     const nx = nextWorkProject(project.uid);
     continueTargetUid = nx.uid;
     const panel = UIElement.container({
@@ -298,52 +319,54 @@ export async function createWorkDetailExperience(
       height: '100%',
       paddingLeft: CONTENT.nextPanel.paddingLeft,
       paddingRight: CONTENT.nextPanel.paddingRight,
-      flexDirection: 'row',
-      flexShrink: 0,
-      alignItems: 'center',
-      gap: 40,
-    });
-    // 左媒体预览（下一项目主视频/缩略图）
-    panel.add(buildCard(nx.muxPlaybackId, false, nx.uid, Math.round(innerMaxH * CONTENT.nextPanel.previewHeightVh), Math.round(vwPx * CONTENT.nextPanel.previewMaxWVw)));
-    const nextText = UIElement.container({
       flexDirection: 'column',
       flexShrink: 0,
-      maxWidth: 360,
+      alignItems: 'center',
+      justifyContent: 'center',
     });
-    const labelRow = UIElement.container({
-      borderColor: CONTENT.nextPanel.divider,
+    // label 下划线画在包裹容器上（text 元素无 panel mesh，borderBottom 不渲染）
+    const labelWrap = UIElement.container({
       borderBottomWidth: 1,
+      borderColor: CONTENT.nextPanel.divider,
       paddingBottom: 8,
+      // uikit margin 仅数值 → 取 lg 档字面值
+      marginBottom: CONTENT.nextPanel.label.lg.marginBottom,
     });
-    labelRow.add(T('Next Project', { font: regular, fontSize: CONTENT.nextPanel.label.fontSize, lineHeight: `${CONTENT.nextPanel.label.lineHeight}px` }, { marginBottom: CONTENT.nextPanel.label.marginBottom }));
-    nextText.add(labelRow);
-    nextText.add(
+    labelWrap.add(T('Next Project', {
+      font: regular,
+      fontSize: { base: CONTENT.nextPanel.label.fontSize, lg: CONTENT.nextPanel.label.lg.fontSize },
+      lineHeight: { base: `${CONTENT.nextPanel.label.lineHeight}px`, lg: `${CONTENT.nextPanel.label.lg.lineHeight}px` },
+      textAlign: 'center',
+    }, {}));
+    panel.add(labelWrap);
+    panel.add(
       T(nx.title, {
         font: medium,
         fontSize: { base: CONTENT.nextPanel.title.fontSize, md: CONTENT.nextPanel.title.md.fontSize, lg: CONTENT.nextPanel.title.lg.fontSize },
         lineHeight: { base: `${CONTENT.nextPanel.title.lineHeight}px`, md: `${CONTENT.nextPanel.title.md.lineHeight}px`, lg: `${CONTENT.nextPanel.title.lg.lineHeight}px` },
-      }, { marginTop: 32 }),
+        textAlign: 'center',
+      }, { marginTop: CONTENT.nextPanel.title.lg.marginTop }),
     );
-    nextText.add(
+    panel.add(
       T(nx.collaborator ? `${nx.subtitle} with ${nx.collaborator}` : nx.subtitle, {
         font: regular,
         fontSize: CONTENT.nextPanel.subtitle.fontSize,
         lineHeight: `${CONTENT.nextPanel.subtitle.lineHeight}px`,
+        textAlign: 'center',
       }, { marginTop: 16 }),
     );
-    // Continue（origin-next 实证：黑色实心按钮；点击 = 原站 <a href> 硬导航语义，重播 boot）
+    // Continue（son-2 实拍：黑色实心圆角按钮 ~122×42，白字箭头；点击 = 原站 <a href> 硬导航语义）
     const btn = UIElement.container({
       backgroundColor: '#1a1918',
-      borderRadius: 8,
-      width: 111,
-      height: 46,
-      marginTop: 40,
+      borderRadius: 4,
+      width: 122,
+      height: 42,
+      marginTop: 32,
       alignItems: 'center',
       justifyContent: 'center',
     });
-    btn.add(T('Continue →', { font: regular, fontSize: 15, lineHeight: '15px', textAlign: 'center' }, { color: '#f4f1e8' }));
-    nextText.add(btn);
-    panel.add(nextText);
+    btn.add(T('Continue →', { font: regular, fontSize: 16, lineHeight: '16px', textAlign: 'center' }, { color: '#f4f1e8' }));
+    panel.add(btn);
     continueBtnEl = btn;
 
     // 内层（行）：[文字块 | 主面板 | 媒体条 | Next 面板]
@@ -372,8 +395,11 @@ export async function createWorkDetailExperience(
 
   // ---------- 场景组装 ----------
   const contentScene = new THREE.Scene();
+  // 背景板（原站 nf 50×50 @ z=-10）：本地相机沿 X 行程可达 ~5 视口宽（≈57 世界单位），
+  // 50 宽平面右缘（x=25）会进入视锥——板外区域经颗粒 pass 映射成比纸面更亮的白带，
+  // 故本地加宽到 600 覆盖全部行程（颜色不变，视觉与原站 50×50 等价）
   const bg = new THREE.Mesh(
-    new THREE.PlaneGeometry(50, 50),
+    new THREE.PlaneGeometry(600, 50),
     new THREE.MeshBasicNodeMaterial({ color: CONTENT.backgroundColor }),
   );
   bg.position.set(0, 0, -10);
@@ -398,8 +424,8 @@ export async function createWorkDetailExperience(
   uikit.mount(treeRoot);
   uikit.update();
 
-  /** 滚动上限（视口数，横向语义）：滚到底时尾段 Next 面板完整可见——
-   *  内容右缘停靠在视口右缘内一个面板宽处（面板 800px + 右 padding，窄屏自适应）。 */
+  /** 滚动上限（视口数，横向语义）：滚到底时内容右缘对齐视口右缘（son-2 实测：该状态下
+   *  Next 面板中心停在视口 ~70% 处、左侧仍见媒体流尾卡——不加额外停靠偏移） */
   function computeProgressMax(): number {
     let right = 0;
     for (const c of treeRoot.children) {
@@ -412,8 +438,7 @@ export async function createWorkDetailExperience(
       walk(c);
     }
     const contentRightWorld = (right + CONTENT.rootPaddingRight) * (vhWorld / host.clientHeight);
-    const dockPx = Math.min(0.7 * host.clientWidth, CONTENT.nextPanel.width + CONTENT.rootPaddingRight);
-    return Math.max(0.05, contentRightWorld / vwWorld - dockPx / host.clientWidth);
+    return Math.max(0.05, contentRightWorld / vwWorld);
   }
   let pageCount = computeProgressMax();
 
@@ -643,12 +668,9 @@ export async function createWorkDetailExperience(
               h.aspect.then((a) => {
                 card.u.uAspectRatio.value = a;
                 card.el.style.aspectRatio = a;
-                // 视频真实比例就绪 → 按卡的高/宽约束重算实际尺寸
-                let w = card.layout.heightPx * a;
-                let h = card.layout.heightPx;
-                if (card.layout.maxWPx && w > card.layout.maxWPx) { w = card.layout.maxWPx; h = w / a; }
-                card.el.style.width = Math.round(w);
-                card.el.style.height = Math.round(h);
+                // 视频真实比例就绪 → 高固定、宽随比例重算实际尺寸
+                card.el.style.width = Math.round(card.layout.heightPx * a);
+                card.el.style.height = Math.round(card.layout.heightPx);
                 relayout();
               });
             }
@@ -738,8 +760,9 @@ export async function createWorkDetailExperience(
     gl,
     frame,
     setScrollTarget: (px: number) => { scroll.target = px; },
-    /** 屏数 = max 相机视口数 + 1（宿主 maxScroll = (屏数−1)·vh 反解出滚动上限） */
-    getPageCount: () => pageCount + 1,
+    /** 屏数（原站语义：pageCount = 内容宽/视口宽，camera.x = t×vw, t ∈ [0, pageCount-1]
+     *  ——宿主 maxScroll = (pageCount−1)·vh，滚到底内容右缘贴视口右缘） */
+    getPageCount: () => pageCount,
     enter: (opts) => {
       cameraFlight = opts?.cameraFlight ?? true;
       if (!cameraFlight) {
@@ -800,6 +823,14 @@ export async function createWorkDetailExperience(
       titleSize: titleEl0?.size ?? null,
       textColSize: textRootEl?.size ?? null,
       innerSize: treeRoot.children[0]?.size ?? null,
+      /** 布局探针：各段实际尺寸 + 根定位 + 相机（横向滚动对账用） */
+      segmentSizes: (() => {
+        const inner = treeRoot.children[0];
+        return (inner?.children ?? []).map((c: any) => ({ w: c.size.width, h: c.size.height }));
+      })(),
+      rootPos: { x: uikitRoot.position.x, y: uikitRoot.position.y },
+      cameraX: camera.position.x,
+      vwWorld,
       pageCount,
       scroll: { ...scroll },
       /** 相机 z（入场 spring 收敛应为 baseZ=5，初值 enterZ=10） */

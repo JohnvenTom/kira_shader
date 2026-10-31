@@ -70,23 +70,20 @@ export const CONTENT = {
     desc: { fontSize: 16, lineHeight: 24, gap: 20, marginTop: 16, lg: { fontSize: 20, lineHeight: 28, marginTop: 32 } },
     visitRow: { marginTop: 20 },
   },
-  /** 媒体大卡（2026-10-30 调整）：原站横条里媒体/面板卡占大半视口（s35 实拍近满屏），
-   *  旧版 52% 视口高偏小——高提到 81% 上限、宽上限 0.55 屏，比例由视频真实比例决定 */
-  mediaCard: {
-    heightVh: 0.81,
-    maxWVw: 0.55,
-  },
   mediaStrip: { gap: 32 },
   nextPanel: {
     width: 800,
     paddingLeft: 72,
     paddingRight: 28,
-    label: { fontSize: 20, lineHeight: 20, marginBottom: -8 },
+    label: {
+      fontSize: 20,
+      lineHeight: 20,
+      marginBottom: -8,
+      lg: { fontSize: 30, lineHeight: 30, marginBottom: -10 },
+    },
     divider: '#444',
     title: { fontSize: 60, lineHeight: 60, md: { fontSize: 72, lineHeight: 72 }, lg: { fontSize: 100, lineHeight: 100, marginTop: 46 }, marginTop: 32 },
     subtitle: { fontSize: 32, lineHeight: 32 },
-    previewHeightVh: 0.5,
-    previewMaxWVw: 0.4,
   },
 } as const;
 
