@@ -13,6 +13,9 @@ export interface MuxVideoHandle {
   texture: THREE.VideoTexture;
   /** 实测宽比（videoWidth/videoHeight；元数据就绪后解析） */
   aspect: Promise<number>;
+  /** 首帧就绪（readyState ≥ 2 / loadeddata）——挂 VideoTexture 前必须等到它：
+   *  空帧视频纹理会让 object bindGroup 校验失效，整条渲染指令被 WebGPU 静默丢弃 */
+  ready: Promise<void>;
   play: () => void;
   pause: () => void;
   dispose: () => void;
@@ -70,10 +73,15 @@ function finalize(video: HTMLVideoElement): MuxVideoHandle {
     if (video.videoWidth > 0 && video.videoHeight > 0) resolve(video.videoWidth / video.videoHeight);
     else video.addEventListener('loadeddata', () => resolve(video.videoWidth / video.videoHeight), { once: true });
   });
+  const ready = new Promise<void>((resolve) => {
+    if (video.readyState >= 2) resolve();
+    else video.addEventListener('loadeddata', () => resolve(), { once: true });
+  });
   return {
     video,
     texture,
     aspect,
+    ready,
     play: () => {
       video.play().catch(() => {});
     },

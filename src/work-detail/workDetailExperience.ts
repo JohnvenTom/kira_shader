@@ -51,6 +51,10 @@ interface CardState {
   layout: { heightPx: number };
   handle: MuxVideoHandle | null;
   loading: Promise<MuxVideoHandle | null> | null;
+  /** VideoTexture 已挂载（首帧就绪后）——之前 crossfade 保持缩略图，避免淡入到占位色 */
+  videoAttached: boolean;
+  /** 实例已释放（异步回调里据此放弃挂载） */
+  disposed: boolean;
   visible: boolean;
   fade: number;
 }
@@ -67,8 +71,9 @@ export interface WorkDetailExperience {
   getPageCount: () => number;
   /** subPageTransition 入场（挂载后调一次：spring 0→1）
    *  - cameraFlight: true = 相机 z 10→5 飞入（直链 boot 后揭示用）
-   *                  false = 相机固定在 baseZ（胶片点击入场由合成链做页面缩放） */
-  enter: (opts?: { cameraFlight?: boolean }) => void;
+   *                  false = 相机固定在 baseZ（胶片点击入场由合成链做页面缩放）
+   *  - instant: true = 跳过动画直接落位（Continue 换页的新实例用） */
+  enter: (opts?: { cameraFlight?: boolean; instant?: boolean }) => void;
   /** subPageTransition 退场（Close 前调：spring →0，onDone 回调） */
   exit: (onDone: () => void) => void;
   resize: () => void;
@@ -87,6 +92,9 @@ export interface WorkDetailExperience {
 export interface WorkDetailEmbedOptions {
   /** 主体验渲染器；提供后本模块不自建 renderer / compose，只负责子页场景与纹理 */
   renderer?: THREE.WebGPURenderer;
+  /** Continue 卷页换页完成时回调（原站 subPage uid 变化语义）：宿主换 projectExp 引用、
+   *  复位滚动、更新胶片居中索引，并 dispose 旧实例（即本实例自身） */
+  onProjectSwitched?: (next: WorkDetailExperience, project: WorkProject) => void;
 }
 
 export async function createWorkDetailExperience(
@@ -199,6 +207,8 @@ export async function createWorkDetailExperience(
       layout: { heightPx },
       handle: null,
       loading: null,
+      videoAttached: false,
+      disposed: false,
       visible: false,
       fade: 0,
     };
@@ -206,9 +216,8 @@ export async function createWorkDetailExperience(
     return el;
   }
 
-  /** Continue 按钮（Next 段）——布局后供命中测试（点击 = 原站 <a href> 硬导航语义） */
+  /** Continue 按钮（Next 段）——布局后供命中测试（点击 = 原站路由语义 → 卷页换页） */
   let continueBtnEl: UIElement | null = null;
-  let continueTargetUid = '';
 
   /** 详情页内容树 —— 横向内容条（原站 bundle 实证：场景相机沿 X 扫过 7vw 内容条，
    *  #scroll-container 的纵向滚轮只是输入映射；pageCount = 内容宽/视口宽）：
@@ -313,7 +322,6 @@ export async function createWorkDetailExperience(
     // Next Project 面板（pq 规格 + son-2 实拍）：居中文字列——下划线 label / 大标题(medium) /
     // 副标题 / Continue 黑按钮；**无左侧媒体预览卡**（媒体大卡属当前项目媒体流，勿混淆）
     const nx = nextWorkProject(project.uid);
-    continueTargetUid = nx.uid;
     const panel = UIElement.container({
       width: CONTENT.nextPanel.width,
       height: '100%',
@@ -355,17 +363,21 @@ export async function createWorkDetailExperience(
         textAlign: 'center',
       }, { marginTop: 16 }),
     );
-    // Continue（son-2 实拍：黑色实心圆角按钮 ~122×42，白字箭头；点击 = 原站 <a href> 硬导航语义）
+    // Continue（son-2 实拍：黑色实心圆角按钮 ~122×42，白字 + 右侧白色箭头图标。
+    // 箭头必须用图标而非 → 字符——STIX MSDF 字集无 U+2192，缺字回退会让按钮文字度量错位）
     const btn = UIElement.container({
       backgroundColor: '#1a1918',
       borderRadius: 4,
       width: 122,
       height: 42,
       marginTop: 32,
+      flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
+      gap: 8,
     });
-    btn.add(T('Continue →', { font: regular, fontSize: 16, lineHeight: '16px', textAlign: 'center' }, { color: '#f4f1e8' }));
+    btn.add(T('Continue', { font: regular, fontSize: 16, lineHeight: '16px' }, { color: '#f4f1e8' }));
+    btn.add(UIElement.image(14, 1, {}, '/textures/icons/arrow_right_white.svg'));
     panel.add(btn);
     continueBtnEl = btn;
 
@@ -529,6 +541,108 @@ export async function createWorkDetailExperience(
   const grainQuad = new THREE.Mesh(new THREE.PlaneGeometry(2 * vwWorld, 2 * vhWorld), grainMat);
   grainScene.add(grainQuad);
 
+  // ---------- 卷页换页合成（p7 composite quad 逐行移植：04kr:63082-63199） ----------
+  // 换页期间 getTexture() 改采 curlFBO：旧页（本实例 grainFBO，滚动冻结）在下方压暗，
+  // 新页（下一项目实例纹理）经圆柱卷曲从左缘卷入。out = mix(旧页×压暗, 卷页, 卷页α)。
+  // 采样节点：r169 的 N.texture 首参必须是真实纹理（TextureNode 不能嵌套）——先用 1×1
+  // 纸色占位建节点，换页开始时统一切 .value（同卡片 thumbNode 模式）
+  const curlPlaceholder = new THREE.DataTexture(new Uint8Array([250, 250, 242, 255]), 1, 1);
+  curlPlaceholder.needsUpdate = true;
+  const curlUniforms = { uTransition: N.uniform(0) };
+  let curlPrevNode: any = null;
+  let curlCurNode: any = null;
+  const curlScene = new THREE.Scene();
+  const curlCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+  curlCamera.position.z = 1;
+  const curlMat = new THREE.MeshBasicNodeMaterial();
+  curlMat.toneMapped = false;
+  {
+    // r(e)：采当前页纹理（04kr:63086）——构建期记录节点，换页时切 .value
+    const r = (coord: any) => {
+      const n = N.texture(curlPlaceholder, coord);
+      curlCurNode = n;
+      return n;
+    };
+    // 圆柱折叠映射 i(e, t, r)（04kr:63087-63124）：输入横坐标 → (卷起后坐标, 正/背面系数)；
+    // e < r.z-0.15 平面区 → (e,1)；e > r.z+0.15 → (-1,-1) 无效；其余按 asin 卷到柱面
+    const fold = N.Fn(([e, t, rr]: any[]) => {
+      const rad = 0.15;
+      const a = N.vec2(0).toVar();
+      const s = N.vec2(e, 1).toVar();
+      N.If(e.lessThan(rr.z.sub(rad)), () => {
+        a.assign(s);
+      })
+        .ElseIf(e.greaterThan(rr.z.add(rad)), () => {
+          a.assign(N.vec2(-1, -1));
+        })
+        .Else(() => {
+          const o = N.asin(e.sub(rr.z).div(rad));
+          const l = o.negate().add(Math.PI);
+          s.x.assign(rr.z.add(l.mul(rad)));
+          s.y.assign(N.cos(l));
+          N.If(s.x.lessThan(t), () => {
+            a.assign(s);
+          })
+            .ElseIf(e.lessThan(rr.z), () => {
+              a.assign(N.vec2(e, 1));
+            })
+            .Else(() => {
+              s.y.assign(N.cos(o));
+              s.x.assign(rr.z.add(o.mul(rad)));
+              a.assign(N.mix(N.vec2(-1, -1), s, s.x.lessThan(t).toFloat()));
+            });
+        });
+      return a;
+    });
+    // 卷页 n(e, t, n, a, s)（04kr:63125-63170）：transition 驱动圆柱心从 g=1.6d-0.3 扫到 -0.3，
+    // 正面=新页卷面（带 S 软影），背面=纸色暗面（w*0.25 + 暖色调 0.8/0.75/0.6）
+    const curl = N.Fn(([eT, t, nn, aa, ss]: any[]) => {
+      const o = N.float(0.15);
+      const u = ss.x.lessThan(0);
+      const A = N.vec2(ss.x.abs(), ss.y);
+      const c = A.div(A.length());
+      const d = A.length();
+      const h = N.float(1).add(o.mul(4));
+      const g = d.mul(h).sub(o.mul(2));
+      const f = o.mul(-2);
+      const p = N.clamp(N.float(1).sub(eT), 0, 1);
+      const m = N.mix(g, f, p);
+      const E = N.vec3(c, m);
+      const I = N.vec2(
+        N.mix(t.x, N.oneMinus(t.x), u.toFloat()),
+        N.mix(N.oneMinus(t.y), t.y, nn),
+      );
+      const y = N.dot(I, E.xy);
+      const C = N.abs(N.vec2(1).sub(I).div(E.xy));
+      const B = y.add(N.min(C.x, C.y));
+      const v = fold(y, B, E);
+      const b = v.x.lessThan(0);
+      const S = N.float(1)
+        .sub(N.smoothstep(0, o.mul(2), y.sub(E.z).negate()))
+        .mul(N.smoothstep(o.negate(), o, B.sub(v.x.add(Math.PI * 1.5 * o).add(o))));
+      const x = E.xy.mul(v.x.sub(y)).toVar();
+      x.x.assign(N.mix(x.x, x.x.negate(), u.toFloat()));
+      x.y.assign(x.y.mul(N.mix(N.float(-1), N.float(1), nn)));
+      const w = r(t.add(x)).toVar();
+      const Q = w.mul(v.y).mul(N.float(1).sub(S));
+      const R = w.mul(0.25).add(aa.mul(N.vec3(0.8, 0.75, 0.6))).mul(v.y.negate());
+      w.assign(N.mix(R, Q, v.y.greaterThan(0).toFloat()));
+      const T = N.vec4(w.rgb, 1);
+      return N.mix(T, N.vec4(0, 0, 0, 0), b.toFloat());
+    });
+    curlMat.colorNode = N.Fn(() => {
+      const e = N.vec2(N.uv().x, N.float(1).sub(N.uv().y));
+      const s = curl(curlUniforms.uTransition, e, N.float(1), N.vec3(1, 1, 1), N.vec2(-1, 0.5));
+      const o = N.texture(curlPlaceholder, e);
+      curlPrevNode = o;
+      const l = N.smoothstep(0, 1, curlUniforms.uTransition).mul(0.6);
+      return N.mix(N.mix(o, N.vec4(0, 0, 0, 1), l), s, s.a);
+    })();
+  }
+  const curlQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), curlMat);
+  curlScene.add(curlQuad);
+  let curlFBO: THREE.RenderTarget | null = null;
+
   // ---------- FBO ----------
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   const mkFBO = () =>
@@ -561,8 +675,33 @@ export async function createWorkDetailExperience(
   };
   window.addEventListener('pointermove', onMouse);
 
+  // ---------- Continue 卷页换页（原站 p7 subPage uid 变化流程，04kr:63027-63058） ----------
+  // uid 变化 → isTransitioning=1 → projectTransition 0→1（2s easeInOut）→ 完成后归零；
+  // Lenis scrollTo(0, immediate) 等价 = 新实例 scroll 0 + 本实例滚动冻结 + 宿主复位 projectScrollPx。
+  const transition: {
+    active: boolean;
+    t: number;
+    next: WorkDetailExperience | null;
+  } = { active: false, t: 0, next: null };
+
+  /** easeInOut（framer-motion 同名缓动：t<0.5 ? 2t² : 1-(−2t+2)²/2） */
+  const easeInOut = (x: number): number => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+
+  /** 构建下一项目实例（同渲染器嵌入）并 snap 到已入场态，启动 2s 卷页 */
+  async function switchNext(): Promise<void> {
+    if (transition.active || !embedded) return;
+    const nx = nextWorkProject(project.uid);
+    const nextExp = await createWorkDetailExperience(host, nx, { renderer: gl, onProjectSwitched: opts.onProjectSwitched });
+    nextExp.enter({ cameraFlight: false, instant: true });
+    transition.active = true;
+    transition.t = 0;
+    transition.next = nextExp;
+    // 原站 = 客户端路由 /work/<next>（不重播 boot）；等价 history 推栈
+    history.pushState({}, '', `/work/${nx.uid}`);
+  }
+
   /** Continue 按钮（Next 段）命中：世界 rect → 屏幕像素（相机 x 随滚动），命中 = 原站
-   *  `<a href="/work/<next>">` 硬导航语义 → location.href 整页跳转重播 boot。
+   *  `<a href="/work/<next>">` 路由语义 → 卷页换页（switchNext）。
    *  注意：getElementWorldRect 返回树局部世界坐标——必须加 uikitRoot.position 偏移 */
   function continueScreenRect(): { x: number; y: number; w: number; h: number } | null {
     if (!continueBtnEl) return null;
@@ -578,9 +717,10 @@ export async function createWorkDetailExperience(
     };
   }
   const onPointerDown = (e: PointerEvent) => {
+    if (transition.active) return;
     const r = continueScreenRect();
     if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h) {
-      window.location.href = `/work/${continueTargetUid}`;
+      void switchNext();
     }
   };
   window.addEventListener('pointerdown', onPointerDown);
@@ -664,14 +804,20 @@ export async function createWorkDetailExperience(
           card.loading = loadMuxVideo(card.playbackId, MEDIA_CARD.maxResolution()).then((h) => {
             if (h) {
               card.handle = h;
-              card.u.videoNode.value = h.texture;
-              h.aspect.then((a) => {
-                card.u.uAspectRatio.value = a;
-                card.el.style.aspectRatio = a;
-                // 视频真实比例就绪 → 高固定、宽随比例重算实际尺寸
-                card.el.style.width = Math.round(card.layout.heightPx * a);
-                card.el.style.height = Math.round(card.layout.heightPx);
-                relayout();
+              // 首帧就绪后才挂 VideoTexture：空帧视频纹理会让 object bindGroup 校验失效，
+              // 整条渲染指令被 WebGPU 静默丢弃（内容冻结、只有纸纹颗粒在动的根因）
+              h.ready.then(() => {
+                if (card.disposed) return;
+                card.u.videoNode.value = h.texture;
+                card.videoAttached = true;
+                h.aspect.then((a) => {
+                  card.u.uAspectRatio.value = a;
+                  card.el.style.aspectRatio = a;
+                  // 视频真实比例就绪 → 高固定、宽随比例重算实际尺寸
+                  card.el.style.width = Math.round(card.layout.heightPx * a);
+                  card.el.style.height = Math.round(card.layout.heightPx);
+                  relayout();
+                });
               });
             }
             return h;
@@ -680,15 +826,15 @@ export async function createWorkDetailExperience(
       } else if (!vis && card.visible) {
         card.visible = false;
       }
-      if (card.visible && card.handle) {
+      if (card.visible && card.handle && card.videoAttached) {
         if (card.fade < 1) {
           card.fade = Math.min(1, card.fade + dtc / MEDIA_CARD.crossfadeDuration);
           card.u.uVideoOpacity.value = card.fade;
-          if (card.fade >= 1) card.handle.play();
-          else card.handle.play();
+          card.handle.play();
         } else card.handle.play();
-      } else if (!card.visible && card.handle) {
-        if (card.fade > 0) {
+      } else if (card.handle) {
+        // 未挂载视频或不可见：停播并回落缩略图
+        if (!card.visible && card.fade > 0) {
           card.fade = Math.max(0, card.fade - dtc / MEDIA_CARD.crossfadeDuration);
           card.u.uVideoOpacity.value = card.fade;
         }
@@ -718,6 +864,29 @@ export async function createWorkDetailExperience(
     gl.setRenderTarget(null);
     frames++;
 
+    // ---------- 卷页换页推进（原站 projectTransition 0→1，2s easeInOut，04kr:63033-63041） ----------
+    if (transition.active && transition.next) {
+      // 先推进新页实例（scroll 0、spring 已 snap；视频/布局自走）——其 grainFBO 即卷页正面纹理
+      await transition.next.frame(dtc, time);
+      if (transition.t === 0) {
+        curlPrevNode.value = grainFBO.texture;
+        curlCurNode.value = transition.next.getTexture();
+        curlFBO ??= mkFBO();
+      }
+      transition.t = Math.min(1, transition.t + dtc / 2);
+      curlUniforms.uTransition.value = easeInOut(transition.t);
+      gl.setRenderTarget(curlFBO!);
+      await gl.renderAsync(curlScene, curlCamera);
+      gl.setRenderTarget(null);
+      if (transition.t >= 1) {
+        const next = transition.next;
+        transition.active = false;
+        transition.next = null;
+        // 完成回调：宿主换引用/复位滚动并 dispose 本实例（本帧已收尾，安全）
+        opts.onProjectSwitched?.(next, nextWorkProject(project.uid));
+      }
+    }
+
     // 嵌入模式：后期交给主体验合成链（subPage 采样），这里只出 grainFBO 纹理
     if (!compose) return;
 
@@ -730,7 +899,7 @@ export async function createWorkDetailExperience(
       loadingMix: 0,
       pageScroll: 0,
       crossfade: false,
-      curTexOverride: grainFBO.texture,
+      curTexOverride: transition.active && curlFBO ? curlFBO.texture : grainFBO.texture,
       effects: PROJECT_PAGE_EFFECTS,
     });
   }
@@ -759,16 +928,33 @@ export async function createWorkDetailExperience(
   return {
     gl,
     frame,
-    setScrollTarget: (px: number) => { scroll.target = px; },
+    setScrollTarget: (px: number) => {
+      // 卷页换页期间锁定滚动（原站 Lenis scrollTo(0, immediate) 后旧页静止）
+      if (!transition.active) scroll.target = px;
+    },
     /** 屏数（原站语义：pageCount = 内容宽/视口宽，camera.x = t×vw, t ∈ [0, pageCount-1]
      *  ——宿主 maxScroll = (pageCount−1)·vh，滚到底内容右缘贴视口右缘） */
     getPageCount: () => pageCount,
+    /** subPageTransition 入场
+     *  - cameraFlight: true = 相机 z 10→5 飞入；false = 固定 baseZ（缩放由合成链承担）
+     *  - instant: 跳过动画直接落到位（Continue 换页构建的新实例用——原站该场景
+     *    subPageTransition 恒为 1，无二次入场） */
     enter: (opts) => {
       cameraFlight = opts?.cameraFlight ?? true;
       if (!cameraFlight) {
         // 无相机飞行：直接落 baseZ，避免首帧从 enterZ 慢慢追上（页面缩放已由合成链承担）
         cameraZ.b = PROJECT_CAMERA.baseZ;
         offset.s = 0.2;
+      }
+      if (opts?.instant) {
+        spring.value = 1;
+        spring.velocity = 0;
+        spring.target = 1;
+        spring.delay = 0;
+        spring.done = true;
+        cameraZ.b = PROJECT_CAMERA.baseZ;
+        offset.s = 0.2;
+        return;
       }
       spring.target = 1;
       spring.delay = SUBPAGE_TRANSITION.delay;
@@ -786,12 +972,14 @@ export async function createWorkDetailExperience(
     resize,
     getFrames: () => frames,
     getSpring: () => Math.min(1, Math.max(0, spring.value)),
-    getTexture: () => grainFBO.texture,
+    /** 卷页换页期间采合成结果（旧页压暗 + 新页卷入），其余时刻直出颗粒 FBO */
+    getTexture: () => (transition.active && curlFBO ? curlFBO.texture : grainFBO.texture),
     embedded,
     /**
      * 释放子页资源
      *
-     * 功能：摘除指针监听、释放合成链 / FBO / 卡片 / uikit 图集 / 几何与材质
+     * 功能：摘除指针监听、释放合成链 / FBO / 卡片 / uikit 图集 / 几何与材质；
+     *      卷页换页中途释放时级联释放未完成的新实例
      *
      * 参数：无
      * 返回值：无
@@ -803,11 +991,22 @@ export async function createWorkDetailExperience(
       window.removeEventListener('pointerdown', onPointerDown);
       compose?.dispose();
       for (const c of cards) {
+        c.disposed = true;
         c.handle?.dispose();
         c.material.dispose();
       }
+      // 换页中途被释放（如 Esc 关闭）：级联释放新实例，避免泄漏
+      if (transition.next) {
+        const next = transition.next;
+        transition.next = null;
+        transition.active = false;
+        next.dispose();
+      }
       projectFBO.dispose();
       grainFBO.dispose();
+      curlFBO?.dispose();
+      curlMat.dispose();
+      curlQuad.geometry.dispose();
       noiseTex.dispose();
       uikit.dispose();
       bg.geometry.dispose();

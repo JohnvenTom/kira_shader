@@ -844,7 +844,21 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       const gen = ++projectGen;
       void (async () => {
         try {
-          const exp = await createWorkDetailExperience(host, proj, { renderer: renderer as THREE.WebGPURenderer });
+          const exp = await createWorkDetailExperience(host, proj, {
+            renderer: renderer as THREE.WebGPURenderer,
+            // Continue 卷页换页完成（原站 subPage uid 变化语义）：换引用、复位滚动、
+            // 胶片居中新项目（Close 后停在它上面）、释放旧实例
+            onProjectSwitched: (next, p) => {
+              const old = projectExp;
+              projectExp = next;
+              projectScrollPx = 0;
+              next.setScrollTarget(0);
+              work.index = WORK_PROJECTS.findIndex((w) => w.uid === p.uid);
+              work.dragPx = 0;
+              work.wheelAcc = 0;
+              old?.dispose();
+            },
+          });
           if (disposed || gen !== projectGen || !st.ready) {
             exp.dispose();
             return;
