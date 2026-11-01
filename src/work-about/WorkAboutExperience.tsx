@@ -6,8 +6,8 @@ import * as TSL from 'three/tsl';
 import { createSelectedWorkScene } from '../selected-work/scene';
 import { SELECTED_PROJECTS } from '../selected-work/data';
 import { WORK_PROJECTS } from '../work-detail/data';
-import { findWorkProject } from '../work-detail/data';
-import { createWorkDetailExperience, type WorkDetailExperience } from '../work-detail/workDetailExperience';
+import { findWorkProject, nextWorkProject, type WorkProject } from '../work-detail/data';
+import { createWorkDetailExperience, prefetchWorkThumbs, type WorkDetailExperience } from '../work-detail/workDetailExperience';
 import { PROJECT_PAGE_EFFECTS } from '../work-detail/workDetailConfig';
 import WorkDetailBootOverlay from '../work-detail/WorkDetailBootOverlay';
 import { consumeSpaNav } from '../work-detail/navigate';
@@ -421,8 +421,11 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     let paperPromise: Promise<void> | null = null;
     let paperToken = 0;
     // ---------- 项目子页（/work/<slug>）运行时 ----------
-    /** 详情页 ProjectScene 句柄（复用主渲染器；嵌入模式，无自己的画布/合成链） */
+    /** 详情页 ProjectScene 句柄（复用主渲染器；嵌入模式，无自己的画布/合成链）
+     *  —— 原站 p7 双 p9 实例：projectExp = 当前槽，projectAlt = 空闲槽（常驻，空内容） */
     let projectExp: WorkDetailExperience | null = null;
+    /** 空闲实例（原站 p7 的另一个 p9；未接收项目时只有场景/FBO，不建内容树） */
+    let projectAlt: WorkDetailExperience | null = null;
     /** 正在异步创建（防重复点击） */
     let projectPending = false;
     /** 子页已上屏（compose 采样 subPageTexture 的门） */
@@ -435,6 +438,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     let projectClosing = false;
     /** 子页创建代数（异步竞态防护） */
     let projectGen = 0;
+    /** 正在执行一次 Continue 切换（含就绪门 + 卷页材质编译），挡住主/备实例的重复触发 */
+    let projectSwitching = false;
     /** 最近一帧写给合成链的子页参数（调试/探针） */
     let projectSubMix = 0;
     let projectSubBrightness = 1;
@@ -796,10 +801,118 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     };
 
     /**
+     * Continue 点击（原站 pq onClick → router.push → p7 的 subPage 变化）
+     *
+     * 功能：把下一项目交给常驻的空闲实例（原站另一个 p9 的 updateHandle），同一同步栈内
+     *      调用当前实例 beginSwitch 开卷，因此点击后卷页首帧即出图（不再现建实例）。
+     *
+     * 参数：无
+     * 返回值：{boolean} false = 未启动（空闲实例缺失 / 卷页材质未编译完），体验内部解挂点击
+     * 异常：无（空闲实例缺失时异步补建并把切换接上）
+     *
+     * 注意事项：
+     *  - 卷页结束后由 onProjectSwitched 翻转主/备引用，旧实例不销毁（原站两个 p9 常驻）；
+     *  - URL 与滚动复位都在点击瞬间完成（原站 router.push + lenis.scrollTo(0) 同语义）。
+     */
+    const continueProject = (): boolean => {
+      const cur = projectExp;
+      if (!cur || !projectActive || projectClosing || projectPending) return false;
+      if (projectSwitching) return false; // 已有一次切换在准备/卷页中（另一实例重复触发）
+      const current = cur.getProject();
+      if (!current) return false;
+      const nx = nextWorkProject(current.uid);
+      const startWith = (next: WorkDetailExperience): boolean => {
+        projectSwitching = true;
+        next.setProject(nx);
+        next.enter({ cameraFlight: false, instant: true });
+        next.setScrollTarget(0);
+        projectScrollPx = 0;
+        work.dragPx = 0;
+        work.wheelAcc = 0;
+        // 原站时序：点击 → Loading... → 路由/RSC 数据就绪（subPage 提交）→ 才开始卷页。
+        // 本地等价：新页内容 + 缩略图 + 主媒体首帧都准备好（whenContentReady）后才
+        // beginSwitch 并同步 URL——动画开始前旧页保持静止，不会出现「翻到一半新页还没画面」。
+        void (async () => {
+          try {
+            await next.whenContentReady();
+            if (disposed || !projectActive || projectClosing || !projectExp) return;
+            // 卷页材质按真实纹理重建并预编译完成（内部 await）后才真正开卷
+            const ok = await cur.beginSwitch(next);
+            if (!ok) return; // 未就绪/已释放：URL 与内容都不动（体验内部已解挂点击）
+            syncUrl(`/work/${nx.uid}`);
+          } finally {
+            projectSwitching = false;
+          }
+        })();
+        return true;
+      };
+      if (projectAlt) return startWith(projectAlt);
+      // 兜底：空闲实例还没建好（极端时序）→ 现场建一个再开卷（不是常态路径）
+      projectSwitching = true;
+      const gen = projectGen;
+      void (async () => {
+        try {
+          const idle = await createWorkDetailExperience(host, null, {
+            renderer: renderer as THREE.WebGPURenderer,
+            onContinue: continueProject,
+            onProjectSwitched: onProjectSwitch,
+          });
+          if (disposed || gen !== projectGen || !projectActive) {
+            idle.dispose();
+            return;
+          }
+          // 异步补建期间 projectAlt 可能已被 openProject 的空闲实例创建流程写入：
+          // 用显式类型读取（前面的 if (projectAlt) return 已被 TS 收窄成 null）
+          const prevAlt = (projectAlt as WorkDetailExperience | null);
+          prevAlt?.dispose();
+          projectAlt = idle;
+          idle.setInteractive(true);
+          startWith(idle);
+        } catch (err) {
+          projectSwitching = false;
+          // eslint-disable-next-line no-console
+          console.error('[WorkAbout] 空闲实例补建失败：', err);
+        }
+      })();
+      return true;
+    };
+
+    /**
+     * 卷页结束（原站 isTransitioning 归零）后的实例指针翻转
+     *
+     * 功能：把刚卷入的实例设为当前，原当前实例转为空闲槽（保留其冻结内容，下一次 Continue
+     *      再 setProject 复用）；复位滚动与胶片居中索引（Close 后停在新项目上）。
+     *
+     * 参数：
+     *  - next {WorkDetailExperience} 新当前实例
+     *  - p    {WorkProject}         新项目
+     *
+     * 返回值：无
+     * 异常：无
+     * 注意事项：两个实例都归宿主所有，这里不 dispose（原站 p7 双 p9 常驻）。
+     */
+    const onProjectSwitch = (next: WorkDetailExperience, p: WorkProject) => {
+      const old = projectExp;
+      projectExp = next;
+      projectAlt = old;
+      // 交互权交给新当前实例；旧实例转空闲，不再响应 Continue/悬停
+      next.setInteractive(true);
+      old?.setInteractive(false);
+      projectScrollPx = 0;
+      next.setScrollTarget(0);
+      work.index = WORK_PROJECTS.findIndex((w) => w.uid === p.uid);
+      work.dragPx = 0;
+      work.wheelAcc = 0;
+      // 再预取下一项缩略图（原站全局预载）：下一次 Continue 的内容就绪门几乎零等待
+      void prefetchWorkThumbs(nextWorkProject(p.uid));
+    };
+
+    /**
      * 打开项目子页（原站 `navigateToSubPage` + p7 ProjectScene 叠加）
      *
      * 功能：把详情页 ProjectScene 挂进主体验渲染器（嵌入模式），等首帧就绪后作为
-     *      subPage 纹理盖在胶片上，并按原站节奏做 30 帧预热 → spring 0→1 入场。
+     *      subPage 纹理盖在胶片上，并按原站节奏做 30 帧预热 → spring 0→1 入场；
+     *      随后异步补建常驻的空闲实例（p7 另一个 p9），保证 Continue 无现场构建等待。
      *
      * 参数：
      *  - uid     {string}  项目 slug（/work/<uid>）
@@ -846,18 +959,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
         try {
           const exp = await createWorkDetailExperience(host, proj, {
             renderer: renderer as THREE.WebGPURenderer,
-            // Continue 卷页换页完成（原站 subPage uid 变化语义）：换引用、复位滚动、
-            // 胶片居中新项目（Close 后停在它上面）、释放旧实例
-            onProjectSwitched: (next, p) => {
-              const old = projectExp;
-              projectExp = next;
-              projectScrollPx = 0;
-              next.setScrollTarget(0);
-              work.index = WORK_PROJECTS.findIndex((w) => w.uid === p.uid);
-              work.dragPx = 0;
-              work.wheelAcc = 0;
-              old?.dispose();
-            },
+            onContinue: continueProject,
+            onProjectSwitched: onProjectSwitch,
           });
           if (disposed || gen !== projectGen || !st.ready) {
             exp.dispose();
@@ -865,6 +968,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
           }
           projectExp?.dispose();
           projectExp = exp;
+          exp.setInteractive(true);
           projectPending = false;
           projectActive = true;
           // 创建完成即 enter（原站：Loading work 消失即刻转场）
@@ -873,6 +977,28 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
           exp.setScrollTarget(projectScrollPx);
           setProjectLoading(false);
           if (pushUrl) syncUrl(`/work/${uid}`);
+          // 预取下一项目缩略图（原站启动期全局预载的等价物）：Continue 时就绪门零等待
+          void prefetchWorkThumbs(nextWorkProject(proj.uid));
+          // 空闲实例（原站 p7 另一个 p9）：常驻、空内容；Continue 时 setProject 后即时开卷
+          void (async () => {
+            try {
+              const idle = await createWorkDetailExperience(host, null, {
+                renderer: renderer as THREE.WebGPURenderer,
+                onContinue: continueProject,
+                onProjectSwitched: onProjectSwitch,
+              });
+              if (disposed || gen !== projectGen || !projectActive) {
+                idle.dispose();
+                return;
+              }
+              idle.setInteractive(false); // 空闲实例不参与命中（原站只有屏幕上的 p9 响应）
+              projectAlt?.dispose();
+              projectAlt = idle;
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.error('[WorkAbout] 空闲实例创建失败：', err);
+            }
+          })();
         } catch (err) {
           projectPending = false;
           setProjectLoading(false);
@@ -899,6 +1025,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       if (projectPending) {
         projectPending = false;
         projectGen++;
+        projectSwitching = false;
         setProjectLoading(false);
         setViewState('work');
         snapLockUntil = 0;
@@ -911,8 +1038,13 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
         if (disposed) return;
         projectActive = false;
         projectClosing = false;
+        projectSwitching = false;
         projectExp = null;
+        // 双实例同生命周期（原站 p7 两个 p9 一起卸载）
+        const alt = projectAlt;
+        projectAlt = null;
         exp.dispose();
+        alt?.dispose();
         snapLockUntil = 0;
         setViewState('work');
         setUiVisibleState(false);
@@ -1293,6 +1425,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       reveal?.setSize(w, h);
       tie?.setSize(w, h);
       projectExp?.resize();
+      projectAlt?.resize();
       rebuildRTs();
       if (paper && paper.mobile !== (window.innerWidth < 768)) void ensurePaper();
     };
@@ -2057,8 +2190,13 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                 spring: +springNow.toFixed(3),
                 mix: +overlayMix.toFixed(3),
                 closing: projectClosing,
+                /** 双实例对账：当前槽 / 空闲槽的项目 uid */
+                uid: projectExp.getProject()?.uid ?? null,
+                alt: projectAlt?.getProject()?.uid ?? null,
+                altReady: projectAlt != null,
               };
               (window as any).__projectExp = projectExp;
+              (window as any).__projectAltExp = projectAlt;
             }
             /** 入场进度（0=胶片页效果，1=详情页效果）：与转场同根 spring */
             const projectReveal =
@@ -2222,12 +2360,15 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       work.wheelResetTimer !== null && window.clearTimeout(work.wheelResetTimer);
       for (const id of navTimers) window.clearTimeout(id);
       navNav = null;
-      // 子页资源：取消未完成的创建（代数自增）并释放已就绪实例
+      // 子页资源：取消未完成的创建（代数自增）并释放已就绪的主/备实例
       projectGen++;
       projectExp?.dispose();
       projectExp = null;
+      projectAlt?.dispose();
+      projectAlt = null;
       projectActive = false;
       projectPending = false;
+      projectSwitching = false;
       const probe = (window as unknown as { __workAboutProbe?: { renderer?: any } }).__workAboutProbe;
       probe?.renderer?.dispose?.();
       delete (window as unknown as { __workAboutProbe?: unknown }).__workAboutProbe;

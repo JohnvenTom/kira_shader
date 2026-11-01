@@ -87,10 +87,12 @@ export const CONTENT = {
     subtitle: { fontSize: 24, lineHeight: 28, lg: { fontSize: 32, lineHeight: 32 } },
     /** Continue 按钮：pq 容器（04kr:62132-62179）+ u5 primary/dark（04kr:32806-33060）
      *  - 外层 uk：marginTop 32 / padding 2 / borderWidth 2 / radius 4 / 聚焦描边 transparent→black
-     *  - 内层 u5：黑底 #000、radius 4、padding 24、gap 14、hover opacity 0.96
-     *  - 文字：28px medium/lineHeight 28、白色、marginBottom −12（负值让按钮高度收敛到 ~64）
-     *  - 文字列 uk：flexDirection column + marginBottom −4；图标 28×28、上下 margin −7
-     *  实测（原站参考帧 1578×846）：黑色实心矩形 ≈198×65（含外层透明框 ≈206×73） */
+     *  - 内层 u5：黑底 #000、radius 4、paddingX 24、gap 14、hover opacity 0.96
+     *  - 文字：28px medium/lineHeight 28、白色
+     *  - 图标 28×28
+     *  - 垂直：原站 u5 用负 marginBottom 把行高压到图标高、字号视觉居中（实测文字/箭头
+     *    都居中于按钮）；本地 uikit 文本按行盒顶对齐，负 margin 会把文字抬起 8px——
+     *    故改为「零负 margin + paddingY 18」，行高 28、总高 64，视觉与实测 199×63 一致 */
     continue: {
       marginTop: 32,
       framePadding: 2,
@@ -99,10 +101,10 @@ export const CONTENT = {
       background: '#000000',
       borderRadius: 4,
       paddingX: 24,
-      paddingY: 24,
+      paddingY: 18,
       gap: 14,
-      label: { fontSize: 28, lineHeight: 28, marginBottom: -12, color: '#ffffff' },
-      labelColumnMarginBottom: -4,
+      label: { fontSize: 28, lineHeight: 28, marginBottom: 0, color: '#ffffff' },
+      labelColumnMarginBottom: 0,
       iconSize: 28,
       iconMarginY: -7,
       hoverOpacity: 0.96,
