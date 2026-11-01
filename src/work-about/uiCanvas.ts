@@ -53,6 +53,8 @@ export interface UiDrawState {
    *      DOM 顶栏会「浮在畸变之外」，这正是要替换掉旧实现的原因。
    */
   projectOpen?: boolean;
+  /** 子页 Close 是否可见（原站入场时只保留 logo，页面完全铺满后才出 Close；退场立即隐藏） */
+  projectCloseVisible?: boolean;
 }
 
 export interface UiCanvasHandle {
@@ -364,18 +366,20 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
 
     const bw = 111;
     const bh = 46;
-    const bx = W - 32 - bw;
-    const by = 34;
-    ctx.fillStyle = '#1a1918';
-    ctx.beginPath();
-    ctx.roundRect(S(bx), S(by), S(bw), S(bh), S(8));
-    ctx.fill();
-    ctx.font = `400 ${S(15)}px ${SERIF}`;
-    ctx.fillStyle = '#f4f1e8';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Close ✕', S(bx + bw / 2), S(by + bh / 2));
-    regions.projectClose = { x: bx, y: by, w: bw, h: bh };
+    if (st.projectCloseVisible !== false) {
+      const bx = W - 32 - bw;
+      const by = 34;
+      ctx.fillStyle = '#1a1918';
+      ctx.beginPath();
+      ctx.roundRect(S(bx), S(by), S(bw), S(bh), S(8));
+      ctx.fill();
+      ctx.font = `400 ${S(15)}px ${SERIF}`;
+      ctx.fillStyle = '#f4f1e8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Close ✕', S(bx + bw / 2), S(by + bh / 2));
+      regions.projectClose = { x: bx, y: by, w: bw, h: bh };
+    }
     void st.activeNav;
   };
 
@@ -411,7 +415,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   const stateKey = (st: UiDrawState) =>
     [
       st.page, st.activeNav, st.mobile ? 1 : 0, st.menuOpen,
-      st.projectOpen ? 1 : 0,
+      st.projectOpen ? 1 : 0, st.projectCloseVisible === false ? 0 : 1,
       Math.round(st.fade * 50), Math.round(st.tieCopy * 40),
       assetsReady ? 1 : 0, W, H,
     ].join('|');

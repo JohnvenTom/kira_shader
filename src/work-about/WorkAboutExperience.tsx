@@ -440,6 +440,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     let projectGen = 0;
     /** 正在执行一次 Continue 切换（含就绪门 + 卷页材质编译），挡住主/备实例的重复触发 */
     let projectSwitching = false;
+    /** Continue 最小 Loading 展示时间（保证点击反馈可见；后续页就绪门可能几十毫秒就过） */
+    const CONTINUE_LOADING_MIN_MS = 320;
     /** 最近一帧写给合成链的子页参数（调试/探针） */
     let projectSubMix = 0;
     let projectSubBrightness = 1;
@@ -833,8 +835,13 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
         // 本地等价：新页内容 + 缩略图 + 主媒体首帧都准备好（whenContentReady）后才
         // beginSwitch 并同步 URL——动画开始前旧页保持静止，不会出现「翻到一半新页还没画面」。
         void (async () => {
+          const t0 = performance.now();
           try {
             await next.whenContentReady();
+            // 后续页缩略图已预取、视频已缓存，就绪门几十毫秒就过 → 「Loading...」几乎不可见。
+            // 补一个最小展示窗（原站路由/RSC 往返同样可见 Loading），保证点击反馈一致
+            const remain = CONTINUE_LOADING_MIN_MS - (performance.now() - t0);
+            if (remain > 0) await new Promise<void>((r) => window.setTimeout(r, remain));
             if (disposed || !projectActive || projectClosing || !projectExp) return;
             // 卷页材质按真实纹理重建并预编译完成（内部 await）后才真正开卷
             const ok = await cur.beginSwitch(next);
@@ -1840,6 +1847,11 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               headerless: nav != null,
               // 详情子页：canvas UI 只画子页顶栏（logo + Close），随页面一起过桶形畸变
               projectOpen,
+              // 原站入场帧里只有 logo，页面完全铺满（spring≈1）后才出 Close；退场立即隐藏
+              projectCloseVisible:
+                !projectClosing &&
+                (!projectZoomReveal ||
+                  smoothstep(CROSSFADE_START, CROSSFADE_END, projectExp ? Math.min(1, Math.max(0, projectExp.getSpring())) : 0) >= 0.985),
               // projects 段激活项目 → 棱柱标题下绘制 View Project 入口行（原站 projects-view）
               // 与 titlePrism / 点击映射同源：SELECTED_PROJECTS[index] 直取
               projectIndex:
