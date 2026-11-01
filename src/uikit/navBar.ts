@@ -54,6 +54,9 @@ export interface NavBarElementHandles {
   burgerBtn: UIElement;
   menuPanel: UIElement;
   menuOverlay: UIElement;
+  /** 详情子页顶栏 Close（原件 Ey；命中区用 shell，含 2px 外框 padding） */
+  closeBtn: UIElement;
+  closeShell: UIElement;
   menuItems: { id: NavItemId | 'book'; el: UIElement }[];
 }
 
@@ -67,6 +70,14 @@ export interface NavBarTickState {
   actionHover: number;
   /** 主题（换图标 url；重建树之外的轻量切换） */
   dark: boolean;
+  /**
+   * 项目子页过渡值 0..1（原件 pagesStore.subPageTransition）
+   *
+   * 1 = 项目子页完全打开：导航各组整体上移 200 CSS px（原件 EL 的
+   * `transformTranslateY = -200 * subPageTransition`），中心组同时按 `1 - t` 淡出；
+   * 退回 0 时即「导航条从上方缓慢降下」的离场。
+   */
+  subPageT: number;
 }
 
 /** 下划线 spring（原站 useSpring damping25 stiffness200 的欧拉近似） */
@@ -149,6 +160,8 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
   // ---- 水平导航项（Ed ×4，lg 显示）----
   // gap 实测：原站 1600 截图逐列扫描，项间净空恒 45px（早先记的 24 是误值）
   const navItemCols: NavBarElementHandles['navItemCols'] = [];
+  /** 中心组文字元素（原件 opacity = 1 − subPageTransition 逐元素淡出，uikit 容器不传递 alpha） */
+  const navTextEls: UIElement[] = [];
   const navRow = UIElement.container({
     flexDirection: 'row',
     alignItems: 'center',
@@ -167,6 +180,7 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
     });
     col.add(txt, underline);
     navRow.add(col);
+    navTextEls.push(txt);
     navItemCols.push({ id: item.id, col, underline });
   }
 
@@ -244,7 +258,41 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
   // 菜单第 5 项 Book a call（原站菜单面板只列 4 页导航项——Ep 独立；但 a11y 表有 menuBook。
   // 反编译 Ew navItems=ED 仅 4 项 → 不加第 5 项，menuBook 命中键由 book 按钮承担）
   burgerWrap.add(burgerBtn);
-  right.add(bookWrap, burgerWrap);
+
+  // ---- 详情页 Close（原件 Ey，04kr:66678-66760）----
+  // 外层 uk：absolute inset 0 + flex-end；内层 u5：primary/dark（bg #000、radius 4、
+  // size sm(>1024：paddingX16/paddingY18/gap12/文字 20/图标 24) 或 icon-sm(≤1024：36×36）
+  // 位置：translateY = −200·(1 − subPageTransition)（子页打开时在栏内，退回胶片页时升出视口）
+  const closeWrap = UIElement.container({
+    positionType: 'absolute',
+    positionTop: 0,
+    positionBottom: 0,
+    positionLeft: 0,
+    positionRight: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  });
+  // 原件外框：padding 2 / borderWidth 2 / radius 4（hover/focus 时边框才着色）
+  const closeShell = UIElement.container({
+    flexDirection: 'row',
+    padding: 2,
+    borderWidth: 2,
+    borderRadius: 4,
+    borderColor: 'transparent',
+  });
+  // 按钮本体用矢量资产（原件 u5 primary/dark：宽屏 pill="Close"+✕ 112×52，窄屏 36×36 图标）
+  // 说明：uikit 的文字批次与容器底色共用同一批次网格，黑底 + 白字的组合会被底色盖住，
+  // 因此 Close 改用图片元素（与 logo/汉堡同一条渲染路径，稳定可见）
+  const closeBtn = UIElement.image(
+    lg ? 112 : 36,
+    lg ? 52 / 112 : 1,
+    {},
+    lg ? '/textures/icons/close_pill.svg' : '/textures/icons/close_square.svg',
+  );
+  closeShell.add(closeBtn);
+  closeWrap.add(closeShell);
+  right.add(bookWrap, burgerWrap, closeWrap);
   bar.add(logoBtn, navRow, right);
   // 面板挂 root 级（top60/right8 相对视口）：yoga absolute 相对父节点，
   // 挂在 64 宽的 burgerWrap 下会错位成 top60/left−146
@@ -256,6 +304,8 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
   );
   let menuT = 0;
   let lastDark = dark;
+  /** 原件 subPageTransition：1 = 子页打开（导航上移 200px 离屏） */
+  let subPageT = 0;
 
   const kit: NavBarKit = {
     root,
@@ -268,6 +318,8 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
       burgerBtn,
       menuPanel,
       menuOverlay,
+      closeBtn,
+      closeShell,
       menuItems,
     },
     tick(state, dt) {
@@ -300,15 +352,29 @@ export function buildNavBar(fonts: { medium: UIKitFont; bold: UIKitFont }, vw: n
         state.actionHover > 0.01 && lg ? withAlpha(actionColor, state.actionHover) : 'transparent';
       burgerBtn.style.borderColor =
         state.actionHover > 0.01 && !lg ? withAlpha(actionColor, state.actionHover) : 'transparent';
+      // 原件 EL（04kr:67109）：subPageTransition 期间导航各组整体上移 200 CSS px，
+      // 中心组同时按 `opacity = 1 − t` 淡出；uikit 的容器 opacity 只做可见性门控，
+      // 因此淡出必须逐元素写（文字 + 下划线），下划线再与自身「非当前项」透明度相乘
+      subPageT = Math.max(0, Math.min(1, state.subPageT));
+      const fade = 1 - subPageT;
       // 下划线 spring（opacity = 1 − v：非当前项显示、当前项隐藏——实测+反编译互证）
       for (const item of navItemCols) {
         const sp = springs.get(item.id)!;
         sp.target = state.activeNav === item.id ? 1 : 0;
         const v = sp.tick(dt);
-        item.underline.style.opacity = Math.max(0, Math.min(1, 1 - v));
+        item.underline.style.opacity = Math.max(0, Math.min(1, 1 - v)) * fade;
       }
+      for (const t of navTextEls) t.style.opacity = fade;
     },
     relayout(v) {
+      // 原件 EL（04kr:67117~67124）：三组整体 translateY = −200 · subPageTransition
+      // （Book a call / 汉堡 / 中心导航）；logo 与分隔线不位移，与原站一致
+      const lift = -200 * subPageT;
+      navRow.node.setPosition(YG.EDGE_TOP, lift);
+      bookWrap.node.setPosition(YG.EDGE_TOP, lift);
+      burgerWrap.node.setPosition(YG.EDGE_TOP, lift);
+      // Close 反向：子页内就位（0），退回胶片页时升出视口（原件 `−((1−t)·200)`）
+      closeShell.node.setPosition(YG.EDGE_TOP, -200 * (1 - subPageT));
       // positionTop 每帧变化需要 yoga 重排（树小，开销可忽略）
       menuPanel.node.setPosition(YG.EDGE_TOP, 60 + 4 * menuT);
       menuPanel.node.setPosition(YG.EDGE_RIGHT, 8);

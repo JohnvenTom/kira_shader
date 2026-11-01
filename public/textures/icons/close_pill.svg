@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 详情页 Close（宽屏版）：原件 u5 primary/dark，paddingX16 / paddingY / gap12 / 文字 20 / 图标 24 -->
+<svg width="112" height="52" viewBox="0 0 112 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="112" height="52" rx="4" fill="#000"/>
+  <text x="16" y="33" font-family="Georgia, 'Times New Roman', serif" font-size="20" fill="#FDFDF5">Close</text>
+  <path d="M78 20L92 32M92 20L78 32" stroke="#FDFDF5" stroke-width="2" stroke-linecap="round"/>
+</svg>

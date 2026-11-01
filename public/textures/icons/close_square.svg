@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 详情页 Close（窄屏版）：原件 size icon-sm = 36×36（无文字，仅 ✕ 图标） -->
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="36" height="36" rx="4" fill="#000"/>
+  <path d="M12 12L24 24M24 12L12 24" stroke="#FDFDF5" stroke-width="2" stroke-linecap="round"/>
+</svg>

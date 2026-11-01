@@ -138,8 +138,6 @@ export interface HeroComposeFrame {
     border: number;
     logoHover: number;
     pageActionHover: number;
-    /** navbar 层可见度（0 = 隐藏；详情子页打开时用） */
-    navVisible?: number;
   };
 }
 
@@ -541,8 +539,6 @@ export function createHeroCompose(
     /** navbar uikit 层（2026-10-25 P1：uikit 导航树独立 RT，按 alpha 压在 canvas UI 之上） */
     navLight: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
     navDark: N.texture(new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1)),
-    /** navbar 层可见度（详情子页打开时为 0：否则会残留胶片页的导航） */
-    navVisible: N.uniform(1),
     /** light=0 → dark=1（原件 uiModeTransition） */
     uiMode: N.uniform(0),
     /** UI 显隐标量（原件 uiTransition，spring 驱动） */
@@ -698,10 +694,12 @@ export function createHeroCompose(
       .mul(N.step(uiA.y, N.float(1)));
     // TextureNode 的采样必须走 `.uv()`（N.texture() 只吃 THREE 纹理对象——
     // 传 TextureNode 会抛 "TextureNode: Need a three.js texture."）
+    // 原件（04kr:36760~36836 / EL 67109）navbar 层只做「元素位移 + 透明度」，
+    // 采样本身是原样 uv —— 位移发生在 uikit 布局里（navUiScene/navBar），合成器不再额外偏移
     const uiRawC = N.mix(u.uiLight.uv(uiA), u.uiDark.uv(uiA), u.uiMode);
     const navRaw = N.mix(u.navLight.uv(uiA), u.navDark.uv(uiA), u.uiMode);
     // navbar uikit 层按自身 alpha 压在 canvas UI 之上（两者元素不重叠，语义安全）
-    const uiRaw = N.mix(uiRawC, navRaw, navRaw.a.mul(u.navVisible));
+    const uiRaw = N.mix(uiRawC, navRaw, navRaw.a);
     // hover 区域（CSS px、y 向下）：logo 左上 240×96，pageAction 右上 220×96；
     // bool 节点必须 .toFloat() 才能参与乘加（直接 mul 会编译出 bool*bool 的非法 GLSL）
     const uiPxX = uiA.x.mul(u.dimensions.x);
@@ -1014,8 +1012,6 @@ export function createHeroCompose(
       u.uiBorder.value = frame.ui.border;
       u.logoHover.value = frame.ui.logoHover;
       u.pageActionHover.value = frame.ui.pageActionHover;
-      // 详情子页打开时隐藏胶片页的 uikit 导航层（否则会在子页顶栏之上残留一行导航）
-      u.navVisible.value = frame.ui.navVisible ?? 1;
     }
     u.vigRadius.value = eff('vignetteRadius');
     u.vigSmooth.value = eff('vignetteSmoothness');

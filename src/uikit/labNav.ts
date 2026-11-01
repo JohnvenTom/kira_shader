@@ -41,6 +41,8 @@ async function main(): Promise<void> {
         logoHover: +(q.get('logoHover') ?? 0),
         actionHover: +(q.get('actionHover') ?? 0),
         dark,
+        // 导航 lab 只验证静态布局/菜单开合，子页位移由 ?subPage= 覆盖（默认 0）
+        subPageT: +(q.get('subPage') ?? 0),
       },
       0.016,
     );

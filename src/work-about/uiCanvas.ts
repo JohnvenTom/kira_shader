@@ -19,9 +19,7 @@ import * as THREE from 'three/webgpu';
 export type UiRegionKey =
   | 'logo' | 'navHome' | 'navWork' | 'navAbout' | 'navContact'
   | 'book' | 'burger' | 'prevArrow' | 'nextArrow' | 'hint' | 'viewProject'
-  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook'
-  /** /work/<slug> 子页顶栏：logo 与 Close（画在 canvas 里，随镜头畸变一起变形） */
-  | 'projectLogo' | 'projectClose';
+  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact' | 'menuBook';
 
 export interface UiRect { x: number; y: number; w: number; h: number }
 
@@ -47,14 +45,12 @@ export interface UiDrawState {
   /** navbar 已迁 uikit 层（2026-10-25 P1）：跳过 header/菜单绘制，只留 work 箭头/提示 */
   headerless?: boolean;
   /**
-   * /work/<slug> 子页模式：只画子页顶栏（logo + Close），其余 chrome 全部隐藏
+   * /work/<slug> 子页模式：canvas 层整体让位
    *
-   * 说明：原站详情页顶栏也画在 canvas 里，因此和页面一起过桶形畸变；
-   *      DOM 顶栏会「浮在畸变之外」，这正是要替换掉旧实现的原因。
+   * 说明：原站详情页顶栏就是 navbar 本体（logo / Close / 分隔线常显，子元素上移），
+   *      因此这里不再另画一套 chrome，避免两套顶栏互相盖住。
    */
   projectOpen?: boolean;
-  /** 子页 Close 是否可见（原站入场时只保留 logo，页面完全铺满后才出 Close；退场立即隐藏） */
-  projectCloseVisible?: boolean;
 }
 
 export interface UiCanvasHandle {
@@ -343,45 +339,6 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
 
   /** contact 正文已迁至 contactScene 的 3D 长列（CanvasTexture 平面，随相机滚动）——此处只保留 header */
 
-  /**
-   * /work/<slug> 子页顶栏：logo + Close（原站详情页 chrome，全部画在 canvas 里）
-   *
-   * 参数：
-   *  - ctx   {CanvasRenderingContext2D} 目标层上下文
-   *  - theme {'light'|'dark'}          主题（详情页恒为 light）
-   *  - st    {UiDrawState}             绘制状态（仅用于 mobile 等留白）
-   *
-   * 返回值：无
-   * 异常：无
-   * 注意事项：与 DOM 版数值同源（logo 左 33/上 42、Close 右 32/上 34，111×46 #1a1918）；
-   *          画在 canvas 后随合成链的桶形畸变一起变形，不再「浮」在畸变外。
-   */
-  const drawProjectChrome = (ctx: any, theme: 'light' | 'dark', st: UiDrawState) => {
-    if (theme !== 'light') return;
-    const padL = st.mobile ? 8 : Math.min(40, Math.max(20, W * 0.021));
-    const logoW = st.mobile ? Math.min(160, W * 0.3) : Math.min(190, Math.max(150, W * 0.1066));
-    const logoY = 34 + 8;
-    const box = drawImg(ctx, imgs.logoLight, padL, logoY, logoW);
-    regions.projectLogo = box ?? { x: padL, y: logoY, w: logoW, h: 40 };
-
-    const bw = 111;
-    const bh = 46;
-    if (st.projectCloseVisible !== false) {
-      const bx = W - 32 - bw;
-      const by = 34;
-      ctx.fillStyle = '#1a1918';
-      ctx.beginPath();
-      ctx.roundRect(S(bx), S(by), S(bw), S(bh), S(8));
-      ctx.fill();
-      ctx.font = `400 ${S(15)}px ${SERIF}`;
-      ctx.fillStyle = '#f4f1e8';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('Close ✕', S(bx + bw / 2), S(by + bh / 2));
-      regions.projectClose = { x: bx, y: by, w: bw, h: bh };
-    }
-    void st.activeNav;
-  };
 
   const drawLayer = (layer: { ctx: any }, theme: 'light' | 'dark', st: UiDrawState) => {
     const ctx = layer.ctx;
@@ -389,11 +346,8 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
     for (const k of Object.keys(regions)) delete regions[k as UiRegionKey];
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, pxW, pxH);
-    // 子页模式：只画详情页顶栏（logo + Close），其它 chrome 全部隐藏
-    if (st.projectOpen) {
-      drawProjectChrome(ctx, theme, st);
-      return;
-    }
+    // 子页模式：整个 canvas 层让位（详情页顶栏 = navbar 本体，uikit 导航层已画）
+    if (st.projectOpen) return;
     if (st.headerless) {
       // navbar/菜单已由 uikit 层渲染（navUiScene）；canvas 只画 work 箭头/提示
       if (theme === 'light' && st.page === 'work') drawWorkExtras(ctx, st);
@@ -415,7 +369,7 @@ export function createUiCanvas(cssW: number, cssH: number): UiCanvasHandle {
   const stateKey = (st: UiDrawState) =>
     [
       st.page, st.activeNav, st.mobile ? 1 : 0, st.menuOpen,
-      st.projectOpen ? 1 : 0, st.projectCloseVisible === false ? 0 : 1,
+      st.projectOpen ? 1 : 0,
       Math.round(st.fade * 50), Math.round(st.tieCopy * 40),
       assetsReady ? 1 : 0, W, H,
     ].join('|');

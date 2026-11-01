@@ -27,7 +27,8 @@ export interface NavRegionRect {
 
 export type NavRegionKey =
   | 'logo' | 'navHome' | 'navWork' | 'navAbout' | 'navContact'
-  | 'book' | 'burger' | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact';
+  | 'book' | 'burger' | 'projectClose'
+  | 'menuHome' | 'menuWork' | 'menuAbout' | 'menuContact';
 
 export interface NavUiSceneHandle {
   lightTexture: THREE.Texture;
@@ -38,6 +39,14 @@ export interface NavUiSceneHandle {
   update(state: NavTickInput, dt: number, renderer: THREE.WebGPURenderer): Promise<void>;
   setSize(w: number, h: number): void;
   dispose(): void;
+  /** 调试探针（只读，不参与逻辑）：两套 kit + 世界矩形读取，供自动化对账 */
+  __debug: {
+    lightKit: () => NavBarKit | null;
+    darkKit: () => NavBarKit | null;
+    rectOf: (el: any, dark: boolean) => { cx: number; cy: number; w: number; h: number } | null;
+    /** 调试：取具体渲染器（只读检查批次状态用） */
+    uikitOf: (dark: boolean) => UIKitRenderer;
+  };
 }
 
 export interface NavTickInput {
@@ -47,6 +56,8 @@ export interface NavTickInput {
   actionHover: number;
   /** 主题阻尼值 0..1（合成器 uiMode 已做 mix，此处仅决定 hit 表取哪层：≥0.5 用 dark） */
   uiMode: number;
+  /** 子页过渡值 0..1（原件 subPageTransition）：驱动导航整体上移 200px 及离场回落 */
+  subPageT: number;
 }
 
 export async function createNavUiScene(width: number, height: number): Promise<NavUiSceneHandle> {
@@ -129,6 +140,8 @@ export async function createNavUiScene(width: number, height: number): Promise<N
     h.navItemCols.forEach((it, i) => put(navKeys[i], it.col));
     put('book', h.bookBtn);
     put('burger', h.burgerBtn);
+    // 详情页 Close：子页打开时在栏内（subPageT≈1 才在视口内；退回胶片页时被升出视口）
+    put('projectClose', h.closeShell);
     // 菜单项（menuT>0 时面板可见；仍常驻导出——hit 层按 menuOpen 门控）
     const menuKeys: NavRegionKey[] = ['menuHome', 'menuWork', 'menuAbout', 'menuContact'];
     h.menuItems.forEach((it, i) => put(menuKeys[i], it.el));
@@ -145,6 +158,7 @@ export async function createNavUiScene(width: number, height: number): Promise<N
         logoHover: state.logoHover,
         actionHover: state.actionHover,
         dark: state.uiMode >= 0.5,
+        subPageT: state.subPageT,
       };
       lightKit?.tick(st, dt);
       darkKit?.tick(st, dt);
@@ -183,6 +197,13 @@ export async function createNavUiScene(width: number, height: number): Promise<N
       darkUikit.dispose();
       lightRT.dispose();
       darkRT.dispose();
+    },
+    __debug: {
+      lightKit: () => lightKit,
+      darkKit: () => darkKit,
+      rectOf: (el: any, dark: boolean) =>
+        (dark ? darkUikit : lightUikit).getElementWorldRect(el),
+      uikitOf: (dark: boolean) => (dark ? darkUikit : lightUikit),
     },
   };
   return api;

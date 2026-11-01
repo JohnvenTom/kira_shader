@@ -522,6 +522,17 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     /** navbar uikit 层（2026-10-25 P1：header/菜单改由 uikit 渲染，canvas 只留 work 箭头/提示） */
     let nav: NavUiSceneHandle | null = null;
     let navMenuT = 0;
+    /**
+     * 原件 pagesStore.subPageTransition（spring damping 20 / stiffness 85，离场带 0.1s 延迟）
+     *
+     * 用途：驱动 navbar 各组 `translateY = −200 · t`（本文件 navBar.ts 同源实现）。
+     * 子页打开时 t→1 导航整体离屏；点 Close 后 t 弹簧回落 1→0，即「导航条从上方缓慢降下」。
+     */
+    let navSubPageT = 0;
+    let navSubPageV = 0;
+    /** 离场延迟剩余秒数（原件 `delay: 0.1 * !sameType`，project → null 属换类型） */
+    let navSubPageDelay = 0;
+    let navSubPageTarget = 0;
     let uiModeDamped = 0;
     let uiTransitionDamped = 0;
     let logoHoverDamped = 0;
@@ -1178,14 +1189,15 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
 
     const onPointerDown = (e: PointerEvent) => {
       if (!st.ready) return;
-      // 子页打开：只接管 canvas 烘焙层的顶栏命中（Close / logo），其余拖拽/点击全部让位。
-      // 这里必须用 ui.hitTest（canvas 区域表），不能走 uiHit —— 后者会先命中已冻结的 navbar 表。
+      // 子页打开：只接管顶栏命中（Close / logo），其余拖拽/点击全部让位。
+      // 顶栏已是 navbar 本体（uikit 区域表），因此走 uiHit；导航项此时被上移 200px 出视口，
+      // 不会误命中。
       if (projectActive || projectPending) {
-        const hit = ui?.hitTest(e.clientX, e.clientY) ?? null;
+        const hit = uiHit(e.clientX, e.clientY);
         if (hit === 'projectClose') {
           e.preventDefault();
           closeProject();
-        } else if (hit === 'projectLogo') {
+        } else if (hit === 'logo') {
           // logo = 回首页（原站顶栏 logo 语义）：URL 交给导航跳转，
           // 子页退场不再自行 push，避免两次 replaceState 互相覆盖
           e.preventDefault();
@@ -1696,6 +1708,9 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
           // projects UI 淡入淡出：uiPageOffset 窗口 [0.7, 2)，实际淡入 [0.7,0.9]、在蒙版前淡出 [1.1,1.3]
           // 子页打开/创建期间：projects UI 强制淡出（原站 subPage 覆盖时 uikit 不画）
           const projectOpen = projectActive || projectPending;
+          /** 子页 chrome（canvas 顶栏 logo+Close）只在入场完成后、退场开始前显示；
+           *  退场交给胶片页 uikit 导航条从上方滑入（原站退场观感） */
+          const projectUiOpen = projectActive && !projectClosing;
           const swFade = projectOpen
             ? 0
             : smoothstep(0.7, 0.9, scroll) * (1 - smoothstep(1.1, 1.3, scroll));
@@ -1845,13 +1860,9 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               mode: uiModeDamped,
               tieCopy: tieCopyOpacity,
               headerless: nav != null,
-              // 详情子页：canvas UI 只画子页顶栏（logo + Close），随页面一起过桶形畸变
-              projectOpen,
-              // 原站入场帧里只有 logo，页面完全铺满（spring≈1）后才出 Close；退场立即隐藏
-              projectCloseVisible:
-                !projectClosing &&
-                (!projectZoomReveal ||
-                  smoothstep(CROSSFADE_START, CROSSFADE_END, projectExp ? Math.min(1, Math.max(0, projectExp.getSpring())) : 0) >= 0.985),
+              // 详情子页：canvas 层整体让位（原站顶栏 = navbar 本体：logo/Close/分隔线常显，
+              // 导航项/Book/汉堡/Close 的位移全部由 navBar 的 subPageT 驱动）
+              projectOpen: projectUiOpen,
               // projects 段激活项目 → 棱柱标题下绘制 View Project 入口行（原站 projects-view）
               // 与 titlePrism / 点击映射同源：SELECTED_PROJECTS[index] 直取
               projectIndex:
@@ -1860,11 +1871,12 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                   : undefined,
             });
             (window as any).__ui = ui;
+            (window as any).__nav = nav;
             (window as any).__uiVisible = ui ? ui.visibleRegions() : 'UI-NULL';
-            const uiModeTarget = st.theme === 'dark' ? 1 : 0;
+            const uiModeTarget = st.theme === 'dark' || projectUiOpen ? 1 : 0;
             uiModeDamped += (uiModeTarget - uiModeDamped) * Math.min(1, dt * 8);
-            // 子页打开时 UI 层转为「子页顶栏集」（draw 只画 logo + Close），仍需可见；
-            // 隐藏的只是胶片页 navbar 层（compose 的 navVisible=0）
+            // UI 层显隐（原件 uiTransition = initialTransition，与子页无关）；
+            // 详情页期间 canvas 层不画东西，顶栏完全由 navbar 本体承担
             const uiTransTarget = projectOpen || st.uiVisible || st.view === 'hero' || st.view === 'work' ? 1 : 0;
             // 子页打开时 UI 以更快速率淡出（原站转场帧里 navbar/标题是渐隐而非瞬切）
             const uiRate = projectOpen ? 14 : 8;
@@ -1877,7 +1889,34 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
             // navbar uikit 层逐帧驱动（spring/菜单动画/镜像/双 RT 渲染）
             // 子页打开时冻结 navbar 绘制：合成链的 uiTransition 已收敛到 0，旧纹理不可见
             navMenuT += ((menuOpen ? 1 : 0) - navMenuT) * Math.min(1, dt * 10);
-            if (nav && !projectOpen) {
+            // ---------- 原件 subPageTransition（pagesStore，0wb:4722 / 4730）----------
+            // 目标 1 = 子页打开（导航各组上移 200px 离屏）；0 = 关闭（弹簧回落 = 导航条缓慢降下）。
+            // 原件 navigateToSubPage 的 animate 参数：project → null 属「换类型」→ delay 0.1s，
+            // 弹簧 damping 20 / stiffness 85（与子页 spring 同一组常数）。
+            const subPageTarget = projectActive && !projectClosing ? 1 : 0;
+            if (subPageTarget !== navSubPageTarget) {
+              navSubPageTarget = subPageTarget;
+              navSubPageDelay = subPageTarget === 0 ? 0.1 : 0;
+            }
+            if (navSubPageDelay > 0) {
+              navSubPageDelay = Math.max(0, navSubPageDelay - dt);
+            } else {
+              // 半隐式欧拉：a = k(target − x) − c·v（framer-motion spring 同一方程）；
+              // 按 ≤1/120s 子步积分，避免掉帧（dt 上限 0.05）时弹簧被大步长积成抖动
+              let remain = dt;
+              while (remain > 0) {
+                const step = Math.min(remain, 1 / 120);
+                const acc = 85 * (navSubPageTarget - navSubPageT) - 20 * navSubPageV;
+                navSubPageV += acc * step;
+                navSubPageT += navSubPageV * step;
+                remain -= step;
+              }
+              if (Math.abs(navSubPageTarget - navSubPageT) < 0.0005 && Math.abs(navSubPageV) < 0.0005) {
+                navSubPageT = navSubPageTarget;
+                navSubPageV = 0;
+              }
+            }
+            if (nav) {
               await nav.update(
                 {
                   activeNav: st.contactActive
@@ -1891,6 +1930,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                   logoHover: logoHoverDamped,
                   actionHover: actionHoverDamped,
                   uiMode: uiModeDamped,
+                  subPageT: navSubPageT,
                 },
                 dt,
                 renderer,
@@ -2206,6 +2246,7 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                 uid: projectExp.getProject()?.uid ?? null,
                 alt: projectAlt?.getProject()?.uid ?? null,
                 altReady: projectAlt != null,
+                navT: +navSubPageT.toFixed(3),
               };
               (window as any).__projectExp = projectExp;
               (window as any).__projectAltExp = projectAlt;
@@ -2218,6 +2259,10 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                   : 1
                 : 0;
             const composeEffects = projectActive ? blendEffects(pageEffects, PROJECT_PAGE_EFFECTS, projectReveal) : pageEffects;
+            // 原件按 subPageTransition 在 section 页表 ↔ project 页表之间插值：
+            // 运动模糊 0.3 → 0.2、并去掉 bloom——这段不做额外加成，保持原件数值。
+            // 退场导航条不再用采样偏移：原件是 navbar 元素 translateY（−200·subPageTransition，
+            // spring damping20/stiffness85 + 0.1s 延迟），由 navBar/navUiScene 在布局里完成。
             if (compose) {
               await compose.render(renderer, (hero ?? workScene).scene, (hero ?? workScene).camera, {
                 time,
@@ -2242,8 +2287,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
                   border: ABLATE_UI_FLAT ? 0 : pageEffects.lensDistortionBorders,
                   logoHover: logoHoverDamped,
                   pageActionHover: actionHoverDamped,
-                  // 子页打开：胶片页 uikit 导航层隐藏（子页顶栏由 canvas 烘焙层单独绘制）
-                  navVisible: projectOpen ? 0 : 1,
+                  // 导航层常显（原站同一个 uikit 导航树：详情页期间只把子元素上移 200px，
+                  // logo / 分隔线留在原位），因此不再需要 navVisible 开关
                 },
               });
               // P2 星星转场 overlay：星星场景直渲画布（autoClear=false 叠在 compose 输出上）。

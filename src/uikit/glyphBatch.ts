@@ -33,6 +33,8 @@ export class GlyphInstance {
 
   private lastClipKey: string | null = null;
   private lastColorKey = '';
+  /** 上次写入实例缓冲的 base 矩阵元素快照（见 updateBaseMatrix） */
+  private baseKeys: number[] = new Array(16).fill(NaN);
 
   constructor(private batch: GlyphBatch) {}
 
@@ -83,11 +85,28 @@ export class GlyphInstance {
     }
   }
 
+  /**
+   * 更新字形所在节点的世界矩阵（原件 updateBaseMatrix）
+   *
+   * 参数：
+   *  - m {THREE.Matrix4} 元素的世界矩阵
+   *
+   * 返回值：无
+   *
+   * 注意事项：渲染器里的 globalMatrix 是**原地复用**的同一个对象（每帧只改 elements），
+   *          所以只比较引用会漏掉「父级位移」这类变化：字形会被永久烘焙在首次写缓冲时的位置。
+   *          这里按 16 个元素值去重，父级移动时才会重写实例矩阵。
+   */
   updateBaseMatrix(m: THREE.Matrix4): void {
-    if (this.baseMatrix !== m) {
-      this.baseMatrix = m;
-      this.writeMatrix();
+    const e = m.elements;
+    let changed = this.baseMatrix !== m;
+    for (let i = 0; i < 16 && !changed; i++) {
+      if (this.baseKeys[i] !== e[i]) changed = true;
     }
+    if (!changed) return;
+    for (let i = 0; i < 16; i++) this.baseKeys[i] = e[i];
+    this.baseMatrix = m;
+    this.writeMatrix();
   }
 
   updateColor(color: THREE.ColorRepresentation, opacity: number): void {
@@ -116,9 +135,10 @@ export class GlyphInstance {
   /** 04kr:27230 writeUpdatedMatrix */
   private writeMatrix(): void {
     if (this.index == null || this.glyphInfo == null || this.baseMatrix == null) return;
-    const m = new THREE.Matrix4().makeTranslation(this.x * this.pixelSize, this.y * this.pixelSize, 0);
+    // 复用临时矩阵：位移过程中每帧都会重写（见 updateBaseMatrix），避免逐字形分配
+    const m = _tmpMatrixA.makeTranslation(this.x * this.pixelSize, this.y * this.pixelSize, 0);
     m.multiply(
-      new THREE.Matrix4().makeScale(
+      _tmpMatrixB.makeScale(
         this.fontSize * this.glyphInfo.width * this.pixelSize,
         this.fontSize * this.glyphInfo.height * this.pixelSize,
         1,
@@ -426,6 +446,9 @@ export class GlyphBatch {
 }
 
 const _tmpColor = new THREE.Color();
+/** writeMatrix 的复用临时矩阵（避免逐字形逐帧分配） */
+const _tmpMatrixA = new THREE.Matrix4();
+const _tmpMatrixB = new THREE.Matrix4();
 
 /** 批次管理器（oC，04kr:25570）：rootObject 下按 key 分组 */
 export class GlyphBatchManager {
