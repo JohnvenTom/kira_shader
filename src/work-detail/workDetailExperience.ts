@@ -117,8 +117,10 @@ export async function createWorkDetailExperience(
   // ---------- 相机 ----------
   const camera = new THREE.PerspectiveCamera(PROJECT_CAMERA.fov, host.clientWidth / host.clientHeight, PROJECT_CAMERA.near, PROJECT_CAMERA.far);
   camera.position.set(0, 0, PROJECT_CAMERA.enterZ);
-  const vhWorld = frustumHeight(PROJECT_CAMERA.baseZ, PROJECT_CAMERA.fov); // z=0 平面视锥高
-  const vwWorld = vhWorld * camera.aspect;
+  // z=0 平面视锥尺寸（世界单位）。必须随 resize 更新——内容条定位、相机行程、
+  // Continue 命中矩形都按这两个值换算；固定初值会在窗口尺寸变化后整体错位。
+  let vhWorld = frustumHeight(PROJECT_CAMERA.baseZ, PROJECT_CAMERA.fov);
+  let vwWorld = vhWorld * camera.aspect;
 
   // ---------- uikit ----------
   const [regular, medium] = await Promise.all([loadFont('/fonts/stix_regular.json'), loadFont('/fonts/stix_medium.json')]);
@@ -218,6 +220,10 @@ export async function createWorkDetailExperience(
 
   /** Continue 按钮（Next 段）——布局后供命中测试（点击 = 原站路由语义 → 卷页换页） */
   let continueBtnEl: UIElement | null = null;
+  /** Continue 文案（原站点击后 setProperty("text","Loading...") 1500ms，04kr:62152） */
+  let continueTextEl: UIElement | null = null;
+  /** Next Project 标题（pq 标题 uP；排版对账用） */
+  let nextTitleEl: UIElement | null = null;
 
   /** 详情页内容树 —— 横向内容条（原站 bundle 实证：场景相机沿 X 扫过 7vw 内容条，
    *  #scroll-container 的纵向滚轮只是输入映射；pageCount = 内容宽/视口宽）：
@@ -332,20 +338,19 @@ export async function createWorkDetailExperience(
       alignItems: 'center',
       justifyContent: 'center',
     });
-    // label 下划线画在包裹容器上（text 元素无 panel mesh，borderBottom 不渲染）
+    // label：下划线画在包裹容器上（text 元素无 panel mesh，borderBottom 不渲染）。
+    // 原站把 marginBottom −10 挂在文字上（04kr:62076-62086）：负值把容器高度收到文字
+    // 行盒底部之上，下划线因此紧贴字形下缘（原站参考帧实证），不能用 paddingBottom。
     const labelWrap = UIElement.container({
       borderBottomWidth: 1,
       borderColor: CONTENT.nextPanel.divider,
-      paddingBottom: 8,
-      // uikit margin 仅数值 → 取 lg 档字面值
-      marginBottom: CONTENT.nextPanel.label.lg.marginBottom,
     });
     labelWrap.add(T('Next Project', {
       font: regular,
       fontSize: { base: CONTENT.nextPanel.label.fontSize, lg: CONTENT.nextPanel.label.lg.fontSize },
       lineHeight: { base: `${CONTENT.nextPanel.label.lineHeight}px`, lg: `${CONTENT.nextPanel.label.lg.lineHeight}px` },
       textAlign: 'center',
-    }, {}));
+    }, { marginBottom: CONTENT.nextPanel.label.lg.marginBottom }));
     panel.add(labelWrap);
     panel.add(
       T(nx.title, {
@@ -353,33 +358,72 @@ export async function createWorkDetailExperience(
         fontSize: { base: CONTENT.nextPanel.title.fontSize, md: CONTENT.nextPanel.title.md.fontSize, lg: CONTENT.nextPanel.title.lg.fontSize },
         lineHeight: { base: `${CONTENT.nextPanel.title.lineHeight}px`, md: `${CONTENT.nextPanel.title.md.lineHeight}px`, lg: `${CONTENT.nextPanel.title.lg.lineHeight}px` },
         textAlign: 'center',
-      }, { marginTop: CONTENT.nextPanel.title.lg.marginTop }),
+      }, {
+        marginTop: CONTENT.nextPanel.title.lg.marginTop,
+        // 换行宽度 = 800 − 72 − 28 = 700（原站 pq 的 width:800 是含内边的总宽）：
+        // 参考帧实证 "Alamance Foods"（100px ≈731）被断成两行，而 "Select Concept"（≈644）
+        // 单行——阈值必落在 (644, 731]，700 是唯一与 bundle 数值自洽的取值
+        maxWidth: CONTENT.nextPanel.width - CONTENT.nextPanel.paddingLeft - CONTENT.nextPanel.paddingRight,
+      }),
     );
+    nextTitleEl = panel.children[panel.children.length - 1];
     panel.add(
       T(nx.collaborator ? `${nx.subtitle} with ${nx.collaborator}` : nx.subtitle, {
         font: regular,
-        fontSize: CONTENT.nextPanel.subtitle.fontSize,
-        lineHeight: `${CONTENT.nextPanel.subtitle.lineHeight}px`,
+        fontSize: { base: CONTENT.nextPanel.subtitle.fontSize, lg: CONTENT.nextPanel.subtitle.lg.fontSize },
+        lineHeight: { base: `${CONTENT.nextPanel.subtitle.lineHeight}px`, lg: `${CONTENT.nextPanel.subtitle.lg.lineHeight}px` },
         textAlign: 'center',
-      }, { marginTop: 16 }),
+      }, {}),
     );
-    // Continue（son-2 实拍：黑色实心圆角按钮 ~122×42，白字 + 右侧白色箭头图标。
-    // 箭头必须用图标而非 → 字符——STIX MSDF 字集无 U+2192，缺字回退会让按钮文字度量错位）
+    // Continue（原站 u5 primary/dark + pq 外层 uk，逐字面值：04kr:62132-62179 / 32806-33060）：
+    // 黑底 #000、padding 24、gap 14、28px medium 白字（marginBottom −12 收敛行高）、
+    // 28×28 箭头图标（上下 margin −7）、hover opacity 0.96、外层透明描边框（a11y 聚焦才显黑）
+    const CS = CONTENT.nextPanel.continue;
+    const btnWrap = UIElement.container({
+      marginTop: CS.marginTop,
+      padding: CS.framePadding,
+      borderWidth: CS.frameBorderWidth,
+      borderRadius: CS.frameBorderRadius,
+      borderColor: 'transparent',
+      width: 'auto',
+      height: 'auto',
+    });
     const btn = UIElement.container({
-      backgroundColor: '#1a1918',
-      borderRadius: 4,
-      width: 122,
-      height: 42,
-      marginTop: 32,
+      backgroundColor: CS.background,
+      borderRadius: CS.borderRadius,
+      paddingX: CS.paddingX,
+      paddingY: CS.paddingY,
+      gap: CS.gap,
+      width: 'auto',
+      height: 'auto',
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 8,
     });
-    btn.add(T('Continue', { font: regular, fontSize: 16, lineHeight: '16px' }, { color: '#f4f1e8' }));
-    btn.add(UIElement.image(14, 1, {}, '/textures/icons/arrow_right_white.svg'));
-    panel.add(btn);
+    const btnLabelCol = UIElement.container({
+      flexDirection: 'column',
+      alignItems: 'center',
+      // 原站文字列 uk marginBottom −4（u5 04kr:33028-33036）
+      marginBottom: CS.labelColumnMarginBottom,
+    });
+    const btnLabel = T('Continue', {
+      font: medium,
+      fontSize: CS.label.fontSize,
+      lineHeight: `${CS.label.lineHeight}px`,
+      textAlign: 'center',
+    }, { color: CS.label.color, marginBottom: CS.label.marginBottom });
+    btnLabelCol.add(btnLabel);
+    btn.add(btnLabelCol);
+    btn.add(
+      UIElement.image(CS.iconSize, 1, {
+        marginTop: CS.iconMarginY,
+        marginBottom: CS.iconMarginY,
+      }, '/textures/icons/arrow_right_white.svg'),
+    );
+    btnWrap.add(btn);
+    panel.add(btnWrap);
     continueBtnEl = btn;
+    continueTextEl = btnLabel;
 
     // 内层（行）：[文字块 | 主面板 | 媒体条 | Next 面板]
     const inner = UIElement.container({ height: '100%', maxHeight: innerMaxH, flexDirection: 'row', alignItems: 'center' });
@@ -619,7 +663,9 @@ export async function createWorkDetailExperience(
       const b = v.x.lessThan(0);
       const S = N.float(1)
         .sub(N.smoothstep(0, o.mul(2), y.sub(E.z).negate()))
-        .mul(N.smoothstep(o.negate(), o, B.sub(v.x.add(Math.PI * 1.5 * o).add(o))));
+        // 原站 `l.mul(1.5).mul(o)`（l=float(π)）：必须写成节点乘法——JS number×TSL node
+        // 会被强转成 NaN 常量，WGSL 生成 `NaN.0` 导致整条卷页材质编译失败
+        .mul(N.smoothstep(o.negate(), o, B.sub(v.x.add(o.mul(Math.PI * 1.5)).add(o))));
       const x = E.xy.mul(v.x.sub(y)).toVar();
       x.x.assign(N.mix(x.x, x.x.negate(), u.toFloat()));
       x.y.assign(x.y.mul(N.mix(N.float(-1), N.float(1), nn)));
@@ -665,13 +711,19 @@ export async function createWorkDetailExperience(
   let cameraFlight = true;
   const offset = { s: 0 };
   const mouse = { x: 0, y: 0 };
+  /** 指针原始 CSS 坐标（Continue hover/命中用；-1 = 尚未移动过） */
+  const pointerPos = { x: -1, y: -1 };
   let portrait = false;
   /** 累计渲染帧（原站子页 30 帧预热门的计数源） */
   let frames = 0;
+  /** 实例存活（dispose 后异步回调/计时器一律短路） */
+  let alive = true;
 
   const onMouse = (e: PointerEvent) => {
     mouse.x = (e.clientX / host.clientWidth - 0.5) * 2;
     mouse.y = (e.clientY / host.clientHeight - 0.5) * 2;
+    pointerPos.x = e.clientX;
+    pointerPos.y = e.clientY;
   };
   window.addEventListener('pointermove', onMouse);
 
@@ -680,24 +732,82 @@ export async function createWorkDetailExperience(
   // Lenis scrollTo(0, immediate) 等价 = 新实例 scroll 0 + 本实例滚动冻结 + 宿主复位 projectScrollPx。
   const transition: {
     active: boolean;
+    /** 创建新实例中（原站用 subPage uid 比对挡住重复点击） */
+    pending: boolean;
     t: number;
     next: WorkDetailExperience | null;
-  } = { active: false, t: 0, next: null };
+  } = { active: false, pending: false, t: 0, next: null };
 
-  /** easeInOut（framer-motion 同名缓动：t<0.5 ? 2t² : 1-(−2t+2)²/2） */
-  const easeInOut = (x: number): number => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  /**
+   * framer-motion "easeInOut" 精确求值
+   *
+   * 功能：把线性进度映射为 cubic-bezier(0.42, 0, 0.58, 1) 的缓动值——原站 p7 的
+   *      `animate(h, 1, {duration:2, ease:"easeInOut"})` 用的就是这条曲线（easing 定义
+   *      在 0wb~eqgmow_3x.js:2605 `cubicBezier(0.42, 0, 0.58, 1)`），不是二次缓动。
+   *
+   * 参数：
+   *  - x {number} 线性进度 0..1
+   *
+   * 返回值：{number} 缓动后的进度 0..1（x≤0 → 0，x≥1 → 1）
+   *
+   * 异常：无
+   *
+   * 注意事项：牛顿迭代 8 次（带边界钳制），对 0..1 输入精度 <1e-5，逐帧调用开销可忽略。
+   */
+  const easeInOut = (x: number): number => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    const bx = (t: number, a: number, b: number): number => {
+      const mt = 1 - t;
+      return 3 * mt * mt * t * a + 3 * mt * t * t * b + t * t * t;
+    };
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const cx = bx(t, 0.42, 0.58) - x;
+      if (Math.abs(cx) < 1e-6) break;
+      const dx = 3 * (1 - t) * (1 - t) * 0.42 + 6 * (1 - t) * t * (0.58 - 0.42) + 3 * t * t * (1 - 0.58);
+      if (Math.abs(dx) < 1e-6) break;
+      t = Math.min(1, Math.max(0, t - cx / dx));
+    }
+    return bx(t, 0, 1);
+  };
 
-  /** 构建下一项目实例（同渲染器嵌入）并 snap 到已入场态，启动 2s 卷页 */
+  /** 切换 Continue 文案（原站 textRef.setProperty("text", ...)；改字后需重排） */
+  function setContinueLabel(text: string): void {
+    if (!alive || !continueTextEl?.__text) return;
+    if (continueTextEl.__text.text === text) return;
+    continueTextEl.__text.text = text;
+    relayout();
+  }
+
+  /** 构建下一项目实例（同渲染器嵌入）并 snap 到已入场态，预编译卷页材质后启动 2s 卷页 */
   async function switchNext(): Promise<void> {
-    if (transition.active || !embedded) return;
+    if (transition.active || transition.pending || !embedded) return;
+    transition.pending = true;
+    // 原站点击即把按钮文案切「Loading...」，1500ms 后复原（与转场是否完成无关）
+    setContinueLabel('Loading...');
+    window.setTimeout(() => setContinueLabel('Continue'), CONTENT.nextPanel.continue.loadingResetMs);
     const nx = nextWorkProject(project.uid);
-    const nextExp = await createWorkDetailExperience(host, nx, { renderer: gl, onProjectSwitched: opts.onProjectSwitched });
-    nextExp.enter({ cameraFlight: false, instant: true });
-    transition.active = true;
-    transition.t = 0;
-    transition.next = nextExp;
-    // 原站 = 客户端路由 /work/<next>（不重播 boot）；等价 history 推栈
-    history.pushState({}, '', `/work/${nx.uid}`);
+    try {
+      const nextExp = await createWorkDetailExperience(host, nx, { renderer: gl, onProjectSwitched: opts.onProjectSwitched });
+      nextExp.enter({ cameraFlight: false, instant: true });
+      curlFBO ??= mkFBO();
+      // 预编译卷页材质：Fn 体在编译期执行，采样节点（curlPrevNode/curlCurNode）此后才就位；
+      // 编译前挂 .value 会踩 null（Cannot set properties of null）
+      await gl.compileAsync(curlScene, curlCamera);
+      curlPrevNode.value = grainFBO.texture;
+      curlCurNode.value = nextExp.getTexture();
+      transition.next = nextExp;
+      transition.t = 0;
+      transition.active = true;
+      transition.pending = false;
+      // 原站 = 客户端路由 /work/<next>（不重播 boot）；等价 history 推栈
+      history.pushState({}, '', `/work/${nx.uid}`);
+    } catch (err) {
+      transition.pending = false;
+      // eslint-disable-next-line no-console
+      console.error('[wd] 卷页换页初始化失败（保持当前页）：', err);
+    }
   }
 
   /** Continue 按钮（Next 段）命中：世界 rect → 屏幕像素（相机 x 随滚动），命中 = 原站
@@ -716,20 +826,75 @@ export async function createWorkDetailExperience(
       h: (r.h / vhWorld) * host.clientHeight,
     };
   }
-  const onPointerDown = (e: PointerEvent) => {
-    if (transition.active) return;
+
+  /** 屏幕点是否落在 Continue 面板内 */
+  const hitContinue = (x: number, y: number): boolean => {
     const r = continueScreenRect();
-    if (r && e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h) {
-      void switchNext();
-    }
+    return !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  };
+
+  // 原站 uikit 语义：hover → container opacity 0.96 + body cursor pointer（04kr:27933-27943）
+  let btnHover = false;
+  /**
+   * Continue hover 态同步
+   *
+   * 功能：每帧按当前相机/滚动后的按钮屏幕矩形判定指针是否悬停，命中时把按钮不透明度
+   *      压到 0.96 并把指针改成 pointer；离开恢复。原站由 uikit onPointerEnter/Leave 驱动，
+   *      本地画布内没有 DOM 元素，只能在帧循环里做等价判定。
+   *
+   * 参数：无
+   * 返回值：无
+   * 异常：无
+   * 注意事项：换页期间（旧页冻结/新页未上屏）必须关闭 hover，避免指针状态粘在已冻结的按钮上。
+   */
+  function updateContinueHover(): void {
+    const over = !transition.active && !transition.pending && pointerPos.x >= 0 && hitContinue(pointerPos.x, pointerPos.y);
+    if (over === btnHover) return;
+    btnHover = over;
+    if (continueBtnEl) continueBtnEl.style.opacity = over ? CONTENT.nextPanel.continue.hoverOpacity : 1;
+    document.body.style.cursor = over ? 'pointer' : '';
+  }
+
+  // 原站 uikit onClick = pointerdown+up 都落在元素上；这里等价实现（避免按下即转场）
+  const press = { inside: false };
+  const onPointerDown = (e: PointerEvent) => {
+    if (transition.active || transition.pending) return;
+    press.inside = e.button === 0 && hitContinue(e.clientX, e.clientY);
+  };
+  const onPointerUp = (e: PointerEvent) => {
+    const wasInside = press.inside;
+    press.inside = false;
+    if (!wasInside || transition.active || transition.pending) return;
+    if (hitContinue(e.clientX, e.clientY)) void switchNext();
   };
   window.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('pointerup', onPointerUp);
 
   // ---------- 每帧 ----------
   const rawBypass = new URLSearchParams(location.search).has('wdraw');
 
   async function frame(dt: number, time: number): Promise<void> {
     const dtc = Math.min(0.1, Math.max(dt, 0.0001));
+    // ---------- 卷页换页推进（原站 p7 projectTransition 0→1，2s easeInOut，04kr:63033-63041） ----------
+    // 原站换页时旧 p9 实例不再出图（previousProjectSceneTexture 冻结在点击前最后一帧），
+    // 只有卷页 quad 在新页 FBO 之上合成 —— 这里整段短路旧页渲染，避免冻结面后面继续跑视频/颗粒。
+    if (transition.active && transition.next) {
+      // 先推进新页实例（scroll 0、spring 已 snap；视频/布局自走）——其 grainFBO 即卷页正面纹理
+      await transition.next.frame(dtc, time);
+      transition.t = Math.min(1, transition.t + dtc / 2);
+      curlUniforms.uTransition.value = easeInOut(transition.t);
+      gl.setRenderTarget(curlFBO!);
+      await gl.renderAsync(curlScene, curlCamera);
+      gl.setRenderTarget(null);
+      if (transition.t >= 1) {
+        const next = transition.next;
+        transition.active = false;
+        transition.next = null;
+        // 完成回调：宿主换引用/复位滚动并 dispose 本实例（本帧已收尾，安全）
+        opts.onProjectSwitched?.(next, nextWorkProject(project.uid));
+      }
+      return;
+    }
     if (rawBypass) {
       // 旁路：直出内容场景（二分：区分树/管线问题）
       camera.position.x = (scroll.current / host.clientHeight) * vwWorld;
@@ -787,6 +952,7 @@ export async function createWorkDetailExperience(
 
     // uikit 镜像
     uikit.update();
+    updateContinueHover();
     // 调试探针：Continue 按钮的实时屏幕 rect（命中公式校准用）
     (window as unknown as { __continueRect?: unknown }).__continueRect = continueScreenRect();
 
@@ -832,6 +998,8 @@ export async function createWorkDetailExperience(
           card.u.uVideoOpacity.value = card.fade;
           card.handle.play();
         } else card.handle.play();
+        // 拉新帧到 canvas 纹理（不可见时不拉，省上传带宽）
+        card.handle.pump();
       } else if (card.handle) {
         // 未挂载视频或不可见：停播并回落缩略图
         if (!card.visible && card.fade > 0) {
@@ -863,29 +1031,6 @@ export async function createWorkDetailExperience(
     await gl.renderAsync(grainScene, grainCamera);
     gl.setRenderTarget(null);
     frames++;
-
-    // ---------- 卷页换页推进（原站 projectTransition 0→1，2s easeInOut，04kr:63033-63041） ----------
-    if (transition.active && transition.next) {
-      // 先推进新页实例（scroll 0、spring 已 snap；视频/布局自走）——其 grainFBO 即卷页正面纹理
-      await transition.next.frame(dtc, time);
-      if (transition.t === 0) {
-        curlPrevNode.value = grainFBO.texture;
-        curlCurNode.value = transition.next.getTexture();
-        curlFBO ??= mkFBO();
-      }
-      transition.t = Math.min(1, transition.t + dtc / 2);
-      curlUniforms.uTransition.value = easeInOut(transition.t);
-      gl.setRenderTarget(curlFBO!);
-      await gl.renderAsync(curlScene, curlCamera);
-      gl.setRenderTarget(null);
-      if (transition.t >= 1) {
-        const next = transition.next;
-        transition.active = false;
-        transition.next = null;
-        // 完成回调：宿主换引用/复位滚动并 dispose 本实例（本帧已收尾，安全）
-        opts.onProjectSwitched?.(next, nextWorkProject(project.uid));
-      }
-    }
 
     // 嵌入模式：后期交给主体验合成链（subPage 采样），这里只出 grainFBO 纹理
     if (!compose) return;
@@ -920,6 +1065,9 @@ export async function createWorkDetailExperience(
     compose?.setSize(w, h);
     const newVh = frustumHeight(PROJECT_CAMERA.baseZ, PROJECT_CAMERA.fov);
     const newVw = newVh * camera.aspect;
+    // 更新闭包视锥尺寸（内容条定位 / 相机行程 / 命中矩形全部依赖它）
+    vhWorld = newVh;
+    vwWorld = newVw;
     grainQuad.geometry.dispose();
     grainQuad.geometry = new THREE.PlaneGeometry(2 * newVw, 2 * newVh);
     relayout();
@@ -987,8 +1135,15 @@ export async function createWorkDetailExperience(
      * 注意事项：嵌入模式下渲染器与画布归主体验所有，这里必须跳过 dispose
      */
     dispose: () => {
+      alive = false;
       window.removeEventListener('pointermove', onMouse);
       window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerUp);
+      // hover 遗留状态复位（原站 uikit onPointerLeave 同语义）
+      if (btnHover) {
+        btnHover = false;
+        document.body.style.cursor = '';
+      }
       compose?.dispose();
       for (const c of cards) {
         c.disposed = true;
@@ -1034,6 +1189,23 @@ export async function createWorkDetailExperience(
       scroll: { ...scroll },
       /** 相机 z（入场 spring 收敛应为 baseZ=5，初值 enterZ=10） */
       cameraZ: +cameraZ.b.toFixed(3),
+      /** 卷页换页状态（active / 线性进度 t / curl 采样进度） */
+      transition: { active: transition.active, pending: transition.pending, t: +transition.t.toFixed(2) },
+      /** Continue 按钮排版对账（文字/图标各自布局尺寸与矩形） */
+      continueRects: continueBtnEl
+        ? {
+            btn: uikit.getElementWorldRect(continueBtnEl),
+            btnSize: continueBtnEl.size,
+            label: continueTextEl ? uikit.getElementWorldRect(continueTextEl) : null,
+            labelSize: continueTextEl?.size ?? null,
+            labelText: continueTextEl?.__text?.text ?? null,
+            icon: continueBtnEl.children[1] ? uikit.getElementWorldRect(continueBtnEl.children[1]) : null,
+            iconSize: continueBtnEl.children[1]?.size ?? null,
+            /** Next 面板尺寸 + 标题实际布局盒（标题换行宽度对账） */
+            panelSize: continueBtnEl.parent?.parent?.size ?? null,
+            nextTitleSize: nextTitleEl?.size ?? null,
+          }
+        : null,
     }),
   };
 }
