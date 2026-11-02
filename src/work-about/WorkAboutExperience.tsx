@@ -479,6 +479,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       duration: number;
       /** 最近一次成功强渲的目标页纹理（领头星内芯的画面源；未就绪为 null） */
       toTex?: THREE.Texture | null;
+      /** 目标页强渲是否已尝试过（原站只取已渲染的 FBO；本地点只渲一次，不每帧全量重渲） */
+      toTried?: boolean;
     } | null = null;
     /** 转场的定时器（组件卸载清理；转场动画走 CSS/墙钟，不依赖渲染帧率——
      *  SwiftShader 下渲染帧 1-2s/帧，rAF 驱动的 1.25s 转场会在 1-2 帧内跑完退化成瞬移） */
@@ -1565,12 +1567,150 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
 
       const clock = new THREE.Clock();
       let lastTime = 0;
+      /** 启动后空闲预热队列（见 schedulePrewarm）：主循环每帧最多取一步，保证与帧内 pass 串行 */
+      const prewarmQueue: Array<() => Promise<unknown> | unknown> = [];
+      /** 预热静默期截止（performance.now 基准）：先让首屏 boot 收尾跑完 */
+      let prewarmNotBefore = 0;
+
+      /**
+       * 转场目标页强渲（领头星内芯的画面源）
+       *
+       * 功能：按导航目标页索引把对应场景渲进自己的 RT，返回可被内芯采样的纹理。
+       *      原站所有页面场景常在、各自 FBO 是活帧，转场只按路由取纹理；本地页 RT 是
+       *      条件渲（按滚动窗口），所以转场开始时要补渲一帧。
+       *
+       * 参数：
+       *  - idx {number} 目标页索引（0 hero / 1 projects / 3 about-us / 6 contact）
+       *  - s   {number} 目标页的全局滚动位（喂给该页自身的参数计算）
+       *
+       * 返回值：Promise<THREE.Texture | null>；场景缺失或渲染失败返回 null（内芯退化为透明）
+       *
+       * 异常：内部吞掉渲染异常（采样未渲染 RT 会让 WebGPU pipeline invalid，整帧被弃）
+       *
+       * 注意事项：调用后 renderTarget 会被复位由后续 pass 自己设置；本函数同时被
+       *          转场（一次性）与启动后空闲预热复用，不要在帧中途反复调用。
+       */
+      const renderNavTarget = async (idx: number, s: number): Promise<THREE.Texture | null> => {
+        if (!renderer) return null;
+        const dt = 1 / 60;
+        const time = clock.elapsedTime;
+        try {
+          if (idx === 0 && hero && heroRT) {
+            hero.update({ dt, time, scroll: 0, mouseX: mouse.x, mouseY: mouse.y });
+            renderer.setClearColor(CLEAR_TRANSPARENT, 1);
+            renderer.setRenderTarget(heroRT);
+            await (renderer as any).renderAsync(hero.scene, hero.camera);
+            return heroRT.texture;
+          }
+          if (idx === 1 && workScene && filmRT) {
+            workScene.update(dt, time, {
+              mouseX: mouse.x,
+              mouseY: mouse.y,
+              selectedIndex: work.index,
+              dragPx: 0,
+              pageScroll: s,
+              exitProgress: 0,
+            });
+            workScene.setTransitionTexture(null);
+            renderer.setRenderTarget(filmRT);
+            await (renderer as any).renderAsync(workScene.scene, workScene.camera);
+            return filmRT.texture;
+          }
+          if (idx === 3 && paperScene && aboutRT) {
+            // toS=ABOUT_START：纸页顶（paperTop=0），paperScene 直渲 aboutRT（同主循环分支）
+            paperScene.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
+            renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+            renderer.setRenderTarget(aboutRT);
+            await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
+            return aboutRT.texture;
+          }
+          if (idx === 6 && contact && contactRT) {
+            contact.update(dt, time, {
+              enterScreens: 0,
+              lengthScreens: contact.length(),
+              mouseX: mouse.x,
+              mouseY: mouse.y,
+              touch: 'ontouchstart' in window,
+            });
+            renderer.setClearColor(CLEAR_CONTACT, 1);
+            renderer.setRenderTarget(contactRT);
+            await (renderer as any).renderAsync(contact.scene, contact.camera);
+            return contactRT.texture;
+          }
+        } catch {
+          return null;
+        }
+        return null;
+      };
+
+      /**
+       * 启动后空闲预热（对齐原站：场景常在 + 管线预编译 + 转场只取纹理）
+       *
+       * 功能：首屏稳定后，逐个空闲时片执行「编译星星场景 / 各页管线 + 各页 RT 预渲一次」，
+       *      把冷启动成本（WebGPU 管线编译、CanvasTexture 上传）挪到用户没操作的时候，
+       *      避免跨段星星转场第一帧掉几百毫秒。
+       *
+       * 参数：无
+       *
+       * 返回值：无
+       *
+       * 异常：单步失败只告警，不影响主流程
+       *
+       * 注意事项：预热步骤由主循环每帧取一步执行（与帧内 pass 串行，避免并发渲染抢 RT 状态）；
+       *          转场/子页/滚动惯性期间自动让路，等空闲再继续。
+       */
+      const schedulePrewarm = () => {
+        const compile = (h: { scene: THREE.Object3D; camera: THREE.Camera } | null) =>
+          h && renderer ? (renderer as any).compileAsync(h.scene, h.camera) : null;
+        prewarmQueue.push(
+          // 1) contact 资源（字体/长列画布）先就绪，否则下面的预渲只是空场景
+          () => contact?.ready ?? Promise.resolve(),
+          // 2) 星星转场场景管线（原来落在转场首帧，实测吃 ~115ms）
+          () => compile(starScene),
+          // 3) 各页管线 + 真实预渲一次（CanvasTexture 上传与首帧绘制的成本都挪到空闲期）
+          () => compile(contact),
+          () => renderNavTarget(6, getContactStart() ?? 0),
+          () => renderNavTarget(3, ABOUT_START),
+          () => renderNavTarget(1, WORK_REST_S),
+          () => renderNavTarget(0, 0),
+          () => compile(paperScene),
+          () => compile(office),
+          () => compile(tie),
+          () => compile(reveal),
+          () => compile(hero),
+        );
+        // 首屏先跑几百毫秒（boot 收尾 / 首帧编译），再开始预热门
+        prewarmNotBefore = performance.now() + 900;
+      };
+      schedulePrewarm();
+
       const render = async () => {
         if (disposed || !renderer || !workScene || !office) return;
         try {
           const dt = Math.min(clock.getDelta(), 0.05);
           const time = clock.elapsedTime;
           lastTime = time;
+
+          // ---------- 启动后空闲预热：每帧最多一步 ----------
+          // 只在「没有转场/子页、也没有滚动惯性」时做重活（管线编译 / 首帧预渲），
+          // 把冷启动成本挪出星星转场那一帧（实测原站也是这套：场景常在 + 预编译 + 取纹理）
+          if (
+            prewarmQueue.length > 0 &&
+            performance.now() >= prewarmNotBefore &&
+            !navNav &&
+            !projectActive &&
+            !projectPending &&
+            !projectClosing &&
+            Math.abs(st.about.target - st.about.s) < 0.02
+          ) {
+            const job = prewarmQueue.shift()!;
+            try {
+              await job();
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn('[WorkAbout] 预热步骤失败：', err);
+            }
+          }
 
           // ---------- 统一滚动轴（原站 Lenis + snap） ----------
           const h = window.innerHeight;
@@ -2111,59 +2251,13 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
               await (renderer as any).renderAsync(contact.scene, contact.camera);
             }
 
-            // ---------- P2 星星转场：目标页 RT 强渲（领头星内芯的画面源） + 星星场景渲染 ----------
-            // 原站做法：宿主每帧临时把 scroll 设为 target 取目标页纹理。本地页 RT 是条件渲，
-            // 转场时目标页多半没渲 → 在这里按 toS 局部重算参数强渲对应 RT（t≥0.5 起即可，
-            // 内芯 0.8 才可见，给 WebGPU 预热余量）。about 页 fromS 不可能=toIdx（同页短路），
-            // about 目标页退化用 stale aboutRT。
-            if (navNav && navNav.kind === 'transition' && navNav.t >= 0.5) {
-              const toS = navNav.toS;
-              // 强渲成功才把 RT 喂给内芯：采样从未渲染的 RT 会让 WebGPU pipeline
-              // invalid，整帧被弃（星星 RT 全空、转场黑屏实证）
-              navNav.toTex = null;
-              try {
-                if (navNav.toIdx === 0 && hero && heroRT) {
-                  hero.update({ dt, time, scroll: 0, mouseX: mouse.x, mouseY: mouse.y });
-                  renderer.setClearColor(CLEAR_TRANSPARENT, 1);
-                  renderer.setRenderTarget(heroRT);
-                  await (renderer as any).renderAsync(hero.scene, hero.camera);
-                  navNav.toTex = heroRT.texture;
-                } else if (navNav.toIdx === 1 && filmRT) {
-                  workScene.update(dt, time, {
-                    mouseX: mouse.x,
-                    mouseY: mouse.y,
-                    selectedIndex: work.index,
-                    dragPx: 0,
-                    pageScroll: toS,
-                    exitProgress: 0,
-                  });
-                  workScene.setTransitionTexture(null);
-                  renderer.setRenderTarget(filmRT);
-                  await (renderer as any).renderAsync(workScene.scene, workScene.camera);
-                  navNav.toTex = filmRT.texture;
-                } else if (navNav.toIdx === 3 && paperScene && aboutRT) {
-                  // toS=ABOUT_START：纸页顶（paperTop=0），paperScene 直渲 aboutRT（同 1304 分支）
-                  paperScene.update({ stage: 'paper', paperTop: 0, shred: 0, ctaTop: 0, time });
-                  renderer.setClearColor(CLEAR_TRANSPARENT, 0);
-                  renderer.setRenderTarget(aboutRT);
-                  await (renderer as any).renderAsync(paperScene.scene, paperScene.camera);
-                  navNav.toTex = aboutRT.texture;
-                } else if (navNav.toIdx === 6 && contact && contactRT) {
-                  contact.update(dt, time, {
-                    enterScreens: 0,
-                    lengthScreens: contact.length(),
-                    mouseX: mouse.x,
-                    mouseY: mouse.y,
-                    touch: 'ontouchstart' in window,
-                  });
-                  renderer.setClearColor(CLEAR_CONTACT, 1);
-                  renderer.setRenderTarget(contactRT);
-                  await (renderer as any).renderAsync(contact.scene, contact.camera);
-                  navNav.toTex = contactRT.texture;
-                }
-              } catch {
-                // 强渲失败不阻塞转场（内芯退化为透明）
-              }
+            // ---------- P2 星星转场：目标页 RT 补渲（领头星内芯的画面源）----------
+            // 原站所有页面场景常在、各页 FBO 是活帧，转场只按路由取纹理；本地页 RT 是
+            // 按滚动窗口条件渲的，所以转场开始后补渲**一次**（不再是 t≥0.5 起每帧全量重渲）。
+            // 内芯 0.8 才可见；补渲失败时 toTex 保持 null（内芯透明，与原站冷缓存同行为）。
+            if (navNav && navNav.kind === 'transition' && navNav.t >= 0.5 && !navNav.toTried) {
+              navNav.toTried = true;
+              navNav.toTex = await renderNavTarget(navNav.toIdx, navNav.toS);
             }
 
             // ---------- sceneMode 合成（原件 c[0..6] + 转场类型，动态页表） ----------
