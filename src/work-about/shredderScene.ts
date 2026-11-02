@@ -41,6 +41,8 @@ export interface ShredderSceneHandle {
   /** 每次进入碎纸段时调用，重置布条模拟 */
   reset: () => void;
   update: (renderer: THREE.WebGPURenderer, state: ShredderUpdateState) => Promise<void>;
+  /** shredder.glb 是否已加载就绪（预热「模型材质首编译」的前置条件） */
+  isReady: () => boolean;
   dispose: () => void;
   /** 调试/验收用，页面 probe 可读 */
   debug: {
@@ -780,5 +782,5 @@ export function createShredderScene(
     sim: { scene: simScene, camera: simCamera, mesh: quad.mesh },
   };
 
-  return { scene, camera, setSize, reset, update, dispose, debug };
+  return { scene, camera, setSize, reset, update, isReady: () => modelReady, dispose, debug };
 }

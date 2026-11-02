@@ -1571,6 +1571,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       const prewarmQueue: Array<() => Promise<unknown> | unknown> = [];
       /** 预热静默期截止（performance.now 基准）：先让首屏 boot 收尾跑完 */
       let prewarmNotBefore = 0;
+      /** 碎纸机预热待执行（模型就绪后由主循环补一次「模拟 + 首帧渲染」） */
+      let prewarmShredderPending = true;
 
       /**
        * 转场目标页强渲（领头星内芯的画面源）
@@ -1644,6 +1646,49 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
       };
 
       /**
+       * 碎纸机预热（布条模拟 compute 管线 + shredder.glb 材质首编译）
+       *
+       * 功能：在用户还没滚到碎纸段时，跑一次布条模拟并把场景渲进一张 16×16 临时 RT，
+       *      让模拟/渲染管线与 GLB 贴图提前编译上传；进碎纸段时就只剩常规绘制。
+       *      原站同样把 shredder.glb 走 preload（`nA.preload("/models/shredder.glb", nP)`），
+       *      碎纸段本身不承担首次加载/编译成本。
+       *
+       * 参数：无
+       *
+       * 返回值：Promise<void>
+       *
+       * 异常：内部吞掉渲染异常（失败只告警，不影响正常流程）
+       *
+       * 注意事项：必须在 `shredder.isReady()` 之后调用（模型材质才是主要编译成本）；
+       *          渲到临时 RT 而不是 aboutRT，避免污染当前可见页；结束后 reset 回初始态，
+       *          正式进入碎纸段时仍是干净的起点。
+       */
+      const warmShredder = async (): Promise<void> => {
+        if (!renderer || !shredder) return;
+        const scratch = new THREE.RenderTarget(16, 16, { type: THREE.HalfFloatType, depthBuffer: true });
+        try {
+          shredder.reset();
+          await shredder.update(renderer, {
+            shred: 0,
+            time: clock.elapsedTime,
+            dt: 1 / 60,
+            mouseX: 0,
+            mouseY: 0,
+          });
+          renderer.setClearColor(CLEAR_TRANSPARENT, 0);
+          renderer.setRenderTarget(scratch);
+          await (renderer as any).renderAsync(shredder.scene, shredder.camera);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[WorkAbout] 碎纸机预热失败：', err);
+        } finally {
+          renderer.setRenderTarget(null);
+          scratch.dispose();
+          shredder.reset();
+        }
+      };
+
+      /**
        * 启动后空闲预热（对齐原站：场景常在 + 管线预编译 + 转场只取纹理）
        *
        * 功能：首屏稳定后，逐个空闲时片执行「编译星星场景 / 各页管线 + 各页 RT 预渲一次」，
@@ -1663,6 +1708,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
         const compile = (h: { scene: THREE.Object3D; camera: THREE.Camera } | null) =>
           h && renderer ? (renderer as any).compileAsync(h.scene, h.camera) : null;
         prewarmQueue.push(
+          // 0) 纸页/碎纸机场景就绪（ensurePaper 幂等，已创建则立即返回）
+          () => ensurePaper(),
           // 1) contact 资源（字体/长列画布）先就绪，否则下面的预渲只是空场景
           () => contact?.ready ?? Promise.resolve(),
           // 2) 星星转场场景管线（原来落在转场首帧，实测吃 ~115ms）
@@ -1693,22 +1740,27 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
 
           // ---------- 启动后空闲预热：每帧最多一步 ----------
           // 只在「没有转场/子页、也没有滚动惯性」时做重活（管线编译 / 首帧预渲），
-          // 把冷启动成本挪出星星转场那一帧（实测原站也是这套：场景常在 + 预编译 + 取纹理）
-          if (
-            prewarmQueue.length > 0 &&
+          // 把冷启动成本挪出星星转场/碎纸段那一帧（实测原站也是这套：场景常在 + 预编译 + 取纹理）
+          const prewarmIdle =
             performance.now() >= prewarmNotBefore &&
             !navNav &&
             !projectActive &&
             !projectPending &&
             !projectClosing &&
-            Math.abs(st.about.target - st.about.s) < 0.02
-          ) {
-            const job = prewarmQueue.shift()!;
-            try {
-              await job();
-            } catch (err) {
-              // eslint-disable-next-line no-console
-              console.warn('[WorkAbout] 预热步骤失败：', err);
+            Math.abs(st.about.target - st.about.s) < 0.02;
+          if (prewarmIdle) {
+            if (prewarmQueue.length > 0) {
+              const job = prewarmQueue.shift()!;
+              try {
+                await job();
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn('[WorkAbout] 预热步骤失败：', err);
+              }
+            } else if (prewarmShredderPending && shredder?.isReady()) {
+              // 队列排空后再补碎纸机（模型加载完成才做，避免渲染半成品）
+              prewarmShredderPending = false;
+              await warmShredder();
             }
           }
 
@@ -2484,6 +2536,8 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
         work,
         compose,
         lastTime: () => lastTime,
+        /** 启动后空闲预热状态（自动化验证用：队列剩余步数 / 碎纸机预热是否待执行） */
+        prewarm: () => ({ left: prewarmQueue.length, shredderPending: prewarmShredderPending }),
         /** 项目子页探针（自动化验证用） */
         project: () => ({
           active: projectActive,
