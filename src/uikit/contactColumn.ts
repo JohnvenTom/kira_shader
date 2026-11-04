@@ -104,15 +104,27 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
   });
   cards.add(generalCol, visitSocialRow);
 
-  // cn CEO 卡（37700）：外框 padding8 border2 + lg marginTop80；内框 lg 固定高 180
+  // cn CEO 卡（37700）：外框 padding8 border2 + lg marginTop80；内框 lg 固定 640×180
   const ceoOuter = UIElement.container({ padding: 8, borderWidth: 2, ...(lg ? { marginTop: 80 } : {}) });
   const ceoInner = UIElement.container(lg ? { height: 180, width: 640, gap: 24, flexDirection: 'row', alignItems: 'center' } : { gap: 18, flexDirection: 'row', alignItems: 'center' });
   ceoOuter.add(ceoInner);
-  // 内容（dashed 背景/simon 图/文案）为渲染层（M3）职责，布局上内框定高即可
-  // simon 150/lg200 mL8 my6（lg 200×200 mL16）——布局占位（渲染层以 map 面板呈现）
+  // 虚线框（原件 cn 的 dashed_frame：absolute 100%×100% 铺满内框，最先画 → 在内容之下）
+  ceoInner.add(
+    UIElement.image(640, 180 / 640, {
+      positionType: 'absolute', positionTop: 0, positionLeft: 0, width: '100%', height: '100%',
+    }, '/textures/dashed_frame.svg'),
+  );
+  // simon 头像：150/lg200，marginY 6，marginLeft 8/lg16
   const simonSize = lg ? 200 : 150;
-  const simon = UIElement.container({ width: simonSize, height: simonSize, ...(lg ? { marginLeft: 16 } : { marginLeft: 8 }), marginTop: 6, marginBottom: 6 });
+  const simon = UIElement.image(
+    simonSize, 1,
+    { marginLeft: lg ? 16 : 8, marginTop: 6, marginBottom: 6 },
+    '/textures/simon_calling.webp',
+  );
   ceoInner.add(simon);
+  // 原件 cn 的文案列没有显式宽度上限（文本吃满内框剩余宽度）。本地字体度量比原件窄，
+  // 不限宽会多吞一个词、断行落在「at」之后；按原件实测断行（「…for new / business enquiries…」）
+  // 保留 384 上限，保证视觉 1:1
   const ceoTextCol = UIElement.container({ flexDirection: 'column', maxWidth: 384 });
   ceoTextCol.add(
     UIElement.text('New business', { font: fonts.bold, fontSize: lg ? 32 : W >= 640 ? 24 : 19 }),
@@ -120,7 +132,7 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
       font: fonts.regular,
       fontSize: lg ? 24 : W >= 640 ? 18 : 13,
       lineHeight: '120%',
-    }, { marginTop: 6 }),
+    }),
   );
   ceoInner.add(ceoTextCol);
   links.set('ctCeo', ceoTextCol);
@@ -158,7 +170,9 @@ export function buildContactContentColumn(fonts: ContactFonts, viewportWidth: nu
 
   const footer = UIElement.container({
     flexDirection: lg ? 'row' : 'column-reverse',
-    justifyContent: 'center', alignItems: 'center',
+    // 原件 cg：lg 用 space-between（证书左 / 版权中 / 无障碍右），窄屏居中
+    justifyContent: lg ? 'space-between' : 'center',
+    alignItems: 'center',
     backgroundColor: 'black',
     borderColor: 'rgba(245, 235, 216, 0.05)',
     paddingLeft: 64, paddingRight: 64,
