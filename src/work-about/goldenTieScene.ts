@@ -473,9 +473,14 @@ export function createGoldenTieScene(
   // ---------------------------------------------------------------------------
   const fallbackSheet = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   fallbackSheet.needsUpdate = true;
+  // contact 采样用独立占位纹理：若与 fallbackSheet 共用同一对象，材质首次编译时
+  // 两个 TextureNode 会被 three 按纹理 uuid 合并成同一个 uniform 槽，运行时
+  // 握手 sheet 写进该槽后，火花窗口采样的 contact 画面也会变成整张 sheet。
+  const fallbackContact = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  fallbackContact.needsUpdate = true;
   let sheetNode: any = null;
   // contact 页 RT 的纹理节点（TextureNode.value 运行时可换；WorkAboutExperience 逐帧传入 nextRT.texture）
-  const contactTexNode = T.texture(fallbackSheet);
+  const contactTexNode = T.texture(fallbackContact);
 
   const hs = {
     offset: T.uniform(new THREE.Vector2(0, 0)),
@@ -639,7 +644,6 @@ export function createGoldenTieScene(
       });
       hs.grid.value.set(sheetCols, sheetRows);
       if (sheets[0] && sheetNode) sheetNode.value = sheets[0];
-      (hsMat as any).needsUpdate = true;
     } catch {
       // 资源加载失败时保持透明
     }
@@ -773,6 +777,7 @@ export function createGoldenTieScene(
     bgMat.dispose();
     gradientTex.dispose();
     fallbackSheet.dispose();
+    fallbackContact.dispose();
     for (const s of sheets) s.dispose();
     scene.environment = null;
     if (tieMesh) tieMesh.geometry.dispose();
