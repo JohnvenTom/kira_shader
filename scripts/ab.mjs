@@ -20,7 +20,8 @@
 import { chromium } from 'file:///C:/Users/tom/.workbuddy/binaries/node/workspace/node_modules/playwright-core/index.mjs';
 
 const [, , cmd, ...args] = process.argv;
-const CDP_URL = 'http://localhost:9222';
+/** CDP 端口：默认 9222，可用 `CDP_URL=http://127.0.0.1:9333` 覆盖（并行调试实例） */
+const CDP_URL = process.env.CDP_URL || 'http://localhost:9222';
 
 const browser = await chromium.connectOverCDP(CDP_URL);
 const ctx = browser.contexts()[0] ?? (await browser.newContext());
@@ -77,6 +78,16 @@ try {
       const p = `screenshots/${args[0]}`;
       await page.screenshot({ path: p });
       console.log('shot saved:', p);
+      break;
+    }
+    case 'shotvp': {
+      // shotvp <w> <h> <name.png>：设置视口后截图
+      const [w, h, name] = args;
+      await page.setViewportSize({ width: +w, height: +h });
+      await page.waitForTimeout(300);
+      const p = `screenshots/${name}`;
+      await page.screenshot({ path: p });
+      console.log('shotvp saved:', p, `(${w}x${h})`);
       break;
     }
     case 'mouse': {

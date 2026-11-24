@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>WebGPU / TSL 冒烟自检</title>
+<style>
+  body { margin: 0; background: #08090a; color: #e6e8e6; font: 14px/1.6 ui-monospace, Consolas, monospace; padding: 24px; }
+  h1 { font-size: 16px; margin: 0 0 16px; font-weight: 500; }
+  pre { white-space: pre-wrap; background: #12151a; border: 1px solid #262b33; border-radius: 8px; padding: 16px; margin: 0 0 16px; }
+  .pass { color: #38cf90; }
+  .fail { color: #ff6b6b; }
+  .meta { color: #98a29f; }
+  canvas { image-rendering: pixelated; border: 1px solid #262b33; border-radius: 6px; display: block; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>WebGPU / TSL 冒烟自检</h1>
+<pre id="raw">[A] 纯 WebGPU 检查：运行中…</pre>
+<pre id="three">[B] three/webgpu + TSL 检查：运行中…</pre>
+<pre class="meta" id="env">环境：…</pre>
+
+<script type="module">
+/**
+ * WebGPU / TSL 冒烟自检页
+ *
+ * 功能：分两段验证本机是否具备运行 shader.se 1:1 复刻所需的渲染能力。
+ *       [A] 纯 WebGPU：申请适配器/设备，配置画布上下文，用 WGSL 画覆盖全屏的三角形，
+ *           再 copyTextureToBuffer 回读中心像素，确认真实渲染管线跑通。
+ *       [B] three/webgpu：创建 WebGPURenderer 并 await init()，判断实际后端是 WebGPU
+ *           还是 WebGL 回退，再用 TSL 的 PostProcessing + pass() + bloom() 渲一帧，
+ *           确认节点材质与 TSL 后处理链路可用。
+ *
+ * 参数：无
+ *
+ * 返回值：无（结果写入页面上的 #raw / #three / #env 三块，供人工读取）
+ *
+ * 异常：每一段各自 try/catch，失败时把错误消息写到对应块，不影响另一段
+ *
+ * 注意事项：
+ *  - 两段互相独立：即使 three 段因 API 变动报错，[A] 段仍能给出驱动栈的确定性结论
+ *  - 回读中心像素的期望值按 bgra8unorm 字节序解读为 B,G,R,A
+ *  - WebGPURenderer 未显式传 forceWebGL，若设备不支持 WebGPU 会自动回退到 WebGL 后端，
+ *    这一点会通过 backend.isWebGLBackend 明确报出来，避免误判
+ */
+
+const elRaw = document.getElementById('raw');
+const elThree = document.getElementById('three');
+const elEnv = document.getElementById('env');
+
+/** 写结果并同步到 console，便于同时用肉眼与日志两路取证 */
+function write(el, tag, ok, detail) {
+  const cls = ok === true ? 'pass' : ok === false ? 'fail' : 'meta';
+  const label = ok === true ? 'PASS' : ok === false ? 'FAIL' : 'INFO';
+  el.innerHTML = '<span class="' + cls + '">' + label + '</span> ' + tag + '\n' + detail;
+  console.log('[' + label + '] ' + tag + ' :: ' + detail.replace(/\n/g, ' | '));
+}
+
+/* ============================ [A] 纯 WebGPU ============================ */
+const WGSL = `
+struct VSOut { @builtin(position) pos: vec4f };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VSOut {
+  var xy = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  var o: VSOut;
+  o.pos = vec4f(xy[i], 0.0, 1.0);
+  return o;
+}
+@fragment
+fn fs() -> @location(0) vec4f {
+  return vec4f(0.2, 0.6, 0.9, 1.0);
+}`;
+
+async function checkRawWebGPU() {
+  const lines = [];
+  try {
+    if (!navigator.gpu) throw new Error('navigator.gpu 不存在：浏览器未启用 WebGPU');
+    lines.push('navigator.gpu = YES');
+
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) throw new Error('requestAdapter() 返回 null：无可用适配器');
+    const ai = adapter.info || {};
+    lines.push('adapter.vendor = ' + (ai.vendor || '?'));
+    lines.push('adapter.architecture = ' + (ai.architecture || '?'));
+    lines.push('adapter.device = ' + (ai.device || '?'));
+    lines.push('adapter.description = ' + (ai.description || '?'));
+
+    const device = await adapter.requestDevice();
+    lines.push('device = YES');
+    device.addEventListener?.('uncapturederror', (e) => console.error('[WGPU uncaptured]', e.error));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 64;
+    document.body.insertBefore(canvas, elRaw);
+
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    lines.push('canvasFormat = ' + format);
+    const ctx = canvas.getContext('webgpu');
+    if (!ctx) throw new Error('getContext("webgpu") 返回 null');
+    ctx.configure({ device, format, alphaMode: 'opaque' });
+
+    const module = device.createShaderModule({ code: WGSL });
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: ctx.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.draw(3);
+    pass.end();
+
+    const bytesPerRow = 64 * 4;
+    const readback = device.createBuffer({
+      size: bytesPerRow * 64,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    encoder.copyTextureToBuffer(
+      { texture: ctx.getCurrentTexture() },
+      { buffer: readback, bytesPerRow },
+      { width: 64, height: 64 }
+    );
+    device.queue.submit([encoder.finish()]);
+
+    await readback.mapAsync(GPUMapMode.READ);
+    const data = new Uint8Array(readback.getMappedRange());
+    const p = 32 * bytesPerRow + 32 * 4;
+    const pixel = [data[p], data[p + 1], data[p + 2], data[p + 3]];
+    lines.push('centerPixel(B,G,R,A) = ' + pixel.join(','));
+    lines.push('期望 0.2/0.6/0.9 的 bgra8unorm 字节约 = 230,153,51,255');
+
+    const r = pixel[2], g = pixel[1], b = pixel[0];
+    const ok = Math.abs(r - 51) < 12 && Math.abs(g - 153) < 12 && Math.abs(b - 230) < 12;
+    readback.unmap();
+    write(elRaw, '纯 WebGPU 渲染 + 像素回读', ok,
+      lines.join('\n') + (ok ? '\n像素与期望一致：渲染管线端到端跑通' : '\n像素与期望不符：请检查驱动/颜色空间'));
+  } catch (e) {
+    write(elRaw, '纯 WebGPU 渲染 + 像素回读', false, lines.join('\n') + '\n错误：' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/* ======================= [B] three/webgpu + TSL ======================= */
+async function checkThreeWebGPU() {
+  const lines = [];
+  try {
+    const THREE = await import('three/webgpu');
+    const TSL = await import('three/tsl');
+    lines.push('import three/webgpu + three/tsl = OK');
+    lines.push('three 版本 = ' + (THREE.REVISION || '?'));
+
+    const renderer = new THREE.WebGPURenderer({ antialias: false });
+    await renderer.init();
+    lines.push('renderer.init() = OK');
+    const isWebGLBackend = !!(renderer.backend && renderer.backend.isWebGLBackend);
+    lines.push('实际后端 = ' + (isWebGLBackend ? 'WebGL(回退)' : 'WebGPU'));
+
+    renderer.setSize(128, 128, false);
+    document.body.insertBefore(renderer.domElement, elThree);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+    camera.position.z = 3;
+
+    // 用 TSL 节点材质做渐变面片，验证节点材质编译链路
+    const material = new THREE.MeshBasicNodeMaterial();
+    material.colorNode = TSL.Fn(() =>
+      TSL.vec4(TSL.uv().x, TSL.uv().y, 0.5, 1.0)
+    )();
+    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+    // 用 TSL 的 PostProcessing + pass() + bloom() 验证后处理链路
+    const post = new THREE.PostProcessing(renderer);
+    const scenePass = TSL.pass(scene, camera);
+    const sceneColor = scenePass.getTextureNode('output');
+    const bloomPass = TSL.bloom(sceneColor, 1.2, 0.4, 0.2);
+    post.outputNode = scenePass.add(bloomPass);
+    lines.push('PostProcessing + pass() + bloom() 构建 = OK');
+
+    await post.renderAsync();
+    lines.push('post.renderAsync() = OK（未抛错）');
+
+    write(elThree, 'three/webgpu + TSL 渲染', true, lines.join('\n'));
+  } catch (e) {
+    write(elThree, 'three/webgpu + TSL 渲染', false, lines.join('\n') + '\n错误：' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/* ================================ 环境 ================================ */
+elEnv.textContent = '环境：' + navigator.userAgent;
+console.log('[env] ' + navigator.userAgent);
+
+await checkRawWebGPU();
+await checkThreeWebGPU();
+console.log('[done] 自检结束');
+</script>
+</body>
+</html>

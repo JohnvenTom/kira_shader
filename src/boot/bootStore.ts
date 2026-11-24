@@ -216,6 +216,23 @@ export function resetBoot() {
   notify();
 }
 
+/**
+ * 跳过整段 boot（直链 / 从其他段返回 hero 时的语义：boot 每次页面加载只播一次）
+ *
+ * 功能：阶段直接置 done、弹簧置满、各门全开——相机随即跟随滚动（无入场拉远）。
+ *       与 resetBoot 互斥：只应在「本次加载不播 boot」时调用。
+ */
+export function skipBoot() {
+  state.phase = 'done';
+  state.assetProgress = 1;
+  state.warmupProgress = 1;
+  state.displayProgress = 100;
+  state.spring = 1;
+  state.springDone = true;
+  state.titleGate = true;
+  notify();
+}
+
 /** React 订阅：titleGate / springDone / audioOn / 阶段变化时触发 */
 export function subscribeBoot(fn: () => void) {
   listeners.add(fn);
@@ -238,4 +255,27 @@ export function bootInteractionUnlocked(): boolean {
 /** 是否有资产被登记过（区分"首页 boot 流程"与"其他页面"） */
 export function assetsRegistered(): boolean {
   return assets.size > 0;
+}
+
+/**
+ * 清空全部已登记资产（供独立页面复用本状态机的场景）
+ *
+ * 功能：把资产表整体清空，让"是否还有资产未完成"的判定只反映**当前页面**
+ *      重新登记的那批资产。
+ *
+ * 参数：无
+ *
+ * 返回值：无
+ *
+ * 异常：无
+ *
+ * 注意事项：本模块是模块级单例，跨路由不会重置。像 hero 复刻页这种
+ *          不使用常规 App boot 流程的独立页面，挂载时必须先调用本函数
+ *          （再 resetBoot），否则前一个页面登记过的资产会一直停在
+ *          done=false 被 resetBoot 重新武装，导致 allAssetsDone() 永远为假、
+ *          boot 卡死在 loading 阶段。
+ */
+export function clearBootAssets() {
+  assets.clear();
+  notify();
 }

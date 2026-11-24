@@ -1,100 +1,69 @@
-import React, { useState, useEffect } from 'react';
+import { Suspense, lazy, useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
-import KiraFilmDemo, { FILM_SECTION_BY_HASH } from './KiraFilmDemo';
-import TraceDetailPage from './components/trace/TraceDetailPage';
-import { TapePage } from './components/tape/TapePage';
-import { MusicBoxDock } from './components/tape/MusicBoxDock';
-import BadgePage from './components/badge/BadgePage';
 import './styles.css';
 
+// 全站唯一入口：lazy 保证 experience（three/webgpu 构建）按需加载
+const WorkAboutExperience = lazy(() => import('./work-about/WorkAboutExperience'));
+
 /**
- * 根据 URL hash 选择渲染的根组件
+ * 统一路由状态（pathname + hash）
  *
- * 功能：
- *  - 默认（无 hash 或 #home）：渲染 App（原 ComputerScene 单 section 版本）
- *  - #film：渲染 KiraFilmDemo（多 section 滚动 + 无缝切换版）
- *  - #trace：渲染 TraceDetailPage（trace 作品滚动叙事展示页）
- *
- * 参数：无
- *
- * 返回值：React.ReactElement 当前要渲染的根组件
- *
- * 异常：无
- *
- * 注意事项：
- *  - hash 变化时不会自动重渲染，需要监听 hashchange 事件
- *  - 用 useState 触发重渲染，hashchange 回调里 setState 即可
+ * 原站是 Next.js 路径路由 + hash 混搭（/ 与 /work/<slug> 为路径，
+ * #selected-work 为首页 experience 锚点）。本站对齐同一语义：
+ *  - 路径 /work/<slug> → 全站 experience 的 project 模式（详情子页；原站同构，一块画布）
+ *  - hash 锚点只决定 experience 的初始模式
+ * popstate（pushState 内部导航 + 浏览器前进后退）与 hashchange 都会更新。
  */
-function useHashRoute() {
-  const [hash, setHash] = useState(() => window.location.hash);
+function useRoute() {
+  const [route, setRoute] = useState(() => ({
+    pathname: window.location.pathname,
+    hash: window.location.hash,
+  }));
 
   useEffect(() => {
-    const onHashChange = () => setHash(window.location.hash);
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const update = () => setRoute({ pathname: window.location.pathname, hash: window.location.hash });
+    window.addEventListener('popstate', update);
+    window.addEventListener('hashchange', update);
+    return () => {
+      window.removeEventListener('popstate', update);
+      window.removeEventListener('hashchange', update);
+    };
   }, []);
 
-  return hash;
+  return route;
 }
 
 /**
  * 应用入口
  *
- * 功能：根据 URL hash 决定渲染哪个 demo
- *  - 无 hash / 其他未知 hash → App（ComputerScene 版落地页）
- *  - #film           → KiraFilmDemo（多 section 滚动版，起始帧由 sessionStorage 恢复决定）
- *  - #home/#work/#about/#contact → KiraFilmDemo（起始帧由锚点映射决定，不再退出胶片页）
- *  - #trace          → TraceDetailPage（trace 作品展示页）
- *  - #tape           → TapePage（磁带机整页，hash 后可带查询串，如 #tape?p=1）
- *
- * 参数：无
- * 返回值：无
- * 异常：若 #root 不存在会抛出 TypeError
+ * 功能：根据 URL（pathname + hash）决定 experience 的初始模式
+ *  - /work/<slug>                          → project（详情子页）
+ *  - #hero/#selected-work/#about-us/#contact → hero/work/about/contact
+ *  - 其余（含 /、旧 #film/#home/#work/#about 与未知 hash）→ hero
  *
  * 注意事项：
- *  - 四个导航锚点现在也渲染胶片页：胶片页内的跳帧由 KiraFilmDemo 的 hashchange 监听完成
- *    （组件 key 固定为 'film'，不重新 mount，所以切锚点不会重放白闪入场）
- *  - hash 切换会触发完整重渲染（组件树替换），
- *    适合不同 demo 间切换；若想保留状态请用路由库
+ *  - experience 内部不重挂载：key 恒定为 'work-about'，hash 只改 mode
+ *  - 旧锚点不做兼容重定向，统一按未知 hash 落到 hero
  */
 function Root() {
-  const hash = useHashRoute();
-  const isTape = hash.split('?')[0] === '#tape';
-  const isBadge = hash.split('?')[0] === '#badge';
-  const isFilm =
-    hash === '#film' || FILM_SECTION_BY_HASH[hash] !== undefined;
-  // 页面本体：四者互斥
-  const page = isTape
-    // #tape：磁带机整页（音乐盒角标点进来的完整页）。与 #trace 一样不套 StrictMode：
-    // 工厂会把外壳注入挂载点，双挂载会注入两次；dispose 由 TapePage 负责
-    ? <TapePage key="tape" />
-    : isBadge
-      // #badge：3D 工牌独立页（本次移植验证页）。场景自带幂等 dispose，
-      // 但要避免 StrictMode 双挂载把 Rapier 世界建两遍，故不套 StrictMode
-      ? <BadgePage key="badge" />
-      : hash === '#trace'
-        ? <TraceDetailPage key="trace" />
-        : (
-          // key 强制 remount，避免两个 demo 的 useEffect/资源互相污染
-          <React.StrictMode>
-            {isFilm ? (
-              <KiraFilmDemo key="film" hashSection={FILM_SECTION_BY_HASH[hash]} />
-            ) : (
-              <App key="app" />
-            )}
-          </React.StrictMode>
-        );
+  const { pathname, hash } = useRoute();
+  // /work/<slug>：详情页路径路由（原站 Next.js 同构；SPA 内部跳转走 pushState）
+  const workSlug = pathname.match(/^\/work\/([\w-]+)\/?$/)?.[1];
+  const baseHash = hash.split('?')[0];
+  const mode: 'hero' | 'work' | 'about' | 'contact' | 'project' = workSlug
+    ? 'project'
+    : baseHash === '#selected-work'
+      ? 'work'
+      : baseHash === '#about-us'
+        ? 'about'
+        : baseHash === '#contact'
+          ? 'contact'
+          : 'hero';
   return (
-    <>
-      {page}
-      {/* 音乐盒角标：全站常驻（#tape 自身除外，那页里它没有意义）。
-          放在这里是为了让它跨路由保持在同一个位置、不被卸载 —— 它订阅的是
-          tapeAudioStore 这个模块级单例，音频因此不会因路由切换而中断。
-          BGM 开屏引导已融合进首页 boot 屏（BIOS 文字行，见 App.tsx），
-          其他页面直链的首次交互由 tapeAudio 全局钩子兜底 */}
-      {!isTape && !isBadge && <MusicBoxDock />}
-    </>
+    // Suspense：lazy chunk 加载期间渲染 null，首载空白由 experience 的 boot 屏接管
+    <Suspense fallback={null}>
+      <WorkAboutExperience key="work-about" mode={mode} projectSlug={workSlug} />
+    </Suspense>
   );
 }
 

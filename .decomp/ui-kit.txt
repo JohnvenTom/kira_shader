@@ -1,0 +1,88 @@
+# uikit / sceneMode 反编译留档（hero↔selected-work 无缝合并用）
+
+来源：`.decomp/shader-main.js`（compose 组件）、`.decomp/fetch/chunks/0wb~eqgmow_3x.js`（pagesConfig）。
+
+## 1. transitionTypeMap（数值映射）
+
+```
+{fade:0, direct:1, overlay:2, below:3}
+```
+
+## 2. compose 场景 pass 的 current/next 分支（原文语义）
+
+逐帧（`sceneMode.value=0` 之外）：
+
+```js
+e = I + 1                                  // 下一页索引
+t = fround(ranges[I]?.y ?? 0)              // 当前页 range.end
+r = fround(transitionLengths[e] ?? 0)      // 下一页 transitionLength
+i = e < 7 && !(scroll <= fround(t - r))    // scroll 越过 (curEnd - nextTL) 即进入转场
+sceneMode = i ? 2 : 1
+currentTexture = pages[I]; currentLens/Border/Saturation = pages[I] 原值
+若 i：nextTexture = pages[e]；nextLens/Border/Saturation = pages[e] 原值；
+      nextTransitionType = transitionTypes[e]；transitionRangeEnd = ranges[I].y；transitionLength = r
+```
+
+着色器（`a` = 当前页采样，`s` = 下一页采样）：
+
+```js
+l = smoothstep(transitionRangeEnd - transitionLength, transitionRangeEnd, scroll)
+u = mix(a, s, l)                     // type 0 (fade) 与 type 1 (direct)
+type == 2 → u = mix(a, s, s.a)       // overlay：下一页 alpha 门控（about-us 折页）
+type == 3 → u = mix(s, a, a.a)       // below：当前页 alpha 门控（reveal/tie）
+```
+
+## 3. UI 纹理合成（同一条场景 pass 内）
+
+```js
+a = barrel(uv, lens, border)                       // UI 与场景共用桶形畸变 uv
+s = mix(texture(uiTextureLight, a), texture(uiTextureDark, a), uiModeTransition)
+s *= clamp(uiTransition, 0, 1)
+// 解析 hover 高亮：
+logoRegion   = a.x*res.x < 240        && (1-a.y)*res.y > res.y-96   // 左下
+pageAction   = a.x*res.x > res.x-220  && (1-a.y)*res.y > res.y-96   // 右下
+logoRegion   → s *= 1 + logoHoverTransition*0.25
+pageAction   → s *= 1 + pageActionHoverTransition*0.25
+```
+
+- `uiTransition`：motion 值（spring），UI 显隐标量，不是滚动映射。
+- `uiModeTransition`：motion 值，light→dark 交叉淡化标量。
+- uiMode 只有 about-us 是 `dark`，其余页全 `light`。
+
+## 4. 页表关键事实（pagesConfig，0wb~eqgmow_3x.js）
+
+| page | range | renderOffset.beforeStart | pageOffset | uiPageOffset | uiMode | transition | TL |
+|---|---|---|---|---|---|---|---|
+| hero | [0,1] | 2 | {end:-.2} | {end:-.1} | light | direct | 0 |
+| projects | [1,2] | 0.9 | {start:-.1,end:-.7} | {start:-.3} | light | fade | 0.2 |
+| office | [2,3.8] | 0.7 | — | {start:0,end:-.36} | light | fade | 0.4 |
+| about-us | [3.8,11.1367] | 0（无字段） | — | {start:-.35,end:-2.55} | **dark** | overlay | 2 |
+| golden-tie-reveal | [11.1367,12.8367] | 0 | — | {start:-3} | light | below | 4.1 |
+| golden-tie | [12.8367,18.8367] | 0（无字段） | — | —（默认全窗） | light | below | 1.75 |
+| contact | [18.8367,22.1606] | 1.25 | {start:-.9} | —（默认全窗） | light | fade | 0.3 |
+
+hash（page id）窗口与滞回：
+- hero：scroll < 0.8；projects：[0.9, 1.3)；office：[2, 3.8)；contact：[contactStart-0.9, ·)
+- 向下在窗口起点翻转、向上在窗口终点翻转，间隙保持上一个值。
+- projects→office 间隙 [1.3, 2.0)：向下保持 projects 直到 2.0，向上保持 office 直到 1.3。
+
+UI 窗口（uiPageOffset 换算）：
+- hero [0, 0.9)；projects [0.7, 2)；office [2, 3.44)；about-us [3.45, 8.587)（dark）；
+- reveal [8.137, 12.837)；tie [12.837, 18.837)；contact [18.837, 22.161)。
+- 重叠区间取数组靠后的页（循环从尾向头，后者胜出）。
+
+## 5. 页面渲染门控（renderRange）
+
+```js
+r = t.renderRange ?? t.range;  if (r.start < a && r.end > a) ex.add(t.id)  // 才渲染该页
+renderRange.start = range.start - (renderOffset?.beforeStart ?? 0)
+```
+
+即 office 页从 scroll 1.3 起开始渲染（正好是胶片蒙版起点）；projects 从 0.1 起（喂显示器屏幕）；hero 恒渲染。
+
+## 6. 杂项
+
+- 场景相机工厂 `nZ({type:"perspective", fov,near,far,basePosition,baseRotation,aspect})`。
+- `getMouseOffset()` = (0.5 − mouseX01, 0.5 − mouseY01)，mouseY01 = 1 − clientY/h。
+- subPage（项目详情）体系（subPageType/subPageTransition）不在本次范围。
+- 已知偏差：about-us 段内容边界（shredStart 等）按纸面高度动态算（原站公式），静态页长 7.3367 在极端宽高比下会与效果窗口漂移——维持现状。

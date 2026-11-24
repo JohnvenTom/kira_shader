@@ -1,0 +1,1 @@
+"Error: page.evaluate: TypeError: Cannot read properties of undefined (reading 'position')\n    at eval (eval at evaluate (:311:30), <anonymous>:4:49)\n    at eval (eval at evaluate (:311:30), <anonymous>:29:3)\n    at eval (<anonymous>)\n    at UtilityScript.evaluate (<anonymous>:311:30)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)"

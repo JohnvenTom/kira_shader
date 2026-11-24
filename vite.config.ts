@@ -18,4 +18,11 @@ export default defineConfig({
     open: true,
   },
   publicDir: 'public',
+  // yoga-layout@3 的 ESM 入口含 top-level await（wasm 实例化），目标环境需 es2022+
+  optimizeDeps: {
+    esbuildOptions: { target: 'es2022' },
+  },
+  build: {
+    target: 'es2022',
+  },
 });

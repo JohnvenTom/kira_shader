@@ -1,0 +1,209 @@
+{
+ "err": "no frame yet",
+ "rinfo": {
+  "own": "revision",
+  "proto": "constructor,__defineGetter__,__defineSetter__,hasOwnProperty,__lookupGetter__,__lookupSetter__,isPrototypeOf,propertyIsEnumerable,toString,valueOf,__proto__,toLocaleString"
+ },
+ "evts": [
+  {
+   "type": "register",
+   "ctor": "Object",
+   "keys": "revision"
+  },
+  {
+   "type": "observe",
+   "ctor": "tJ",
+   "keys": "isObject3D,uuid,name,type,parent,children,up,position,rotation,quaternion,scale,matrix,matrixWorld,matrixAutoUpdate"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "um",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "iw",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "iv",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "isRenderer,backend,autoClear,autoClearColor,autoClearDepth,autoClearStencil,alpha,logarithmicDepthBuffer,reversedDepthBuffer,outputColorSpace,toneMapping,toneMappingExposure,sortObjects,depth"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "nm",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "np",
+   "keys": "manager,crossOrigin,withCredentials,path,resourcePath,requestHeader"
+  },
+  {
+   "type": "observe",
+   "ctor": "tJ",
+   "keys": "isObject3D,uuid,name,type,parent,children,up,position,rotation,quaternion,scale,matrix,matrixWorld,matrixAutoUpdate"
+  },
+  {
+   "type": "observe",
+   "ctor": "tJ",
+   "keys": "isObject3D,uuid,name,type,parent,children,up,position,rotation,quaternion,scale,matrix,matrixWorld,matrixAutoUpdate"
+  },
+  {
+   "type": "observe",
+   "ctor": "tJ",
+   "keys": "isObject3D,uuid,name,type,parent,children,up,position,rotation,quaternion,scale,matrix,matrixWorld,matrixAutoUpdate"
+  },
+  {
+   "type": "observe",
+   "ctor": "tJ",
+   "keys": "isObject3D,uuid,name,type,parent,children,up,position,rotation,quaternion,scale,matrix,matrixWorld,matrixAutoUpdate"
+  }
+ ]
+}
