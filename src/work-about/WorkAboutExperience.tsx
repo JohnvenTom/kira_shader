@@ -31,8 +31,10 @@ import { createGoldenTieRevealScene, GoldenTieRevealHandle } from './goldenTieRe
 import { createGoldenTieScene, GoldenTieSceneHandle } from './goldenTieScene';
 import {
   bootStore,
+  markBootAudioOn,
   skipBoot,
 } from '../boot/bootStore';
+import { tapeAudio } from '../components/tape/tapeAudioStore';
 import type { AboutTheme } from './AboutUI';
 import './about.css';
 // 项目子页复用独立详情页的 boot 屏 / 顶栏样式（.wd-boot / .wd-topbar / .wd-close）
@@ -351,6 +353,16 @@ export default function WorkAboutExperience({ mode, projectSlug }: { mode: Route
     dragStartTarget: WORK_REST_S,
     lastD: 0,
   });
+
+  // BGM 引导：磁带 store 在首次手势自动起播，播放态同步到 boot 屏 "AUDIO: ON" 行。
+  // 角标/整页已删除，store 只作为全站单例音频源保留。
+  useEffect(
+    () =>
+      tapeAudio.subscribe((s) => {
+        if (s.playing) markBootAudioOn();
+      }),
+    []
+  );
 
   const prevModeRef = useRef<RouteMode>(mode);
   /** 当前路由模式（渲染循环里读；mode 变化时由 effect 同步） */
